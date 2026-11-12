@@ -4,6 +4,8 @@
 - **outside France**: **Copernicus DEM GLO-30** (ESA, free, worldwide). Areas are **1° × 1° squares** named after their south-west corner (`MN40W075` = 40–41°N, 75–74°W). Clicking anywhere loads the square of that point in a few seconds; it is then kept on disk;
 - **in France**: **IGN RGE ALTI**, by department.
 
+![Current network coverage, computed from terrain](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/en-couverture.jpg)
+
 The radio frequency used for the computations is set with `RADIO_FREQ_MHZ` in the `.env` (`906.875` in the US, `869.525` in Europe…). Town populations come from OpenStreetMap outside France.
 
 - **Current network coverage**: area served by the detected relays, share of the department, what each relay alone covers.

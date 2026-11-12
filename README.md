@@ -10,6 +10,16 @@ This is the world edition of the French [carte-live-meshtastic](https://github.c
 
 📖 **Documentation: [the wiki](https://github.com/sauveteur71/live-mesh-map-world/wiki)** (sources in [`wiki/en/`](wiki/en/)).
 
+![The live map](docs/captures/en-carte.jpg)
+
+| Coverage computed from terrain | Link graph |
+|---|---|
+| ![Coverage](docs/captures/en-couverture.jpg) | ![Topology](docs/captures/en-topologie.jpg) |
+| **Public map** | **Built-in help** |
+| ![Public map](docs/captures/en-publique.jpg) | ![Help](docs/captures/en-aide.jpg) |
+
+*Screenshots from a real network in Haute-Loire, France.*
+
 ## Install in one command (Linux)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/install.sh | sudo sh

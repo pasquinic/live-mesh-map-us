@@ -2,6 +2,8 @@
 
 Real-time map, monitoring and **remote administration** of a [Meshtastic](https://meshtastic.org) and [MeshCore](https://meshcore.co.uk) network, regional or local, **anywhere in the world**. Terrain-based coverage uses Copernicus DEM (worldwide) and IGN (France).
 
+![The live map: Meshtastic and MeshCore nodes, measured links](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/en-carte.jpg)
+
 ## Where to start
 1. [[Installation]]: Docker, `.env`, setup wizard.
 2. [[Connect the network|Brancher le réseau]]: MQTT broker, channels.
@@ -25,6 +27,9 @@ Real-time map, monitoring and **remote administration** of a [Meshtastic](https:
 - [[Versions and compatibility|Versions et compatibilité]]: supported firmware, Meshtastic 2.8.
 
 ## Help
+
+![Help opens inside the map](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/en-aide.jpg)
+
 - [[Troubleshooting|Dépannage]]: the most common problems and their solution.
 - [Latest version](https://github.com/sauveteur71/live-mesh-map-world/releases/latest) · [Report a problem](https://github.com/sauveteur71/live-mesh-map-world/issues)
 
