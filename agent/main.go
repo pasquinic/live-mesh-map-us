@@ -1,4 +1,4 @@
-// Agent Gaulix : relie un ou plusieurs modules Meshtastic (USB/série ou Wi-Fi) à la carte live qui tourne sur le serveur.
+// Live mesh agent : relie un ou plusieurs modules Meshtastic (USB/série ou Wi-Fi) à la carte live qui tourne sur le serveur.
 //
 // L'agent se connecte au serveur (par Tailscale ou le réseau local), se présente avec le code secret affiché
 // dans la carte (Réseau › Modules), puis attend. Quand la carte choisit ce module, le serveur envoie « OUVRIR » :
@@ -82,9 +82,9 @@ func fichierReglages(chemin string) string {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "agent-gaulix.json"
+		return "live-mesh-agent.json"
 	}
-	return filepath.Join(filepath.Dir(exe), "agent-gaulix.json")
+	return filepath.Join(filepath.Dir(exe), "live-mesh-agent.json")
 }
 
 func charger(f string) Reglages {
@@ -191,7 +191,7 @@ func normaliserNom(n string) string {
 
 func configurerServeur(r *Reglages) {
 	fmt.Println()
-	fmt.Println("=== Configuration de l'agent Gaulix ===")
+	fmt.Println("=== Configuration de l'agent ===")
 	fmt.Println("Le code secret se trouve dans la carte : Réseau › Modules › « Module par agent ».")
 	for r.Serveur = demander("Adresse du serveur de la carte (Tailscale ou réseau local) et port, ex. 192.168.1.10:4404", r.Serveur); r.Serveur == ""; {
 		r.Serveur = demander("Adresse du serveur (obligatoire)", "")
@@ -318,7 +318,7 @@ func gererConnexions(r *Reglages) {
 }
 
 func main() {
-	chemin := flag.String("config", "", "fichier de réglages (par défaut agent-gaulix.json à côté du programme)")
+	chemin := flag.String("config", "", "fichier de réglages (par défaut live-mesh-agent.json à côté du programme)")
 	refaire := flag.Bool("configurer", false, "gérer les connexions (ajouter, modifier, retirer) et le serveur")
 	ajouter := flag.Bool("ajouter", false, "ajouter une connexion")
 	liste := flag.Bool("liste", false, "afficher les connexions enregistrées")
@@ -330,7 +330,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("Agent Gaulix %s — relais de modules Meshtastic et MeshCore vers la carte live\n", version)
+	fmt.Printf("Live mesh agent %s — relais de modules Meshtastic et MeshCore vers la carte live\n", version)
 	f := fichierReglages(*chemin)
 	r := charger(f)
 	if *liste {
@@ -593,7 +593,7 @@ func fichierDemarrage() string {
 	if appdata == "" {
 		return ""
 	}
-	return filepath.Join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "agent-gaulix.cmd")
+	return filepath.Join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "live-mesh-agent.cmd")
 }
 
 func demarrageAutoActif() bool {
@@ -615,7 +615,7 @@ func installerDemarrageAuto() {
 		journal("démarrage automatique impossible (%v)", err)
 		return
 	}
-	contenu := "@echo off\r\nrem Agent Gaulix : relie les modules Meshtastic à la carte live\r\nstart \"Agent Gaulix\" /min \"" + exe + "\"\r\n"
+	contenu := "@echo off\r\nrem Live mesh agent : relie les modules Meshtastic à la carte live\r\nstart \"Live mesh agent\" /min \"" + exe + "\"\r\n"
 	if err := os.WriteFile(fichierDemarrage(), []byte(contenu), 0644); err != nil {
 		journal("démarrage automatique impossible (%v)", err)
 		return

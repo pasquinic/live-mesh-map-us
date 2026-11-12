@@ -94,7 +94,7 @@ function tour() {
     const payload = types.RouteDiscovery.encode({ route: [via.num], snrTowards: [24, -20], routeBack: [via.num], snrBack: [8, 12] }).finish();
     pub(envelopper('Fr_Balise', dest, n.num, 70, payload, gwProche, { sauts: 1, relais: via, requestId: 1234 }));
   } else if (r < 0.8) {
-    const textes = ['Bonjour la Haute-Loire !', 'Test portée depuis le Meygal', 'Qui m’entend sur Gaulix ?', 'RAS sur le relais', '73 de F4XXX'];
+    const textes = ['Bonjour la Haute-Loire !', 'Test portée depuis le Meygal', 'Qui m’entend sur le réseau ?', 'RAS sur le relais', '73 de F4XXX'];
     pub(envelopper(Math.random() < 0.5 ? 'D_HauteLoir' : 'Fr_Balise', n, 0xffffffff, 1, Buffer.from(hasard(textes)), gwProche, { sauts, relais }));
   } else {
     pub(envelopper('Fr_Balise', n, 0xffffffff, 4, types.User.encode({ id: id(n.num), longName: n.nom, shortName: n.court, hwModel: n.hw, role: n.role }).finish(), gwProche, { sauts, relais }));

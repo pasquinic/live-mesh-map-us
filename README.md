@@ -2,7 +2,7 @@
 
 [![Latest version](https://img.shields.io/github/v/release/sauveteur71/live-mesh-map-world?label=latest%20version)](https://github.com/sauveteur71/live-mesh-map-world/releases/latest)
 
-**Current version: 1.0.0** — [what's new](https://github.com/sauveteur71/live-mesh-map-world/releases/latest) · [all versions](https://github.com/sauveteur71/live-mesh-map-world/releases)
+**Current version: 1.0.1** — [what's new](https://github.com/sauveteur71/live-mesh-map-world/releases/latest) · [all versions](https://github.com/sauveteur71/live-mesh-map-world/releases)
 
 Self-hosted **live map, monitoring and remote administration** for [Meshtastic](https://meshtastic.org) and [MeshCore](https://meshcore.co.uk) networks, **anywhere in the world**. It listens to your MQTT broker and/or a radio node, decodes packets, keeps the history, estimates radio coverage from terrain and lets you program your nodes over LoRa.
 

@@ -6,7 +6,7 @@ A small program (Windows, Linux, Raspberry Pi) that links to the map:
 - and, since version **1.6**, **any Wi-Fi node on its local network**, reached by its IP address from *Connect a node*.
 
 ## Installation
-1. Download the agent from the map: `/agent/agent-gaulix-windows.exe` (or the Linux and Raspberry Pi versions).
+1. Download the agent from the map: `/agent/live-mesh-agent-windows.exe` (or the Linux and Raspberry Pi versions).
 2. Start it. It asks for the **server address** (port 4404, over the local network or Tailscale) and the **agents code** shown in the map (*Network › Radio nodes › Node via agent*).
 3. Add your connections: USB port (`COM5`, `/dev/ttyACM0`) or a node's Wi-Fi address.
 
@@ -17,7 +17,7 @@ The agent keeps as many connections as you want (*USB*, *Home*, *Shack*…). Eac
 
 Options: `-configurer` (add `a`, edit `m 2`, remove `r 2`, server and code `s`), `-ajouter`, `-liste`, `-demarrage-auto`, `-sans-demarrage-auto`.
 
-A Wi-Fi node reached through a VPN or a router (not on the PC's local network): add `"toujours": true` to its connection in `agent-gaulix.json`.
+A Wi-Fi node reached through a VPN or a router (not on the PC's local network): add `"toujours": true` to its connection in `live-mesh-agent.json`.
 
 ## Local network relay (1.6)
 The agent also opens a “*PC name* · local network” session. When you type an IP address in *Connect a node* and the server can't see that network, the map asks this agent to **probe** the address (ports 4403 and 5000), then to **relay** the link.
@@ -25,7 +25,7 @@ The agent also opens a “*PC name* · local network” session. When you type a
 Security: the agent only accepts **private addresses of the networks the PC is connected to**, and only these two ports.
 
 ## Update
-Download the new version from the map and replace the old file: settings (`agent-gaulix.json`) are kept.
+Download the new version from the map and replace the old file: settings (`live-mesh-agent.json`) are kept.
 
 ## Linux / Raspberry Pi as a service
 ```ini
@@ -33,11 +33,11 @@ Download the new version from the map and replace the old file: settings (`agent
 Description=Live map agent Meshtastic
 After=network-online.target
 [Service]
-ExecStart=/opt/agent-gaulix/agent-gaulix-raspberrypi-arm64 -config /opt/agent-gaulix/agent-gaulix.json
+ExecStart=/opt/live-mesh-agent/live-mesh-agent-raspberrypi-arm64 -config /opt/live-mesh-agent/live-mesh-agent.json
 Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
-`sudo systemctl enable --now agent-gaulix`, after configuring the agent once by hand.
+`sudo systemctl enable --now live-mesh-agent`, after configuring the agent once by hand.
 
 > 🔒 Port 4404 must never be open to the internet: local network or VPN only.

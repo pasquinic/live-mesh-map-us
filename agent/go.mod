@@ -1,4 +1,4 @@
-module gaulix/agent
+module livemesh/agent
 
 go 1.24.7
 

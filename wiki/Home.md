@@ -1,13 +1,13 @@
 # Carte live Meshtastic / MeshCore
 
-Carte en temps réel, supervision et **administration à distance** d'un réseau [Meshtastic](https://meshtastic.org) et [MeshCore](https://meshcore.co.uk), départemental ou local. Née pour le réseau **Gaulix** en Haute-Loire, elle s'installe pour n'importe quel département.
+Carte en temps réel, supervision et **administration à distance** d'un réseau [Meshtastic](https://meshtastic.org) et [MeshCore](https://meshcore.co.uk), départemental ou local. Née pour un réseau de Haute-Loire, elle s'installe pour n'importe quel département.
 
 ![La carte live : nœuds Meshtastic et MeshCore, liaisons mesurées](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-carte.jpg)
 
 ## Par où commencer
 1. [[Installation]] : Docker, `.env`, assistant d'installation.
 2. [[Brancher le réseau]] : broker MQTT, canaux.
-3. [[Connecter un module]] : Bluetooth, USB ou adresse IP, et l'[[Agent Gaulix]].
+3. [[Connecter un module]] : Bluetooth, USB ou adresse IP, et l'[[Agent]].
 4. Découvrir [[La carte]].
 
 ## Utiliser la carte

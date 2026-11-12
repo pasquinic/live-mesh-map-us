@@ -3,7 +3,7 @@
 - [[Installation]]
 - [[Brancher le réseau]]
 - [[Connecter un module]]
-- [[Agent Gaulix]]
+- [[Agent]]
 
 **Utiliser**
 - [[La carte]]

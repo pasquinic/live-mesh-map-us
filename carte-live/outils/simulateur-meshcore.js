@@ -14,12 +14,12 @@ const PUBLIC = Buffer.from('8b3387e9c5cdea6ac9e5edbaa115cd72', 'hex');
 const cle = (graine) => crypto.createHash('sha256').update(graine).digest();
 
 const NOEUDS = [
-  { nom: '43ALAMBRepeaterGaulix', role: 2, lat: 45.0318, lon: 3.9412 },
+  { nom: '43ALAMBRepeater', role: 2, lat: 45.0318, lon: 3.9412 },
   { nom: '43-Mezenc-RPT', role: 2, lat: 44.9128, lon: 4.1873 },
   { nom: '43-Puy-Corneille', role: 2, lat: 45.0472, lon: 3.8851 },
   { nom: '43-Yssingeaux-RPT', role: 2, lat: 45.1427, lon: 4.1238 },
   { nom: '43-Brioude-RPT', role: 2, lat: 45.2941, lon: 3.3842 },
-  { nom: 'Salon Gaulix', role: 3, lat: 45.0441, lon: 3.8853 },
+  { nom: 'Salon Velay', role: 3, lat: 45.0441, lon: 3.8853 },
   { nom: 'Station test 📟', role: 1, lat: 45.0820, lon: 3.9650 },
   { nom: 'Marc 43', role: 1, lat: 45.0612, lon: 3.8302 },
   { nom: 'Capteur Loire', role: 4, lat: 45.0963, lon: 3.9558 },
@@ -105,7 +105,7 @@ const etatRep = (cle) => {
   if (!reglages.has(cle)) {
     const n = NOEUDS.find((x) => x.cle.toString('hex') === cle);
     reglages.set(cle, { name: n ? n.nom : '?', radio: '869.618,62.5,8,8', tx: '22', repeat: 'on', 'flood.max': '64', 'flood.max.advert': '8', 'advert.interval': cle.startsWith(relais[1].cle.toString('hex').slice(0, 4)) ? '0' : '120',
-      'flood.advert.interval': '12', 'path.hash.mode': '0', txdelay: '0.5', 'direct.txdelay': '0.3', dutycycle: '50.0%', 'multi.acks': '0', 'loop.detect': 'off', lat: String(n ? n.lat : 0), lon: String(n ? n.lon : 0), 'owner.info': 'Gaulix' });
+      'flood.advert.interval': '12', 'path.hash.mode': '0', txdelay: '0.5', 'direct.txdelay': '0.3', dutycycle: '50.0%', 'multi.acks': '0', 'loop.detect': 'off', lat: String(n ? n.lat : 0), lon: String(n ? n.lon : 0), 'owner.info': 'F4XXX' });
   }
   return reglages.get(cle);
 };

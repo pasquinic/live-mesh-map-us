@@ -3341,7 +3341,7 @@ async function rendreFederationAdmin() {
 function fichePartager() {
   const base = location.origin;
   const iframe = `<iframe src="${base}/publique" width="100%" height="520" style="border:0;border-radius:8px" title="Carte du réseau" loading="lazy"></iframe>`;
-  const ha = `rest:\n  - resource: ${base}/api/export/resume.json\n    scan_interval: 120\n    sensor:\n      - name: "Gaulix nœuds actifs"\n        value_template: "{{ value_json.noeudsActifs }}"\n      - name: "Gaulix couverture"\n        unit_of_measurement: "%"\n        value_template: "{{ value_json.couverturePct }}"\n      - name: "Gaulix alertes critiques"\n        value_template: "{{ value_json.alertesCritiques }}"`;
+  const ha = `rest:\n  - resource: ${base}/api/export/resume.json\n    scan_interval: 120\n    sensor:\n      - name: "Nœuds actifs du réseau"\n        value_template: "{{ value_json.noeudsActifs }}"\n      - name: "Couverture du réseau"\n        unit_of_measurement: "%"\n        value_template: "{{ value_json.couverturePct }}"\n      - name: "Alertes critiques du réseau"\n        value_template: "{{ value_json.alertesCritiques }}"`;
   const lien = (url, lib, desc) => `<div class="ligne"><span class="titre"><a href="${url}" target="_blank" rel="noopener">${lib}</a><small>${desc}</small></span><span class="meta"><button class="mini" data-copier="${esc(url)}">Copier</button></span></div>`;
   $('#fiche').hidden = false;
   etat.selection = null;
@@ -3349,7 +3349,7 @@ function fichePartager() {
     <h3>Carte publique allégée</h3>
     <p class="note">Relais, passerelles, nœuds à position approchée et liaisons, mise à jour chaque minute. Aucun message ni position exacte de particulier. Onglets Meshtastic / MeshCore / Les deux et animation en direct des paquets. Options : <span class="mono">?reseau=meshtastic</span> (ou <span class="mono">meshcore</span>, <span class="mono">deux</span>), <span class="mono">?animations=0</span>, <span class="mono">?couverture=actuelle</span> (ou <span class="mono">point</span> : couverture du point cliqué, ou <span class="mono">sites</span> : où poser des relais, avec <span class="mono">&acces=4x4</span>, <span class="mono">pied</span> ou <span class="mono">tous</span>), <span class="mono">?fond=Plan IGN</span>, <span class="mono">?clients=0</span> (relais seuls), <span class="mono">?liens=0</span>, <span class="mono">?titre=…</span></p>
     ${lien(base + '/publique', base + '/publique', 'à ouvrir ou à intégrer')}
-    <label class="bloc-code">Code à coller dans une page (gaulix.fr…)<textarea readonly rows="3">${esc(iframe)}</textarea></label>
+    <label class="bloc-code">Code à coller dans une page (votre site…)<textarea readonly rows="3">${esc(iframe)}</textarea></label>
     <p class="note">La page doit être joignable depuis internet (par exemple via Tailscale Funnel ou un reverse proxy) pour être vue par les visiteurs d’un site.</p>
     <h3>Exports</h3>
     ${lien(base + '/api/export/relais.gpx', 'Relais et passerelles (GPX)', 'pour OsmAnd, un GPS de randonnée ou une tournée de maintenance')}
@@ -4217,7 +4217,7 @@ async function rendreModules(force) {
     <details id="bloc-agents" ${ouvertAgents ? 'open' : ''}><summary>Module par agent : USB sur un PC, ou module d’un autre réseau</summary>
       <p class="note">L’agent est un petit programme lancé sur le PC où le module est branché en USB (ou sur un appareil du réseau où se trouve un module Wi-Fi, ex. Le Monteil). Il se connecte au NAS par Tailscale et relaie le module : la carte l’utilise comme les autres.</p>
       <ol class="note etapes-agent">
-        <li>Téléchargez l’agent : <a href="/agent/agent-gaulix-windows.exe" download>Windows</a> · <a href="/agent/agent-gaulix-linux-amd64" download>Linux</a> · <a href="/agent/agent-gaulix-raspberrypi-arm64" download>Raspberry Pi 64 bits</a> · <a href="/agent/agent-gaulix-raspberrypi-armv7" download>Raspberry Pi 32 bits</a></li>
+        <li>Téléchargez l’agent : <a href="/agent/live-mesh-agent-windows.exe" download>Windows</a> · <a href="/agent/live-mesh-agent-linux-amd64" download>Linux</a> · <a href="/agent/live-mesh-agent-raspberrypi-arm64" download>Raspberry Pi 64 bits</a> · <a href="/agent/live-mesh-agent-raspberrypi-armv7" download>Raspberry Pi 32 bits</a></li>
         <li>Lancez-le et répondez aux questions : adresse du serveur <b class="mono">${esc(location.hostname)}:${(r.agents && r.agents.port) || 4404}</b> (ou son adresse Tailscale), le code ci-dessous, un nom (ex. Voiture), le port USB (COM5…) ou l’adresse du module Wi-Fi.</li>
         <li>Le module apparaît ici avec le badge « agent » : cliquez sur Connecter.</li>
       </ol>
@@ -7288,7 +7288,7 @@ async function ouvrirConnexion(message) {
     <div class="cx-serie"><button type="button" class="cx-gros cx-large" data-cx="serie"><span>🖥️</span><b>USB du serveur</b><small>module branché sur la machine qui fait tourner la carte (NAS, Raspberry Pi…)</small></button><div id="cx-ports"></div></div>
     <form class="cx-ip" id="cx-ip"><label><span>🌐 <b>Adresse IP</b> du module en Wi-Fi</span>
       <span class="ligne-ip"><input name="adresse" placeholder="192.168.1.122" inputmode="decimal" autocomplete="off" required><button class="principal">Connecter</button></span></label>
-      <small>Si le module est sur un autre réseau que la carte, un PC de ce réseau avec l’agent Gaulix 1.6 sert de relais tout seul.</small></form>
+      <small>Si le module est sur un autre réseau que la carte, un PC de ce réseau avec l’agent 1.6 sert de relais tout seul.</small></form>
     <div id="cx-retour" class="cx-retour">${message ? esc(message) : ''}</div>
     <details class="cx-aide"><summary>Ça ne marche pas ?</summary><ul>
       <li><b>Bluetooth</b> : fermez l’appli Meshtastic / MeshCore du téléphone (un seul appareil à la fois). Code PIN : celui affiché par le module, sinon 123456. En cas d’échec, appairez d’abord le module dans les réglages Bluetooth de Windows.</li>
@@ -7296,7 +7296,7 @@ async function ouvrirConnexion(message) {
       <li><b>USB</b> : fermez l’appli, l’agent ou toute autre page qui utilise déjà le port.</li>
       <li><b>Bluetooth qui se coupe</b> : la page se reconnecte toute seule pendant 15 min. Fermez l’appli du téléphone, rapprochez le module et, sous Windows, décochez « Autoriser l’ordinateur à éteindre ce périphérique » (Gestionnaire de périphériques › Bluetooth › Gestion de l’alimentation).</li>
       <li><b>Plusieurs modules</b> : un seul est principal pour chaque réseau (Meshtastic, MeshCore) ; les autres peuvent être « en écoute ». Depuis cette page, un seul module Bluetooth ou USB par réseau ; les autres par adresse IP ou par agent.</li>
-      <li><b>Adresse IP</b> : le module doit être allumé, en Wi-Fi, et sur un réseau joignable par la carte ou par un PC avec l’agent 1.6 (<a href="/agent/agent-gaulix-windows.exe">télécharger pour Windows</a>).</li>
+      <li><b>Adresse IP</b> : le module doit être allumé, en Wi-Fi, et sur un réseau joignable par la carte ou par un PC avec l’agent 1.6 (<a href="/agent/live-mesh-agent-windows.exe">télécharger pour Windows</a>).</li>
     </ul></details>`;
   const retour = (t, cls = '') => { const r = $('#cx-retour'); if (r) { r.className = 'cx-retour ' + cls; r.innerHTML = t; } };
   const role = () => { const c = z.querySelector('input[name="cx-role"]:checked'); return c ? c.value : 'principal'; };

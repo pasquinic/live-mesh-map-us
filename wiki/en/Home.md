@@ -7,7 +7,7 @@ Real-time map, monitoring and **remote administration** of a [Meshtastic](https:
 ## Where to start
 1. [[Installation]]: Docker, `.env`, setup wizard.
 2. [[Connect the network|Brancher le réseau]]: MQTT broker, channels.
-3. [[Connect a node|Connecter un module]]: Bluetooth, USB or IP address, and the [[agent|Agent Gaulix]].
+3. [[Connect a node|Connecter un module]]: Bluetooth, USB or IP address, and the [[agent|Agent]].
 4. Discover [[the map|La carte]].
 
 ## Using the map

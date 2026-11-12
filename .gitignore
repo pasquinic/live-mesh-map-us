@@ -14,7 +14,7 @@ mosquitto/log/
 # Dépendances et fichiers générés
 node_modules/
 carte-live/public/agent/
-agent/agent-gaulix*
-agent-gaulix.json
+agent/live-mesh-agent*
+live-mesh-agent.json
 .DS_Store
 Thumbs.db

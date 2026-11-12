@@ -3,7 +3,7 @@
 - [[Installation]]
 - [[Connect the network|Brancher le réseau]]
 - [[Connect a node|Connecter un module]]
-- [[The agent|Agent Gaulix]]
+- [[The agent|Agent]]
 
 **Using**
 - [[The map|La carte]]

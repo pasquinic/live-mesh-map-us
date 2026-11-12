@@ -1,7 +1,7 @@
 # Dépannage
 
 ### `getaddrinfo ENOTFOUND` dans le journal
-L'adresse du broker est mal écrite (par exemple `mqttgaulix.fr` au lieu de `mqtt.gaulix.fr`). Corrigez `MQTT_URL` (ou *Gestion › Réglages*), puis `docker compose up -d`.
+L'adresse du broker est mal écrite (par exemple `mqttexample.org` au lieu de `mqtt.example.org`). Corrigez `MQTT_URL` (ou *Gestion › Réglages*), puis `docker compose up -d`.
 
 ### Le broker MQTT du `.env` n'est pas pris en compte
 - Après avoir modifié le `.env` : **`docker compose up -d`** (un `docker compose restart` ne relit pas le `.env`).

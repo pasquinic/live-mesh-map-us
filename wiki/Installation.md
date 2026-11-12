@@ -30,7 +30,7 @@ Le minimum :
 
 | Variable | Rôle | Exemple |
 |---|---|---|
-| `MQTT_URL` | adresse du broker | `mqtt://mqtt.gaulix.fr:1883` |
+| `MQTT_URL` | adresse du broker | `mqtt://mqtt.example.org:1883` |
 | `MQTT_UTILISATEUR` / `MQTT_MOT_DE_PASSE` | votre compte sur le broker | demandez-le à son administrateur |
 | `MQTT_RACINE` | début des sujets Meshtastic | `msh/EU_868` |
 | `CANAUX` | canaux à déchiffrer | `LongFast=AQ==;MonCanal=clé…` |
@@ -53,7 +53,7 @@ Affichage par défaut (facultatif) :
 
 Chaque visiteur peut ensuite changer de fond et de couches dans *Couches ▾*. Son choix est gardé dans son navigateur.
 
-> ⚠️ Vérifiez l'orthographe de l'adresse du broker : `mqttgaulix.fr` au lieu de `mqtt.gaulix.fr` donne une erreur `getaddrinfo ENOTFOUND` en boucle dans le journal.
+> ⚠️ Vérifiez l'orthographe de l'adresse du broker : `mqttexample.org` au lieu de `mqtt.example.org` donne une erreur `getaddrinfo ENOTFOUND` en boucle dans le journal.
 
 ## 3. L'assistant d'installation
 

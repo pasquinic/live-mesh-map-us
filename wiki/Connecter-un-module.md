@@ -50,7 +50,7 @@ Tapez l'adresse, par exemple `192.168.1.122`, puis **Connecter**. La carte cherc
 
 Deux cas :
 1. **Le serveur de la carte voit ce réseau** : la liaison est directe.
-2. **Le module est sur un autre réseau** (autre maison, autre box) : la carte passe automatiquement par un PC de ce réseau qui fait tourner l'**[[Agent Gaulix]] 1.6 ou plus**. Rien à configurer sur l'agent.
+2. **Le module est sur un autre réseau** (autre maison, autre box) : la carte passe automatiquement par un PC de ce réseau qui fait tourner l'**[[Agent]] 1.6 ou plus**. Rien à configurer sur l'agent.
 
 Si aucun des deux n'est possible, la carte l'explique et propose le Bluetooth, l'USB ou l'installation de l'agent.
 
@@ -74,7 +74,7 @@ Ensuite :
 
 Limites :
 - Depuis une même page, un seul module Bluetooth ou USB par réseau. Les autres se relient par adresse IP ou par agent.
-- Un PC qui sert de relais du réseau local ([[Agent Gaulix]] 1.6) ne relaie qu'un module à la fois.
+- Un PC qui sert de relais du réseau local ([[Agent]] 1.6) ne relaie qu'un module à la fois.
 
 Exemple : le module de Saint-Vincent reste principal, le companion du Monteil est en écoute par son adresse IP, et le module de la voiture est en écoute en Bluetooth pendant un déplacement.
 

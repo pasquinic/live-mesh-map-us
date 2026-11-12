@@ -50,7 +50,7 @@ Type the address, for example `192.168.1.122`, then **Connect**. The map looks f
 
 Two cases:
 1. **The map's server can see this network**: the link is direct.
-2. **The node is on another network** (another house, another router): the map automatically goes through a PC on that network running the **[[agent|Agent Gaulix]] 1.6 or later**. Nothing to configure on the agent.
+2. **The node is on another network** (another house, another router): the map automatically goes through a PC on that network running the **[[agent|Agent]] 1.6 or later**. Nothing to configure on the agent.
 
 If neither is possible, the map explains it and suggests Bluetooth, USB or installing the agent.
 
@@ -74,7 +74,7 @@ Then:
 
 Limits:
 - From a single page, only one Bluetooth or USB node per network. The others are linked by IP address or by agent.
-- A PC acting as a local network relay ([[agent|Agent Gaulix]] 1.6) only relays one node at a time.
+- A PC acting as a local network relay ([[agent|Agent]] 1.6) only relays one node at a time.
 
 Example: the home node stays main, the companion at another house listens through its IP address, and the car's node listens over Bluetooth during a trip.
 

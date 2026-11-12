@@ -1036,7 +1036,7 @@ app.post('/api/connexion/ip', async (req, res) => {
     res.status(404).json({
       erreur: `Le serveur ne voit pas ${ip} : ce module est sur un autre réseau que la carte.`,
       conseil: relais.length ? 'Le relais de ce réseau est occupé : réessayez dans un instant.'
-        : `Utilisez le Bluetooth ou l’USB depuis ce PC, ou lancez l’agent Gaulix 1.6 sur un PC de ce réseau (il sert alors de relais automatiquement).${anciens.length ? ` Agent(s) à mettre à jour : ${anciens.map((a) => `« ${a.nom} » (${a.version || '?'})`).join(', ')}.` : ''}`,
+        : `Utilisez le Bluetooth ou l’USB depuis ce PC, ou lancez l’agent 1.6 sur un PC de ce réseau (il sert alors de relais automatiquement).${anciens.length ? ` Agent(s) à mettre à jour : ${anciens.map((a) => `« ${a.nom} » (${a.version || '?'})`).join(', ')}.` : ''}`,
     });
   } catch (e) { res.status(400).json({ erreur: e.message }); }
 });
@@ -3211,7 +3211,7 @@ const exporter = (f, type) => (req, res) => {
   if (!exportsCarte.jetonOk(req)) return res.status(401).json({ erreur: 'Jeton d’export requis (?jeton=…)' });
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-store');
-  try { const r = f(req); if (type === 'text') res.type('text/plain; version=0.0.4').send(r); else if (typeof r === 'string') { res.setHeader('Content-Disposition', 'attachment; filename="relais-gaulix.gpx"'); res.type(type).send(r); } else res.type(type).send(JSON.stringify(r)); } catch (e) { res.status(500).json({ erreur: e.message }); }
+  try { const r = f(req); if (type === 'text') res.type('text/plain; version=0.0.4').send(r); else if (typeof r === 'string') { res.setHeader('Content-Disposition', 'attachment; filename="relais.gpx"'); res.type(type).send(r); } else res.type(type).send(JSON.stringify(r)); } catch (e) { res.status(500).json({ erreur: e.message }); }
 };
 app.get('/api/export/noeuds.geojson', exporter(() => exportsCarte.noeudsGeoJSON(), 'application/geo+json'));
 app.get('/api/export/liens.geojson', exporter((req) => exportsCarte.liensGeoJSON(Math.min(Math.max(Number(req.query.heures) || 24, 1), 168)), 'application/geo+json'));
