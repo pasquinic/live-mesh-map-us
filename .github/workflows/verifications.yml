@@ -19,7 +19,7 @@ jobs:
       - name: Version du README à jour
         run: |
           v=$(node -p "require('./carte-live/package.json').version")
-          grep -q "Version actuelle : $v" README.md || { echo "README.md : indiquer « Version actuelle : $v »"; exit 1; }
+          grep -q "Current version: $v" README.md || { echo "README.md : indiquer « Current version: $v »"; exit 1; }
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
