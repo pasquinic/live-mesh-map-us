@@ -1,0 +1,7564 @@
+/* Carte live Meshtastic — interface */
+'use strict';
+// Téléphone ou tablette (écran tactile, petit écran) : carte allégée (canevas, moins d'animations simultanées)
+const MOBILE = (() => { try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 900; } catch { return false; } })();
+
+const PORTS = {
+  position: { nom: 'Position', couleur: 'var(--p-position)', hex: '#4cc9f0' },
+  telemetrie: { nom: 'Télémétrie', couleur: 'var(--p-telemetrie)', hex: '#80ed99' },
+  texte: { nom: 'Texte', couleur: 'var(--p-texte)', hex: '#f72585' },
+  nodeinfo: { nom: 'Infos nœud', couleur: 'var(--p-nodeinfo)', hex: '#b8b8ff' },
+  routage: { nom: 'Routage / ACK', couleur: 'var(--p-routage)', hex: '#8d99ae' },
+  traceroute: { nom: 'Traceroute', couleur: 'var(--p-traceroute)', hex: '#ffd166' },
+  voisinage: { nom: 'Voisinage', couleur: 'var(--p-voisinage)', hex: '#06d6a0' },
+  mapreport: { nom: 'Rapport carte', couleur: 'var(--p-mapreport)', hex: '#a0c4ff' },
+  chiffre: { nom: 'Chiffré', couleur: 'var(--p-chiffre)', hex: '#6c757d' },
+  autre: { nom: 'Autre', couleur: 'var(--p-autre)', hex: '#c9a7eb' },
+};
+const portInfo = (p) => PORTS[p] || PORTS.autre;
+
+// Qualité de liaison LoRa selon le SNR (LongFast démodule jusqu'à ≈ -17,5 dB)
+const SNR = [
+  { min: 5, nom: 'Excellent', hex: '#3ee6c4' },
+  { min: 0, nom: 'Bon', hex: '#9be36b' },
+  { min: -7, nom: 'Correct', hex: '#f4d35e' },
+  { min: -13, nom: 'Faible', hex: '#f39a4a' },
+  { min: -Infinity, nom: 'Limite', hex: '#ff5c6c' },
+];
+const couleurSnr = (snr) => (snr == null ? '#7d8fa3' : SNR.find((s) => snr >= s.min).hex);
+
+const etat = {
+  config: null,
+  admin: false,
+  noeuds: new Map(),
+  marqueurs: new Map(),
+  liens: [],
+  coucheLiens: null,
+  alertes: [],
+  stats: null,
+  couches: { rf: true, voisinage: true, traceroute: true, inactifs: false, animations: true, sommets: true, federation: true, releves: true, routiers: false },
+  filtresPorts: new Set(Object.keys(PORTS)),
+  selection: null,
+  trajet: null,
+  // Secteur : 'dep' (département configuré), 'voisins' (département + limitrophes) ou 'france'
+  zoneMode: (() => { try { const v = localStorage.getItem('gaulix_zone'); return v === 'france' || v === 'voisins' || /^r\d{2}$/.test(v || '') ? v : 'dep'; } catch { return 'dep'; } })(),
+  zone: (() => { try { return localStorage.getItem('gaulix_zone') !== 'france'; } catch { return true; } })(),
+  radio: null,
+  modeProfil: null,
+  coucheCouverture: null,
+  rejeu: null,
+  sommets: [],
+  coucheSommets: null,
+  classement: null,
+  modeCarte: null,
+  coucheCouvrir: null,
+};
+
+// ---- Utilitaires -----------------------------------------------------------
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const fmt = (v, d = 1, u = '') => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d).replace('.', ',') + u);
+const idHex = (num) => '!' + (num >>> 0).toString(16).padStart(8, '0');
+const nomNoeud = (num) => {
+  const n = etat.noeuds.get(num);
+  return n ? n.nomLong || n.nomCourt || n.id : idHex(num);
+};
+const nomCourt = (num) => {
+  const n = etat.noeuds.get(num);
+  return n ? n.nomCourt || (n.nomLong || n.id).slice(0, 6) : idHex(num).slice(-4);
+};
+function ilYa(t) {
+  if (!t) return 'jamais';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'à l’instant';
+  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
+  return `il y a ${Math.round(s / 86400)} j`;
+}
+const heure = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function duree(sec) {
+  if (sec == null) return '–';
+  const j = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+  return j ? `${j} j ${h} h` : `${h} h ${Math.floor((sec % 3600) / 60)} min`;
+}
+async function api(url, opts) {
+  // Relief, sites, plan : département étudié (peut différer de celui de la carte)
+  if (etat.depEtude && url.startsWith('/api/relief') && !/[?&]dep=/.test(url)) url += (url.includes('?') ? '&' : '?') + 'dep=' + etat.depEtude;
+  const r = await fetch(url, { credentials: 'same-origin', ...opts });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw Object.assign(new Error(d.erreur || r.statusText), { statut: r.status, donnees: d }); }
+  return r.json();
+}
+// ---- Coordonnées GPS -----------------------------------------------------------
+function dms(v, pos, neg) {
+  const a = Math.abs(v), d = Math.floor(a), mf = (a - d) * 60, m = Math.floor(mf), sec = (mf - m) * 60;
+  return `${d}°${String(m).padStart(2, '0')}′${sec.toFixed(1).padStart(4, '0').replace('.', ',')}″${v >= 0 ? pos : neg}`;
+}
+function blocCoords(lat, lon, opts = {}) {
+  if (lat == null || lon == null) return '';
+  const dec = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const sexa = `${dms(lat, 'N', 'S')} ${dms(lon, 'E', 'O')}`;
+  return `<div class="coords">
+    <div class="coords-l"><span>GPS</span><b class="mono">${dec}</b><button class="mini" data-copier="${dec}" title="Copier les coordonnées décimales">Copier</button></div>
+    <div class="coords-l"><span>DMS</span><b class="mono">${sexa}</b><button class="mini" data-copier="${sexa}" title="Copier en degrés, minutes, secondes">Copier</button></div>
+    <div class="coords-l liens-carto">${opts.alt != null ? `<span>Alt.</span><b>${Math.round(opts.alt)} m</b>` : ''}
+      <a href="https://cartes.gouv.fr/explorer-les-cartes/?c=${lon.toFixed(5)},${lat.toFixed(5)}&z=16&l=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2$GEOPORTAIL:OGC:WMTS(1;1;0)&permalink=yes" target="_blank" rel="noopener" title="Carte IGN sur cartes.gouv.fr (remplace le Géoportail)">cartes.gouv.fr</a>
+      <a href="https://www.google.com/maps/search/?api=1&query=${lat.toFixed(6)},${lon.toFixed(6)}" target="_blank" rel="noopener">Google Maps</a>
+      <a href="geo:${lat.toFixed(6)},${lon.toFixed(6)}">GPS du téléphone</a></div>
+    ${opts.approx ? '<div class="note">Position publique arrondie (≈ 100 m) : connectez-vous pour la position exacte.</div>' : ''}
+    ${opts.couv ? `<div class="actions-prop"><button class="mini principal" data-couv-pt="${lat},${lon}" data-couv-nom="${esc(opts.couv.nom || '')}" data-couv-h="${opts.couv.h || 6}" title="Couverture radio d’un relais posé ici (antenne à ${opts.couv.h || 6} m)">📡 Couverture de ce site</button></div>` : ''}
+  </div>`;
+}
+// « Couverture de ce site » dans une liste de propositions : la vue précédente (plan, classement) reste disponible
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-couv-pt]');
+  if (b) {
+    const [lat, lon] = b.dataset.couvPt.split(',').map(Number);
+    const precedente = etat.coucheCouverture;
+    b.disabled = true; b.textContent = 'Calcul…';
+    const r = await voirCouvertureSite({ lat, lon }, b.dataset.couvNom || 'Site', Number(b.dataset.couvH) || 6, { cadrer: true });
+    b.disabled = false; b.textContent = '📡 Couverture de ce site';
+    document.querySelectorAll('.couv-pt-resultat').forEach((x) => x.remove());
+    if (!r) return;
+    const d = document.createElement('div');
+    d.className = 'note couv-pt-resultat';
+    d.innerHTML = `<b>${r.surfaceKm2} km²</b> couverts par ce site seul, ${fmt(r.pctZone, 1, ' %')} du département (antenne ${Number(b.dataset.couvH) || 6} m). ${precedente ? '<button class="mini" data-couv-retour>↩ Revoir la vue précédente</button>' : ''}`;
+    b.parentNode.after(d);
+    const rb = d.querySelector('[data-couv-retour]');
+    if (rb) rb.onclick = () => { if (etat.coucheCouverture) etat.coucheCouverture.remove(); precedente.addTo(carte); etat.coucheCouverture = precedente; d.remove(); };
+  }
+});
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copier]');
+  if (!b) return;
+  e.stopPropagation();
+  const t = b.dataset.copier;
+  try { await navigator.clipboard.writeText(t); } catch {
+    const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch { /* ignore */ } ta.remove();
+  }
+  const ancien = b.textContent; b.textContent = 'Copié ✓'; setTimeout(() => (b.textContent = ancien), 1200);
+}, true);
+
+// Fichier GPX (points de passage) pour un GPS ou une appli de randonnée
+function telechargerGpx(nomFichier, points) {
+  const x = (t) => String(t ?? '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+  const wpt = points.map((p) => `  <wpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}">${p.alt != null ? `<ele>${Math.round(p.alt)}</ele>` : ''}<name>${x(p.nom)}</name>${p.desc ? `<desc>${x(p.desc)}</desc>` : ''}</wpt>`).join('\n');
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Carte live Meshtastic" xmlns="http://www.topografix.com/GPX/1/1">\n${wpt}\n</gpx>\n`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' }));
+  a.download = nomFichier;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+const numAlerte = () => new Set(etat.alertes.map((a) => a.num));
+
+// ---- Carte -----------------------------------------------------------------
+let carte;
+function initCarte() {
+  // Téléphone ou tablette : lignes dessinées en canevas (bien plus léger que des centaines d'éléments SVG)
+  carte = L.map('carte', { zoomControl: false, preferCanvas: MOBILE, worldCopyJump: true }).setView(etat.config.centre, etat.config.zoom);
+  L.control.zoom({ position: 'bottomleft' }).addTo(carte);
+  installerMaPosition();
+  const t = etat.config.tuiles;
+  const wmts = (couche, format = 'image/png', style = 'normal') => `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${couche}&STYLE=${style}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${format}`;
+  const ign = '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> Géoplateforme';
+  const fonds = {
+    'Sombre': L.layerGroup([
+      L.tileLayer(t.url, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: t.sombre ? 'tuiles-sombres' : '', attribution: t.attribution }),
+      ...(t.etiquettes ? [L.tileLayer(t.etiquettes, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: 'etiquettes-claires' })] : []),
+    ]),
+    'Plan IGN': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
+    'Plan IGN sombre': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, className: 'tuiles-sombres', attribution: ign }),
+    'Photos aériennes IGN': L.tileLayer(wmts('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
+    'Topographique': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, maxNativeZoom: 17, subdomains: 'abc', attribution: 'Carte &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), données &copy; contributeurs OpenStreetMap' }),
+  };
+  const surcouches = {
+    'Relief ombré': L.tileLayer(wmts('ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'image/png', 'estompage_grayscale'), { maxZoom: 19, maxNativeZoom: 15, opacity: 0.4, attribution: ign }),
+    'Noms des lieux': L.tileLayer(wmts('GEOGRAPHICALNAMES.NAMES'), { maxZoom: 19, maxNativeZoom: 18, className: 'noms-ign', attribution: ign }),
+    'Points de repère': L.layerGroup(),
+  };
+  // Repères remarquables (Vierge du Puy, Mézenc…) avec leur nom toujours affiché
+  api('/api/reperes').then((liste) => {
+    for (const r of liste) {
+      L.marker([r.lat, r.lon], { icon: L.divIcon({ className: 'repere', html: `<i></i><span>${esc(r.nom)}</span>`, iconSize: [10, 10], iconAnchor: [5, 5] }), pane: 'sommets' })
+        .on('click', () => placerLieu({ ...r, zoom: 15 }))
+        .addTo(surcouches['Points de repère']);
+    }
+  }).catch(() => {});
+  let surcouchesMemo = null;
+  try { surcouchesMemo = JSON.parse(localStorage.getItem('gaulix_surcouches') || 'null'); } catch { /* idem */ }
+  if (!surcouchesMemo) surcouches['Points de repère'].addTo(carte);
+  let choix = fonds[etat.config.fond] ? etat.config.fond : 'Sombre'; // fond par défaut de cette carte (CARTE_FOND)
+  try { const c = localStorage.getItem('gaulix_fond'); if (c && fonds[c]) choix = c; } catch { /* stockage indisponible */ }
+  fonds[choix].addTo(carte);
+  // Fond sombre : les surcouches de texte (noms IGN) passent en clair pour rester lisibles
+  const majFondSombre = () => {
+    document.body.classList.toggle('fond-sombre', /sombre/i.test(choix));
+    // Fonds clairs (plan, photos, topographique) : liaisons plus épaisses, plus opaques et cernées de sombre
+    document.body.classList.toggle('fond-clair', !/sombre/i.test(choix));
+  };
+  majFondSombre();
+  for (const n of surcouchesMemo || []) if (surcouches[n]) surcouches[n].addTo(carte);
+  carte.attributionControl.addAttribution('Meshtastic® est une marque de Meshtastic LLC');
+  carte.attributionControl.setPrefix('Carte live par F4GLD · <a href="https://www.helloasso.com/associations/radioclub-du-velay/formulaires/2" target="_blank" rel="noopener" title="Soutenir le projet (don au Radio-club du Velay)">♥ soutenir</a> · <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
+  // Choix du fond et des surcouches dans le menu « Couches »
+  const menu = document.querySelector('.menu-couches .menu');
+  menu.insertAdjacentHTML('afterbegin', `<div class="titre-menu">Fond de carte</div>${Object.keys(fonds).map((n) => `<button data-fond="${n}" class="${n === choix ? 'actif' : ''}">${n}</button>`).join('')}
+    <div class="titre-menu">Repères</div>${Object.keys(surcouches).map((n) => `<button data-surcouche="${n}" class="${carte.hasLayer(surcouches[n]) ? 'actif' : ''}">${n}</button>`).join('')}
+    <div class="titre-menu">Réseau</div>`);
+  menu.querySelectorAll('[data-fond]').forEach((b) => (b.onclick = () => {
+    fonds[choix].remove(); choix = b.dataset.fond; fonds[choix].addTo(carte); majFondSombre();
+    try { dessinerLiens(); } catch { /* pas encore prêt */ }
+    try { if (typeof mcRedessiner === 'function') mcRedessiner(); } catch { /* MeshCore absent */ }
+    menu.querySelectorAll('[data-fond]').forEach((x) => x.classList.toggle('actif', x === b));
+    try { localStorage.setItem('gaulix_fond', choix); } catch { /* idem */ }
+  }));
+  menu.querySelectorAll('[data-surcouche]').forEach((b) => (b.onclick = () => {
+    const c = surcouches[b.dataset.surcouche];
+    if (carte.hasLayer(c)) c.remove(); else c.addTo(carte);
+    b.classList.toggle('actif', carte.hasLayer(c));
+    try { localStorage.setItem('gaulix_surcouches', JSON.stringify(Object.keys(surcouches).filter((n) => carte.hasLayer(surcouches[n])))); } catch { /* idem */ }
+  }));
+  carte.createPane('liens').style.zIndex = 410;
+  carte.createPane('traces').style.zIndex = 420;
+  carte.createPane('couverture').style.zIndex = 405;
+  carte.createPane('sommets').style.zIndex = 450;
+  etat.coucheLiens = L.layerGroup().addTo(carte);
+  carte.on('zoomend', () => document.body.classList.toggle('zoom-proche', carte.getZoom() >= 11));
+  document.body.classList.toggle('zoom-proche', carte.getZoom() >= 11);
+}
+
+// Vue « Haute-Loire » : rectangle de la zone, ou nom commençant par 43 pour les nœuds sans position
+function dansZone(n) {
+  if (!etat.zone || !n) return true;
+  const z = etat.config.zone;
+  if (n.lat != null && n.lon != null) return n.lat >= z[0] && n.lat <= z[2] && n.lon >= z[1] && n.lon <= z[3];
+  if (etat.radio && n.num === etat.radio.noeudLocal) return true;
+  return /^43/.test(n.nomLong || n.nomCourt || '');
+}
+const dansZoneNum = (num) => { const n = etat.noeuds.get(num); return n ? dansZone(n) : !etat.zone; };
+
+// ---- Catégories de nœuds (légende interactive, façon MeshCore) ----------------------------------
+const CATEGORIES = [
+  { cle: 'relais', nom: 'Relais / routeurs', couleur: '#3b82f6', roles: ['ROUTER', 'ROUTER_LATE', 'REPEATER', 'ROUTER_CLIENT'] },
+  { cle: 'client', nom: 'Clients', couleur: '#a855f7', roles: ['CLIENT', 'CLIENT_BASE'] },
+  { cle: 'discret', nom: 'Clients muets / cachés', couleur: '#ec4899', roles: ['CLIENT_MUTE', 'CLIENT_HIDDEN'] },
+  { cle: 'traceur', nom: 'Traceurs / capteurs', couleur: '#f59e0b', roles: ['TRACKER', 'TAK', 'TAK_TRACKER', 'SENSOR', 'LOST_AND_FOUND'] },
+  { cle: 'inconnu', nom: 'Inconnus', couleur: '#9ca3af', roles: [] },
+];
+const categorie = (n) => CATEGORIES.find((c) => c.roles.includes(n.role)) || CATEGORIES[CATEGORIES.length - 1];
+const passerelleEnLigne = (n) => n.passerelle && n.etatPasserelle !== 'offline' && Date.now() - (n.dernierVuPasserelle || 0) < 5 * 60000;
+etat.legende = (() => {
+  const defaut = { cat: Object.fromEntries(CATEGORIES.map((c) => [c.cle, true])), seulMqtt: false, chaleur: true, alertes: true };
+  try { return { ...defaut, ...JSON.parse(localStorage.getItem('gaulix_legende') || '{}') }; } catch { return defaut; }
+})();
+const memoLegende = () => { try { localStorage.setItem('gaulix_legende', JSON.stringify(etat.legende)); } catch { /* stockage indisponible */ } };
+
+function visible(n) {
+  if (etat.vueReseau === 'meshcore') return false;
+  const lg = etat.legende;
+  if (n.lat != null && !lg.cat[categorie(n).cle]) return false;
+  if (lg.seulMqtt && !passerelleEnLigne(n)) return false;
+  if (n.lat == null || n.lon == null) return false;
+  if (!dansZone(n)) return false;
+  return etat.couches.inactifs || n.statut !== 'inactif' || n.infrastructure || n.passerelle;
+}
+
+function iconeNoeud(n, alerte) {
+  const classes = ['mk', n.statut];
+  if (n.infrastructure) classes.push('infra');
+  if (n.passerelle) classes.push(passerelleEnLigne(n) ? 'passerelle' : 'passerelle-hs');
+  if (alerte && etat.legende.alertes) classes.push('alerte');
+  const coul = categorie(n).couleur;
+  const montrerNom = n.infrastructure || n.passerelle || carte.getZoom() >= 11;
+  return L.divIcon({
+    className: '',
+    html: `<div class="${classes.join(' ')}" style="--cat:${coul}"><div class="c"></div>${montrerNom ? `<div class="lbl">${esc(n.nomCourt || n.id.slice(-4))}</div>` : ''}</div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
+}
+
+// Regroupement aux faibles zooms : les nœuds proches à l'écran (hors relais et passerelles) deviennent une pastille
+// « 12 » ; un toucher sur la pastille zoome dessus. Carte plus lisible et plus légère (téléphone surtout).
+const ZOOM_GROUPES = 10;
+function regrouper(liste, couche, cle) {
+  couche.clearLayers();
+  const groupes = new Map(), seuls = new Set();
+  if (!carte || carte.getZoom() >= ZOOM_GROUPES || liste.length < 15) { for (const n of liste) seuls.add(cle(n)); return seuls; }
+  const PAS = 46;
+  for (const n of liste) {
+    const pt = carte.latLngToLayerPoint([n.lat, n.lon]);
+    const k = Math.floor(pt.x / PAS) + ':' + Math.floor(pt.y / PAS);
+    if (!groupes.has(k)) groupes.set(k, []);
+    groupes.get(k).push(n);
+  }
+  for (const l of groupes.values()) {
+    if (l.length === 1) { seuls.add(cle(l[0])); continue; }
+    const lat = l.reduce((t, n) => t + n.lat, 0) / l.length, lon = l.reduce((t, n) => t + n.lon, 0) / l.length;
+    const actifs = l.filter((n) => n.statut === 'actif').length;
+    L.marker([lat, lon], { icon: L.divIcon({ className: '', html: `<div class="groupe-noeuds${actifs ? ' actif' : ''}">${l.length}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }), zIndexOffset: 300 })
+      .bindTooltip(`${l.length} nœuds proches · ${actifs} actif${actifs > 1 ? 's' : ''}<br><small>Toucher pour zoomer</small>`, { className: 'info', direction: 'top' })
+      .on('click', () => carte.fitBounds(L.latLngBounds(l.map((n) => [n.lat, n.lon])).pad(0.3), { maxZoom: ZOOM_GROUPES + 1 }))
+      .addTo(couche);
+  }
+  return seuls;
+}
+function dessinerNoeuds() {
+  const alertes = numAlerte();
+  if (!etat.coucheGroupes) etat.coucheGroupes = L.layerGroup().addTo(carte);
+  const regroupables = [...etat.noeuds.values()].filter((n) => visible(n) && !n.infrastructure && !n.passerelle && !(etat.selection === n.num));
+  const seuls = regrouper(regroupables, etat.coucheGroupes, (n) => n.num);
+  const affiche = (n) => visible(n) && (n.infrastructure || n.passerelle || etat.selection === n.num || seuls.has(n.num));
+  for (const [num, m] of etat.marqueurs) {
+    const n = etat.noeuds.get(num);
+    if (!n || !affiche(n)) { m.remove(); etat.marqueurs.delete(num); }
+  }
+  for (const n of etat.noeuds.values()) {
+    if (!affiche(n)) continue;
+    let m = etat.marqueurs.get(n.num);
+    const icone = iconeNoeud(n, alertes.has(n.num));
+    if (!m) {
+      m = L.marker([n.lat, n.lon], { icon: icone, riseOnHover: true, zIndexOffset: n.infrastructure ? 500 : 0 });
+      m.on('click', () => {
+        if (etat.modeProfil) { choisirPointProfil({ lat: n.lat, lon: n.lon, nom: n.nomLong || n.nomCourt || n.id, num: n.num, h: n.infrastructure ? 6 : 3 }); return; }
+        ouvrirFiche(n.num);
+      });
+      m.on('contextmenu', (ev) => { L.DomEvent.stop(ev); const o = ev.originalEvent; menuNoeud(o.clientX, o.clientY, String(n.num)); });
+      m.bindTooltip('', { className: 'info', direction: 'top', offset: [0, -8] });
+      m.addTo(carte);
+      etat.marqueurs.set(n.num, m);
+    } else {
+      m.setLatLng([n.lat, n.lon]);
+      m.setIcon(icone);
+    }
+    m.setTooltipContent(
+      `<b>${esc(n.nomLong || n.id)}</b><br>${esc(n.roleFr)} · ${ilYa(n.dernierVu)}` +
+        (n.tension ? `<br>${fmt(n.tension, 2, ' V')}` : '') +
+        (n.canal != null ? ` · canal ${fmt(n.canal, 1, ' %')}` : '')
+    );
+  }
+}
+
+// Sur un fond clair, un trait fin et pâle disparaît : on l'épaissit et on le rend plus opaque
+const fondClair = () => document.body.classList.contains('fond-clair');
+const epaisseurLien = (w) => (fondClair() ? w * 1.6 + 1 : w);
+const opaciteLien = (o) => (fondClair() ? Math.max(0.6, Math.min(1, o + 0.25)) : o);
+function dessinerLiens() {
+  etat.coucheLiens.clearLayers();
+  if (etat.vueReseau === 'meshcore') return;
+  const maintenant = Date.now();
+  const fenetre = Number($('#fenetre').value) * 3600000;
+  // Fusion des liens a<->b par source : on garde le plus récent et le meilleur SNR
+  const fusion = new Map();
+  for (const l of etat.liens) {
+    if (!etat.couches[l.source]) continue;
+    const noeudA = etat.noeuds.get(l.a), noeudB = etat.noeuds.get(l.b);
+    if (!noeudA || !noeudB || noeudA.lat == null || noeudB.lat == null) continue;
+    if (etat.zone && !dansZone(noeudA) && !dansZone(noeudB)) continue;
+    if (distanceKm(noeudA, noeudB) > (etat.config.lienDistanceMaxKm || 120)) continue;
+    const cle = [Math.min(l.a, l.b), Math.max(l.a, l.b), l.source].join(':');
+    const f = fusion.get(cle);
+    if (!f) fusion.set(cle, { ...l, noeudA, noeudB });
+    else {
+      f.nb += l.nb;
+      f.dernierVu = Math.max(f.dernierVu, l.dernierVu);
+      if (l.snr != null && (f.snr == null || l.snr > f.snr)) f.snr = l.snr;
+    }
+  }
+  for (const l of fusion.values()) {
+    const age = (maintenant - l.dernierVu) / fenetre;
+    const opacite = Math.max(0.18, 0.85 - age * 0.7);
+    const style = {
+      pane: 'liens',
+      color: couleurSnr(l.snr),
+      weight: epaisseurLien(Math.min(1 + Math.log2(1 + l.nb) * 0.6, 4)),
+      opacity: opaciteLien(opacite),
+      dashArray: l.source === 'voisinage' ? '6 5' : l.source === 'traceroute' ? '2 5' : null,
+    };
+    const ligne = L.polyline([[l.noeudA.lat, l.noeudA.lon], [l.noeudB.lat, l.noeudB.lon]], style);
+    const dist = distanceKm(l.noeudA, l.noeudB);
+    ligne.bindTooltip(
+      `<b>${esc(nomNoeud(l.a))} ↔ ${esc(nomNoeud(l.b))}</b><br>` +
+        `${{ rf: 'Liaison radio directe', voisinage: 'Voisinage déclaré', traceroute: 'Traceroute' }[l.source]}` +
+        `<br>SNR ${fmt(l.snr, 1, ' dB')}${l.rssi != null ? ' · RSSI ' + fmt(l.rssi, 0, ' dBm') : ''}` +
+        `<br>${l.nb} observation${l.nb > 1 ? 's' : ''} · ${dist != null ? fmt(dist, 1, ' km') : ''} · ${ilYa(l.dernierVu)}`,
+      { className: 'info', sticky: true }
+    );
+    ligne.on('click', (e) => { L.DomEvent.stopPropagation(e); ficheLiaison(l.a, l.b); });
+    ligne.addTo(etat.coucheLiens);
+  }
+}
+// Fiche d'une liaison : les deux nœuds, chaque sens et chaque source (radio, voisinage, traceroute), profil de relief
+function ficheLiaison(a, b) {
+  const na = etat.noeuds.get(a), nb = etat.noeuds.get(b);
+  if (!na || !nb) return;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const SRC = { rf: '📡 Réception directe (passerelle)', voisinage: '👥 Voisinage déclaré', traceroute: '🧭 Traceroute' };
+  const sens = (de, vers) => etat.liens.filter((l) => l.a === de && l.b === vers);
+  const bloc = (de, vers) => {
+    const l = sens(de.num, vers.num);
+    return `<h3>${esc(nomNoeud(vers.num))} entend ${esc(nomNoeud(de.num))}</h3>` + (l.length
+      ? l.sort((x, y) => y.dernierVu - x.dernierVu).map((x) => `<div class="ligne"><span class="point" style="background:${couleurSnr(x.snr)}"></span><span class="titre">${SRC[x.source] || x.source}<small>SNR ${fmt(x.snr, 1, ' dB')}${x.rssi != null ? ' · RSSI ' + fmt(x.rssi, 0, ' dBm') : ''} · ${x.nb} observation${x.nb > 1 ? 's' : ''} · ${ilYa(x.dernierVu)}</small></span></div>`).join('')
+      : '<div class="vide">Jamais observé dans ce sens (le nœud ne rapporte peut-être pas ce qu’il entend : module Voisinage désactivé, pas de MQTT).</div>');
+  };
+  const d = distanceKm(na, nb);
+  $('#fiche-contenu').innerHTML = `<h2>Liaison</h2>
+    <div class="ident"><a href="#" data-ouvrir="${a}">${esc(nomNoeud(a))}</a> ↔ <a href="#" data-ouvrir="${b}">${esc(nomNoeud(b))}</a>${d != null ? ' · ' + fmt(d, 1, ' km') : ''}</div>
+    ${bloc(na, nb)}${bloc(nb, na)}
+    <div class="actions-prop"><button class="principal" id="liaison-profil">⛰️ Profil de relief et bilan de liaison</button><button data-ouvrir="${a}">Fiche ${esc(nomNoeud(a))}</button><button data-ouvrir="${b}">Fiche ${esc(nomNoeud(b))}</button></div>
+    ${!(na.infrastructure || na.passerelle) || !(nb.infrastructure || nb.passerelle) ? '<p class="note">Un des deux nœuds est un client : il n’apparaît que si la catégorie « Clients » est affichée dans la légende.</p>' : ''}`;
+  $('#liaison-profil').onclick = () => ouvrirProfil(a, b);
+  $('#fiche-contenu').querySelectorAll('[data-ouvrir]').forEach((x) => (x.onclick = (ev) => { ev.preventDefault(); ouvrirFiche(Number(x.dataset.ouvrir)); }));
+}
+
+function distanceKm(a, b) {
+  if (a.lat == null || b.lat == null) return null;
+  const R = 6371, r = Math.PI / 180;
+  const s = Math.sin(((b.lat - a.lat) * r) / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(((b.lon - a.lon) * r) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Animation d'un paquet reçu : trace de l'émetteur (ou du relais) vers la passerelle
+function animerPaquet(p, depuisRejeu) {
+  if (!etat.couches.animations || !etat.filtresPorts.has(p.port) || etat.vueReseau === 'meshcore') return;
+  if (etat.rejeu && etat.rejeu.actif && !depuisRejeu) return;
+  if (etat.zone && !dansZoneNum(p.passerelle) && !dansZoneNum(p.de)) return;
+  flasher(p.de);
+  const gw = etat.noeuds.get(p.passerelle);
+  if (!gw || gw.lat == null) return;
+  const couleur = portInfo(p.port).hex;
+  // Comète émetteur → relais → passerelle (une par passerelle qui a entendu le paquet : effet d'éventail)
+  if (typeof animerPaquetMt === 'function') animerPaquetMt(p, couleur);
+  const onde = L.marker([gw.lat, gw.lon], {
+    icon: L.divIcon({ className: '', html: `<div class="onde" style="border-color:${couleur}"></div>`, iconSize: [10, 10], iconAnchor: [5, 5] }),
+    interactive: false, pane: 'traces',
+  }).addTo(carte);
+  setTimeout(() => onde.remove(), 1500);
+}
+function flasher(num) {
+  const m = etat.marqueurs.get(num);
+  const el = m && m.getElement() && m.getElement().querySelector('.mk');
+  if (!el) return;
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+// Version installée, et la dernière publiée sur GitHub si elle est plus récente
+function afficherVersion(v) {
+  const el = $('#version');
+  if (!el || !v || !v.version) return;
+  el.hidden = false;
+  el.href = v.url;
+  el.classList.toggle('maj', !!v.majDisponible);
+  el.textContent = v.majDisponible ? `v${v.version} · v${v.derniere} disponible` : `v${v.version}${v.derniere ? ' · à jour' : ''}`;
+  el.title = v.majDisponible ? `Nouvelle version v${v.derniere} publiée sur GitHub : cliquez pour ${etat.admin ? 'mettre à jour' : 'voir les nouveautés'}` : v.derniere ? `Version installée v${v.version} — c'est la dernière publiée sur GitHub` : `Version installée v${v.version}`;
+  el.onclick = (e) => { if (!etat.admin) return; e.preventDefault(); ficheMaj(); };
+}
+// ---- Mise à jour de la carte en un clic (administrateur) ---------------------------------------------------
+async function ficheMaj() {
+  $('#fiche').hidden = false; etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = '<div class="vide">Vérification…</div>';
+  let r;
+  try { r = await api('/api/maj'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  afficherVersion(r);
+  const s = r.service || {};
+  z.innerHTML = `<div class="fiche-maj"><h2>⬆️ Mise à jour de la carte</h2>
+    <div class="grille"><div class="mesure"><span>Installée</span><b>v${esc(r.version)}</b></div><div class="mesure"><span>Dernière publiée</span><b>${r.derniere ? 'v' + esc(r.derniere) : '?'}</b></div></div>
+    <p class="note">${r.majDisponible ? `Une nouvelle version est disponible : <a href="${esc(r.url)}" target="_blank" rel="noopener">voir les nouveautés</a>.` : 'La carte est à jour. Vous pouvez quand même relancer la mise à jour pour reprendre la dernière image publiée.'}</p>
+    ${r.installe ? `
+      ${r.taches ? `<div class="alerte attention">${r.taches} programmation(s) à distance en cours : la mise à jour les interromprait. Attendez leur fin.</div>` : ''}
+      ${s.enCours ? `<div class="alerte info-lecture">Mise à jour en cours : ${esc(s.message || '')}</div>` : s.phase === 'echec' || s.phase === 'retour' ? `<div class="alerte attention">Dernière tentative : ${esc(s.message || '')}</div>` : ''}
+      <div class="actions-prop"><button class="principal" id="maj-go" ${s.enCours ? 'disabled' : ''}>⬆️ Mettre à jour maintenant</button>${r.taches ? '<button id="maj-forcer" class="danger">Forcer quand même</button>' : ''}</div>
+      <p class="note">La carte télécharge la nouvelle image, puis redémarre avec les mêmes réglages et les mêmes données (1 à 3 minutes, la page se recharge toute seule). Si la nouvelle version ne démarre pas, l’ancienne est remise en route.</p>`
+    : `<div class="alerte attention">Le service de mise à jour n’est pas installé sur ce serveur (${esc(r.raison || '')}).</div>
+      <p class="note">Pour mettre à jour en un clic, ajoutez le service <b>maj</b> à votre <code>docker-compose.yml</code> (voir le wiki, page Installation), puis <code>docker compose up -d</code> une dernière fois. En attendant : <code>docker compose pull && docker compose up -d</code>.</p>`}
+    ${r.installe ? '<label class="case"><input type="checkbox" id="maj-auto"> Mettre à jour automatiquement la nuit, à <select id="maj-auto-h">' + [2, 3, 4, 5].map((h) => `<option value="${h}">${h} h</option>`).join('') + '</select></label><p class="note">Seulement si une nouvelle version est publiée et qu’aucune programmation à distance n’est en cours. En cas d’échec, l’ancienne version repart.</p>' : ''}
+    <p class="erreur" id="maj-retour"></p></div>`;
+  if (r.installe) api('/api/maj/auto').then((a) => {
+    const c = $('#maj-auto'), h = $('#maj-auto-h'); if (!c) return;
+    c.checked = !!a.actif; h.value = String(a.heure);
+    c.onchange = h.onchange = async () => { try { await postJson('/api/maj/auto', { actif: c.checked, heure: Number(h.value) }); annonce(c.checked ? `✔ Mise à jour automatique à ${h.value} h` : 'Mise à jour automatique désactivée', 'ok'); } catch (x) { annonce('⚠ ' + x.message, 'erreur'); } };
+  }).catch(() => {});
+  const lancer = async (forcer) => {
+    if (!(await confirmer('Mettre la carte à jour maintenant ? Elle sera indisponible 1 à 3 minutes.'))) return;
+    try { await postJson('/api/maj', { forcer: !!forcer }); attendreMaj(r.version); } catch (e) { $('#maj-retour').textContent = e.message; }
+  };
+  const g = $('#maj-go'); if (g) g.onclick = () => lancer(false);
+  const f = $('#maj-forcer'); if (f) f.onclick = () => lancer(true);
+}
+// Attend que la carte revienne avec une autre version (ou la même si l'image n'avait pas changé)
+async function attendreMaj(avant) {
+  document.body.insertAdjacentHTML('beforeend', '<div class="voile-redemarrage"><div><b>Mise à jour en cours…</b><br><small id="maj-etape">téléchargement de la nouvelle version</small></div></div>');
+  const t0 = Date.now();
+  let coupe = false;
+  while (Date.now() - t0 < 10 * 60000) {
+    await new Promise((r) => setTimeout(r, 4000));
+    try {
+      const v = await (await fetch('/api/version', { cache: 'no-store' })).json();
+      if (coupe || v.version !== avant) { location.reload(); return; }
+      try { const m = await (await fetch('/api/maj', { cache: 'no-store' })).json(); if (m.service) { const e = document.getElementById('maj-etape'); if (e) e.textContent = m.service.message || ''; if (!m.service.enCours && ['a-jour', 'echec', 'retour'].includes(m.service.phase)) { location.reload(); return; } } } catch { /* carte en redémarrage */ }
+    } catch { coupe = true; const e = document.getElementById('maj-etape'); if (e) e.textContent = 'redémarrage de la carte…'; }
+  }
+  location.reload();
+}
+function resumeAlertes(a) {
+  const c = a.filter((x) => x.niveau === 'critique').length, w = a.length - c;
+  return a.length ? [c ? `${c} critique${c > 1 ? 's' : ''}` : '', w ? `${w} attention` : ''].filter(Boolean).join(' · ') : 'aucune';
+}
+// Menus du haut (Couches, Couverture radio, Outils) : un seul ouvert à la fois ; un clic ailleurs (carte, panneau)
+// ou Échap les referme
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!d.matches || !d.matches('details.menu-couches') || !d.open) return;
+  document.querySelectorAll('details.menu-couches[open]').forEach((x) => { if (x !== d) x.open = false; });
+}, true);
+document.addEventListener('pointerdown', (e) => {
+  for (const d of document.querySelectorAll('details.menu-couches[open]')) if (!d.contains(e.target)) d.open = false;
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('details.menu-couches[open]').forEach((d) => (d.open = false)); });
+
+// Tableau de bord du panneau Réseau : des tuiles ; un clic ouvre le détail d'une seule à la fois (les autres
+// s'effacent), « ‹ Tableau de bord » ou un nouveau clic y revient. Toujours le tableau de bord à l'ouverture.
+// Ailleurs : menus dépliants dont l'état est retenu dans ce navigateur.
+document.querySelectorAll('details.pli-alertes').forEach((d) => {
+  const tableau = d.closest('.tableau');
+  if (tableau) {
+    d.open = false;
+    d.addEventListener('toggle', () => {
+      if (d.open) {
+        tableau.querySelectorAll('details.pli-alertes[open]').forEach((x) => { if (x !== d) x.open = false; });
+        tableau.classList.add('zoom');
+        const p = tableau.closest('.vue') || tableau; p.scrollTop = 0;
+      } else if (!tableau.querySelector('details.pli-alertes[open]')) tableau.classList.remove('zoom');
+    });
+    return;
+  }
+  try { d.open = localStorage.getItem('pli-' + d.dataset.pli) === '1'; } catch { /* stockage indisponible */ }
+  d.addEventListener('toggle', () => { try { localStorage.setItem('pli-' + d.dataset.pli, d.open ? '1' : '0'); } catch { /* ignoré */ } });
+});
+// Résumés des tuiles Sources, Modules et Trafic, recalculés quand leur contenu change
+{
+  const resumer = () => {
+    const src = $('#sources');
+    if (src) {
+      const l = [...src.querySelectorAll(':scope > .ligne')].filter((x) => getComputedStyle(x).display !== 'none');
+      const ok = l.filter((x) => x.querySelector('.point.actif')).length;
+      const p = $('#nb-sources'); if (p) { p.textContent = `${ok}/${l.length}`; p.className = 'pastille' + (ok < l.length ? ' attention' : ''); }
+      const r = $('#resume-sources'); if (r) r.textContent = ok === l.length ? 'tout est en ligne' : `${l.length - ok} hors ligne`;
+    }
+    const mod = $('#modules-radio');
+    if (mod) {
+      const principal = mod.querySelector('.ligne.module:not(.ecoute) .point.actif');
+      const nomP = principal ? principal.closest('.ligne').querySelector('.titre').firstChild.textContent.trim() : null;
+      const ec = mod.querySelectorAll('.ligne.module.ecoute').length;
+      const nav = typeof moduleNav !== 'undefined' && moduleNav.etat === 'relie';
+      const p = $('#nb-modules'); if (p) { p.textContent = (principal || nav ? 1 : 0) + ec; p.className = 'pastille' + (!principal && !nav ? ' attention' : ''); }
+      const r = $('#resume-modules'); if (r) r.textContent = `${nomP || (nav ? moduleNav.nom : 'aucun principal')}${ec ? ` · ${ec} en écoute` : ''}`;
+    }
+    const rep = $('#repartition');
+    if (rep) {
+      const barres = [...rep.querySelectorAll('.barre-port')].map((b) => [b.querySelector('span').textContent, Number(b.querySelector('.nb').textContent) || 0]);
+      const total = barres.reduce((t, x) => t + x[1], 0);
+      const p = $('#nb-repartition'); if (p) p.textContent = total;
+      const r = $('#resume-repartition'); if (r) r.textContent = total ? barres.slice(0, 2).map((x) => `${x[0]} ${x[1]}`).join(' · ') : 'pas de trafic';
+    }
+  };
+  let m = null;
+  const obs = new MutationObserver(() => { clearTimeout(m); m = setTimeout(resumer, 100); });
+  for (const id of ['#sources', '#modules-radio', '#repartition']) { const el = $(id); if (el) obs.observe(el, { childList: true, subtree: true }); }
+}
+
+// ---- Santé de la carte (processeur, mémoire, réactivité, disque, base, MQTT) ---------------------------
+async function chargerSanteCarte() {
+  if (!etat.membre) return;
+  let r;
+  try { r = await api('/api/sante-carte'); } catch { return; }
+  $('#bloc-sante').hidden = false;
+  const e = r.dernier || {};
+  const p = $('#nb-sante');
+  p.textContent = r.alertes.length || '✓';
+  p.className = 'pastille' + (r.niveau === 'critique' ? ' critique' : r.niveau === 'attention' ? ' attention' : ' ok');
+  $('#resume-sante').textContent = r.alertes.length ? r.alertes[0].message.slice(0, 40) + (r.alertes[0].message.length > 40 ? '…' : '') : `processeur ${fmt(e.cpuPct, 0, ' %')} · ${e.memMo ?? '–'} Mo`;
+  const m = (l, v, alerte) => `<div class="mesure"><span>${l}</span><b${alerte ? ' style="color:var(--attention)"' : ''}>${v}</b></div>`;
+  const dureeDepuis = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 3600 ? Math.round(s / 60) + ' min' : s < 86400 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' j'; };
+  $('#sante-carte').innerHTML = `
+    ${r.alertes.map((a) => `<div class="liste-alertes"><div class="alerte ${a.niveau}">${esc(a.message)}</div></div>`).join('')}
+    <div class="grille">
+      ${m('Processeur', fmt(e.cpuPct, 0, ' %'), e.cpuPct > 80)}
+      ${m('Mémoire', `${e.memMo ?? '–'}${r.limiteMemMo ? ' / ' + r.limiteMemMo : ''} Mo`, r.limiteMemMo && e.memMo > r.limiteMemMo * 0.85)}
+      ${m('Réactivité (pire)', e.latenceP99 != null ? e.latenceP99 + ' ms' : '–', e.latenceP99 > 500)}
+      ${m('Messages MQTT', (e.mqttParMinute ?? '–') + ' / min')}
+      ${m('Base de données', r.base ? `${r.base.totalMo} Mo` : '–', r.base && r.base.totalMo > 2048)}
+      ${m('Disque libre', r.disque ? `${r.disque.libreGo} Go` : '–', r.disque && r.disque.libreGo / r.disque.totalGo < 0.1)}
+      ${m('Navigateurs connectés', r.clients ?? '–')}
+      ${m('En marche depuis', dureeDepuis(r.demarrage))}
+      ${m('Version', esc(r.version))}
+    </div>
+    ${courbe(r.historique, 'latenceP99', 'Réactivité (retard maximal par minute)', ' ms', 0, 500) || ''}
+    ${courbe(r.historique, 'cpuPct', 'Processeur', ' %', 0) || ''}
+    ${courbe(r.historique, 'memMo', 'Mémoire', ' Mo', 0, r.limiteMemMo ? Math.round(r.limiteMemMo * 0.85) : null) || ''}
+    <p class="note">MQTT ${r.mqtt.connecte ? 'connecté' : '<b>déconnecté</b>'}${r.mqtt.reconnexions ? ` · ${r.mqtt.reconnexions} reconnexion(s)` : ''}${r.mqtt.horsPerimetreMc ? ` · ${r.mqtt.horsPerimetreMc} paquets MeshCore hors périmètre ignorés` : ''}${r.base && r.base.walMo ? ` · journal de la base ${r.base.walMo} Mo` : ''}. Courbes : 3 dernières heures, un point par minute.</p>`;
+}
+
+// ---- Chemins mesurés (traceroutes automatiques) -----------------------------------------------------
+async function chargerChemins() {
+  let r;
+  try { r = await api('/api/traceroutes/synthese'); } catch { return; }
+  etat.chemins = r;
+  const z = $('#chemins');
+  if (!z) return;
+  const changees = r.cibles.filter((c) => c.routeChangee).length, echecs = r.cibles.filter((c) => c.dernier.statut !== 'repondu' && c.dernier.statut !== 'envoye').length;
+  $('#resume-chemins').textContent = r.cibles.length ? `${r.cibles.length} nœud${r.cibles.length > 1 ? 's' : ''}${changees ? ` · ${changees} route${changees > 1 ? 's' : ''} changée${changees > 1 ? 's' : ''}` : ''}${echecs ? ` · ${echecs} sans réponse` : ''}` : 'aucun';
+  const st = { repondu: ['✔', 'var(--ok)'], echec: ['✖', 'var(--critique)'], sans_reponse: ['✖', 'var(--critique)'], envoye: ['…', 'var(--attention)'] };
+  const resume = (c) => {
+    if (!c.mesure) return 'jamais de réponse';
+    const relais = c.mesure.aller.slice(1, -1);
+    return relais.length ? `via ${relais.map((x) => esc(x.nom)).join(' → ')} (${relais.length} saut${relais.length > 1 ? 's' : ''})` : 'en direct';
+  };
+  z.innerHTML = (etat.admin ? `<div class="reglages-tr">
+      <label>Quand <select id="tr-heures"><option value="toujours">à toute heure</option><option value="nuit">la nuit (1 h – 6 h)</option></select></label>
+      <label>Tous les <select id="tr-intervalle">${[[60, '1 h'], [180, '3 h'], [360, '6 h'], [720, '12 h'], [1440, '24 h'], [0, 'jamais']].map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>
+    </div><p class="note">★ = nœud clé : s’il y en a, seuls les nœuds clés sont tracés automatiquement ; sinon, tous les relais entendus par le module.${r.radio ? '' : ' <b>Aucun module radio connecté : pas de traceroute automatique.</b>'}</p>` : '')
+    + (r.cibles.length ? r.cibles.map((c, i) => `<div class="ligne" data-chemin="${i}"><span style="color:${(st[c.dernier.statut] || st.envoye)[1]}">${(st[c.dernier.statut] || st.envoye)[0]}</span><span class="titre">${etat.admin ? `<button class="mini etoile ${c.cle ? 'on' : ''}" data-cle="${c.cible}" title="Nœud clé">${c.cle ? '★' : '☆'}</button> ` : ''}${esc(c.nom)}${c.routeChangee ? ' <span class="pastille attention" title="Le chemin a changé depuis la mesure précédente">route changée</span>' : ''}<small>${resume(c)} · ${c.taux != null ? c.taux + ' % de réponses' : ''} · ${ilYa(c.dernier.heure)}</small></span>${etat.admin && r.radio ? `<button class="mini" data-tracer="${c.cible}" title="Lancer un traceroute maintenant">↻</button>` : ''}</div>`).join('')
+      : '<div class="vide">Aucun traceroute depuis 7 jours.</div>');
+  if (etat.admin) {
+    const h = $('#tr-heures'), iv = $('#tr-intervalle');
+    h.value = r.reglages.heures; iv.value = String(r.reglages.intervalle);
+    const sauver = async (cibles) => { try { await postJson('/api/traceroutes/reglages', { cibles: cibles ?? r.reglages.cibles.filter((x) => /^\d+$/.test(x)), heures: h.value, intervalle: Number(iv.value) }); chargerChemins(); } catch (e) { alert(e.message); } };
+    h.onchange = () => sauver(); iv.onchange = () => sauver();
+    z.querySelectorAll('[data-cle]').forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      const actuelles = new Set(r.reglages.cibles.filter((x) => /^\d+$/.test(x)));
+      if (actuelles.has(b.dataset.cle)) actuelles.delete(b.dataset.cle); else actuelles.add(b.dataset.cle);
+      sauver([...actuelles]);
+    }));
+    z.querySelectorAll('[data-tracer]').forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation(); b.disabled = true; b.textContent = '…';
+      try { await api('/api/traceroute/' + b.dataset.tracer, { method: 'POST' }); b.textContent = '✓'; setTimeout(chargerChemins, 90000); } catch (err) { alert(err.message); b.textContent = '↻'; b.disabled = false; }
+    }));
+  }
+  z.querySelectorAll('[data-chemin]').forEach((el) => (el.onclick = () => montrerChemin(r.cibles[Number(el.dataset.chemin)])));
+}
+function montrerChemin(c) {
+  if (!c.mesure) return;
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  const pts = [];
+  const tracer = (ch, couleur, decal, lib) => {
+    for (let i = 1; i < ch.length; i++) {
+      const a = ch[i - 1], b = ch[i];
+      if (!a.pos || !b.pos) continue;
+      pts.push(a.pos, b.pos);
+      L.polyline([a.pos, b.pos], { color: couleur, weight: 4, opacity: 0.9, dashArray: decal ? '8 6' : null, pane: 'traces' })
+        .bindTooltip(`${lib} : ${esc(a.nom)} → ${esc(b.nom)}${b.snr != null ? ` · SNR ${fmt(b.snr, 1, ' dB')}` : ''}`, { className: 'info', sticky: true }).addTo(g);
+      const m = [(a.pos[0] + b.pos[0]) / 2, (a.pos[1] + b.pos[1]) / 2];
+      if (b.snr != null) L.marker(m, { icon: L.divIcon({ className: 'etiquette-snr', html: `<span style="border-color:${couleur}">${fmt(b.snr, 1)} dB</span>`, iconSize: [50, 18], iconAnchor: decal ? [25, -4] : [25, 22] }), pane: 'traces', interactive: false }).addTo(g);
+    }
+  };
+  tracer(c.mesure.aller, '#3ee6c4', false, 'Aller');
+  if (c.mesure.retour) tracer(c.mesure.retour, '#c084fc', true, 'Retour');
+  if (pts.length) carte.fitBounds(L.latLngBounds(pts), { padding: [80, 80], maxZoom: 12 });
+  const bf = $('#parcours-fermer'); if (bf) bf.onclick = () => { effacerParcours(); $('#fiche').hidden = true; };
+}
+
+// ---- Liaisons à sens unique ----------------------------------------------------------------
+// ---- Nœuds trop bavards en radio (Contrôle du trafic, 24 h) : réservé aux gestionnaires -------------------
+async function chargerBavards() {
+  const bloc = $('#pli-bavards'), z = $('#bavards');
+  if (!bloc || !z) return;
+  if (!etat.gestion && !etat.admin) { bloc.hidden = true; return; }
+  let r;
+  try { r = await api('/api/trafic/controle?heures=24'); } catch { bloc.hidden = true; return; }
+  bloc.hidden = false;
+  const dur = (sec) => (sec < 120 ? `${sec} s` : sec < 7200 ? `${Math.round(sec / 60)} min` : `${Math.floor(sec / 3600)} h ${String(Math.round((sec % 3600) / 60)).padStart(2, '0')}`);
+  const LIB = { position: 'sa position', telemetrie: 'sa télémétrie', nodeinfo: 'sa fiche' };
+  const l = r.bavards.filter((b) => b.radio && b.zone);
+  const p = $('#nb-bavards'); p.textContent = l.length; p.className = 'pastille' + (l.length ? ' attention' : '');
+  const ri = r.reinjection || {};
+  $('#resume-bavards').textContent = l.length ? `${l.length} nœud${l.length > 1 ? 's' : ''}${ri.total ? ` · ${ri.total} paquets réinjectés de MQTT` : ''}` : 'aucun';
+  z.innerHTML = l.map((b) => {
+    const pb = b.problemes.filter((x) => x.radio !== false);
+    const txt = (pb.length ? pb : b.problemes).map((x) => `${LIB[x.port] || x.port} toutes les ${dur(x.medianS)}`).join(', ');
+    return `<div class="ligne cliquable" data-bavard="${b.num}"><span class="point attention"></span><span class="titre">${esc(b.nom)} <small>${esc(b.role || '')}${b.administrable ? ' · programmable' : ''}</small>
+      <small>envoie ${esc(txt)} · ${b.paquetsJour} paquets/j</small></span></div>`;
+  }).join('') + (l.length ? '<div class="actions-prop"><button class="mini" id="bavards-detail">🚦 Contrôle du trafic et correction…</button></div>' : '<div class="vide">Aucun nœud trop bavard entendu en radio sur 24 h. 👍</div>');
+  z.querySelectorAll('[data-bavard]').forEach((el) => (el.onclick = () => { const n = etat.noeuds.get(Number(el.dataset.bavard)); if (n) ouvrirFiche(n.num); }));
+  const bd = $('#bavards-detail'); if (bd) bd.onclick = () => ficheTrafic(24);
+}
+// ---- Nouveaux nœuds du secteur ------------------------------------------------------------------------
+async function chargerNouveaux() {
+  const z = $('#nouveaux');
+  if (!z) return;
+  let r;
+  try { r = await api('/api/noeuds-nouveaux?jours=7'); } catch { return; }
+  const l = r.noeuds;
+  const avecSouci = l.filter((n) => n.diagnostic.some((d) => d.niveau === 'attention'));
+  const p = $('#nb-nouveaux'); p.textContent = l.length; p.className = 'pastille' + (avecSouci.length ? ' attention' : '');
+  $('#resume-nouveaux').textContent = l.length ? `${l.length} en 7 jours${avecSouci.length ? ` · ${avecSouci.length} à vérifier` : ''}` : 'aucun';
+  z.innerHTML = l.map((n) => `<div class="ligne cliquable nouveau-noeud" data-num="${n.num}">
+      <span class="point ${n.diagnostic.some((d) => d.niveau === 'attention') ? 'attention' : 'actif'}"></span>
+      <span class="titre">${esc(n.nom || n.id)} <small>${esc(n.id)}${n.role ? ' · ' + esc(n.role) : ''}${n.materiel ? ' · ' + esc(n.materiel) : ''} · apparu ${ilYa(n.premierVu)} · ${n.nbPaquets} paquet(s)${n.relaye ? ` · a relayé ${n.relaye}` : ''}${n.passerelles.length ? ' · entendu par ' + esc(n.passerelles.slice(0, 3).map((g) => g.nom + (g.sautsMin === 0 ? ' (direct' + (g.snr != null ? ', ' + fmt(g.snr, 1, ' dB') : '') + ')' : ` (${g.sautsMin} saut${g.sautsMin > 1 ? 's' : ''})`)).join(', ')) : ''}</small>
+      ${n.diagnostic.map((d) => `<small class="diag ${d.niveau}">${d.niveau === 'attention' ? '⚠️' : 'ℹ️'} ${esc(d.texte)}</small>`).join('')}</span>
+      <span class="meta"><button class="mini" data-portee="${n.num}" title="Écouter ce nœud en direct">📶</button></span></div>`).join('') || '<div class="vide">Aucun nouveau nœud dans le secteur depuis 7 jours.</div>';
+  z.querySelectorAll('.nouveau-noeud').forEach((el) => (el.onclick = (e) => { if (e.target.closest('[data-portee]')) return; const n = etat.noeuds.get(Number(el.dataset.num)); if (n && n.lat != null) ouvrirFiche(n.num); else testPortee(Number(el.dataset.num)); }));
+  z.querySelectorAll('[data-portee]').forEach((b) => (b.onclick = () => testPortee(Number(b.dataset.portee))));
+}
+
+// ---- Test de portée : écoute en direct d'un nœud ------------------------------------------------------
+const portee = { num: null, fin: 0, recs: [], relaye: [], couche: null, minuterie: null };
+function arreterPortee() { portee.num = null; clearInterval(portee.minuterie); if (portee.couche) { portee.couche.remove(); portee.couche = null; } }
+// Appelé pour chaque paquet reçu en direct
+function porteeRecevoir(m) {
+  if (portee.num == null || Date.now() > portee.fin) return;
+  if (m.de === portee.num) { portee.recs.push({ passerelle: m.passerelle, snr: m.snr, rssi: m.rssi, sauts: m.sauts, relais: m.relais, port: m.port, heure: m.heure || Date.now() }); rendrePortee(); }
+  else if (m.relais === portee.num) { portee.relaye.push({ de: m.de, passerelle: m.passerelle, heure: m.heure || Date.now() }); rendrePortee(); }
+}
+async function testPortee(num) {
+  if (num == null) {
+    const t = (await saisir('Identifiant du nœud à écouter (!xxxxxxxx, ou son nom) :'));
+    if (!t) return;
+    const s = t.trim().toLowerCase();
+    const n = [...etat.noeuds.values()].find((x) => x.id.toLowerCase() === (s.startsWith('!') ? s : '!' + s) || (x.nomLong || '').toLowerCase().includes(s) || (x.nomCourt || '').toLowerCase() === s);
+    num = n ? n.num : /^!?[0-9a-f]{8}$/.test(s) ? parseInt(s.replace('!', ''), 16) : null;
+    if (num == null) { alert('Nœud inconnu : donnez son identifiant !xxxxxxxx (affiché dans l’appli Meshtastic, Réglages › Utilisateur).'); return; }
+  }
+  arreterPortee();
+  Object.assign(portee, { num: num >>> 0, debut: Date.now(), fin: Date.now() + 30 * 60000, recs: [], relaye: [] });
+  // Ce qui a déjà été reçu dans la dernière heure
+  try {
+    const d = await api('/api/noeuds/' + num);
+    portee.historique = d.receptions || [];
+  } catch { portee.historique = []; }
+  portee.minuterie = setInterval(rendrePortee, 15000);
+  rendrePortee();
+}
+function rendrePortee() {
+  if (portee.num == null) return;
+  const n = etat.noeuds.get(portee.num);
+  const nom = n ? n.nomLong || n.id : '!' + portee.num.toString(16).padStart(8, '0');
+  const restant = Math.max(0, Math.round((portee.fin - Date.now()) / 60000)), ecoule = (Date.now() - portee.debut) / 60000;
+  const parGw = new Map();
+  for (const r of portee.recs) {
+    const g = parGw.get(r.passerelle) || { passerelle: r.passerelle, nb: 0, snr: [], sautsMin: 99, relais: new Set(), dernier: 0 };
+    g.nb++; if (r.snr != null) g.snr.push(r.snr); g.sautsMin = Math.min(g.sautsMin, r.sauts ?? 99); if (r.relais != null && r.sauts > 0) g.relais.add(r.relais); g.dernier = Math.max(g.dernier, r.heure);
+    parGw.set(r.passerelle, g);
+  }
+  const lignes = [...parGw.values()].sort((a, b) => a.sautsMin - b.sautsMin || b.nb - a.nb);
+  const moy = (l) => (l.length ? l.reduce((a, b) => a + b, 0) / l.length : null);
+  const diag = [];
+  if (!portee.recs.length && ecoule >= 5) {
+    if (portee.relaye.length) diag.push(`Il a relayé ${portee.relaye.length} paquet(s) d’autres nœuds : il fonctionne en radio, mais ses propres paquets ne remontent pas. Cochez « OK to MQTT » (Autoriser l’envoi vers MQTT) dans sa configuration LoRa.`);
+    else diag.push('Rien reçu depuis 5 minutes. Vérifiez sur le nœud : région EU_868, preset et slot identiques au réseau (fréquence), canal principal identique (nom et clé), « OK to MQTT » coché. Redémarrez-le : il envoie alors sa fiche et sa position tout de suite.');
+  }
+  if (portee.recs.length && lignes.every((g) => g.sautsMin > 0)) diag.push('Aucune passerelle ne l’entend en direct : il passe par des relais.');
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>📶 Test de portée</h2>
+    <div class="ident"><b>${esc(nom)}</b> · écoute en direct ${restant ? `encore ${restant} min` : 'terminée'} · ${portee.recs.length} réception(s)${portee.relaye.length ? ` · a relayé ${portee.relaye.length} paquet(s)` : ''}</div>
+    <p class="note">Faites émettre le nœud (envoyez-lui un message, une position, ou redémarrez-le) : chaque réception par une passerelle s’affiche ici et sur la carte.</p>
+    ${diag.map((d) => `<div class="alerte attention">${esc(d)}</div>`).join('')}
+    ${lignes.length ? '<h3>Entendu par</h3>' + lignes.map((g) => `<div class="ligne"><span class="point" style="background:${couleurSnr(moy(g.snr))}"></span><span class="titre">${esc(nomNoeud(g.passerelle))}<small>${g.nb} paquet(s) · ${g.sautsMin === 0 ? '<b>en direct</b>' : `${g.sautsMin} saut(s) via ${esc([...g.relais].map(nomNoeud).join(', ') || 'relais inconnu')}`}${g.snr.length ? ' · SNR moyen ' + fmt(moy(g.snr), 1, ' dB') : ''} · ${ilYa(g.dernier)}</small></span></div>`).join('') : '<div class="vide">Rien reçu pour l’instant…</div>'}
+    ${(portee.historique || []).length ? `<h3>Réceptions déjà enregistrées (avant le test)</h3>${portee.historique.map((r) => `<div class="ligne"><span class="titre">${esc(r.nom || nomNoeud(r.passerelle))}<small>${r.nb} paquet(s) · SNR ${fmt(r.snr, 1, ' dB')} · ${r.sauts_min === 0 ? 'direct' : (r.sauts_min ?? '?') + ' saut(s)'} · ${ilYa(r.dernier)}</small></span></div>`).join('')}` : ''}
+    <div class="actions-prop">${etat.admin && etat.config.radio ? '<button id="portee-tr">🧭 Traceroute maintenant</button>' : ''}<button id="portee-stop">${restant ? 'Arrêter le test' : 'Fermer'}</button></div>`;
+  $('#portee-stop').onclick = () => { arreterPortee(); $('#fiche').hidden = true; };
+  const bt = $('#portee-tr'); if (bt) bt.onclick = async () => { try { await postJson('/api/traceroute/' + portee.num); bt.textContent = '🧭 Traceroute envoyé'; } catch (e) { alert(e.message); } };
+  // Carte : liaisons du nœud vers ce qui l'entend (trait plein = direct, pointillé = par relais)
+  if (portee.couche) portee.couche.remove();
+  portee.couche = L.layerGroup().addTo(carte);
+  if (n && n.lat != null) {
+    L.circleMarker([n.lat, n.lon], { radius: 14, color: '#38bdf8', weight: 3, fillOpacity: 0.12, pane: 'traces' }).addTo(portee.couche);
+    for (const g of lignes) {
+      const p = etat.noeuds.get(g.passerelle);
+      if (!p || p.lat == null) continue;
+      L.polyline([[n.lat, n.lon], [p.lat, p.lon]], { color: couleurSnr(moy(g.snr)), weight: g.sautsMin === 0 ? 4 : 2, dashArray: g.sautsMin === 0 ? null : '6 6', pane: 'traces' }).bindTooltip(`${esc(nomNoeud(g.passerelle))} : ${g.nb} paquet(s)${g.snr.length ? ', ' + fmt(moy(g.snr), 1, ' dB') : ''}`, { className: 'info', sticky: true }).addTo(portee.couche);
+    }
+  }
+  if (!restant) { clearInterval(portee.minuterie); portee.minuterie = null; }
+}
+
+async function chargerAsymetrie() {
+  let r;
+  try { r = await api('/api/liaisons/asymetrie'); } catch { return; }
+  etat.asymetrie = r;
+  const z = $('#asym');
+  if (!z) return;
+  const dz = (p) => !etat.zone || (p && dansZone(p));
+  const sd = (r.sourds || []).filter((x) => dz(x.pos));
+  const su = r.sensUnique.filter((x) => dz(x.a) || dz(x.b)), de = r.desequilibres.filter((x) => dz(x.posA) || dz(x.posB)), ia = r.inaudibles.filter((x) => dz(x.pos));
+  const n = sd.length + su.length + de.length + ia.length;
+  const p = $('#nb-asym'); p.textContent = n; p.className = 'pastille' + (sd.length || ia.length || su.length ? ' attention' : '');
+  $('#resume-asym').textContent = n ? [sd.length ? `${sd.length} relais sourd${sd.length > 1 ? 's' : ''}` : '', ia.length ? `${ia.length} non entendu${ia.length > 1 ? 's' : ''}` : '', su.length ? `${su.length} à sens unique` : '', de.length ? `${de.length} déséquilibrée${de.length > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ') : 'aucune';
+  const ligne = (i, titre, sous, meta) => `<div class="ligne" data-asym="${i}"><span class="point alerte"></span><span class="titre">${titre}<small>${sous}</small></span><span class="meta">${meta}</span></div>`;
+  const items = [];
+  z.innerHTML = (n ? '' : '<div class="vide">Aucune anomalie : les liaisons observées fonctionnent dans les deux sens.</div>')
+    + (sd.length ? '<h4>Relais « sourds » : émettent bien, entendent mal</h4>' + sd.map((x) => { items.push({ type: 'sd', x }); return ligne(items.length - 1, `${esc(x.nom)} <span class="pastille attention">≈ ${fmt(x.ecartDb, 0, ' dB')}</span>`, `entend environ ${fmt(x.ecartDb, 0, ' dB')} moins bien que ses voisins ne l’entendent (${x.nbConcordants} voisins sur ${x.nbVoisins})${x.puissanceConnue ? '' : ' · puissance d’émission inconnue : renseignez-la dans la fiche d’installation'}`, 'détail ›'); }).join('') + '<p class="note">Causes probables, de la plus fréquente à la plus rare : émetteurs puissants sur le site (téléphonie, FM, TNT, réseaux pros) qui saturent le récepteur → filtre passe-bande 868 MHz, antenne éloignée des autres ; « RX boosted gain » désactivé ; bruit local (alimentation à découpage, panneau solaire, régulateur, écran) ; étage d’entrée du module endommagé. Un câble ou une antenne défectueux pénalisent l’émission autant que la réception : ils ne créent pas cet écart.</p>' : '')
+    + (ia.length ? '<h4>Entendent leurs voisins, mais personne ne les entend</h4>' + ia.map((x) => { items.push({ type: 'ia', x }); return ligne(items.length - 1, esc(x.nom), `entend ${x.entend} nœud${x.entend > 1 ? 's' : ''} en direct (${esc(x.voisins.slice(0, 3).join(', '))}${x.voisins.length > 3 ? '…' : ''}), mais aucun ne le reçoit`, '📡✖'); }).join('') : '')
+    + (su.length ? '<h4>À sens unique</h4>' + su.map((x) => { items.push({ type: 'su', x }); return ligne(items.length - 1, `${esc(x.nomEntendu)} n’entend pas ${esc(x.nomEntend)}`, `${x.preuve === 'voisinage' ? 'd’après son rapport de voisinage · ' : ''}alors que ${esc(x.nomEntend)} l’entend (${x.nb} fois${x.snr != null ? ', SNR ' + fmt(x.snr, 1, ' dB') : ''})${x.distanceKm != null ? ' · ' + fmt(x.distanceKm, 1, ' km') : ''}`, '→ ✖'); }).join('') : '')
+    + (de.length ? '<h4>Déséquilibrées (écart ≥ 10 dB)</h4>' + de.map((x) => { items.push({ type: 'de', x }); return ligne(items.length - 1, `${esc(x.nomA)} ↔ ${esc(x.nomB)}`, `${fmt(x.snrFort, 1, ' dB')} dans un sens, ${fmt(x.snrFaible, 1, ' dB')} dans l’autre`, `${fmt(x.ecart, 0, ' dB')}`); }).join('') : '')
+    + (n ? '<p class="note">Causes fréquentes : relais sur un point haut plus bruité (il entend moins bien), puissances ou antennes différentes, antenne mal accordée, câble abîmé. Un nœud « que personne n’entend » émet probablement trop faiblement ou trop bas pour ses voisins. Seuls les nœuds qui disent ce qu’ils entendent sont jugés : passerelles MQTT et nœuds dont le module Voisinage est actif (avec « Envoyer aussi en LoRa » pour un relais sans MQTT).</p>' : '');
+  z.querySelectorAll('[data-asym]').forEach((el) => (el.onclick = () => montrerAsymetrie(items[Number(el.dataset.asym)])));
+}
+function montrerAsymetrie(it) {
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  const x = it.x;
+  if (it.type === 'sd') {
+    if (!x.pos) return;
+    const pts = [[x.pos.lat, x.pos.lon]];
+    L.circleMarker([x.pos.lat, x.pos.lon], { radius: 14, color: '#ffb547', weight: 3, fillOpacity: 0.15, pane: 'traces' }).bindTooltip(`${esc(x.nom)} : entend ≈ ${fmt(x.ecartDb, 0, ' dB')} moins bien`, { permanent: true, direction: 'top', className: 'info' }).addTo(g);
+    for (const m of x.mesures) {
+      const pn = etat.noeuds.get(m.partenaire);
+      if (!pn || pn.lat == null) continue;
+      pts.push([pn.lat, pn.lon]);
+      L.polyline([[x.pos.lat, x.pos.lon], [pn.lat, pn.lon]], { color: m.ecart >= 8 ? '#ffb547' : '#3ee6c4', weight: 3, dashArray: m.borne ? '4 8' : null, pane: 'traces' })
+        .bindTooltip(`${esc(m.nomPartenaire)} entend ${esc(x.nom)} à ${fmt(m.entenduChezPartenaire, 1, ' dB')} · ${esc(x.nom)} l’entend ${m.entenduChezLui != null ? 'à ' + fmt(m.entenduChezLui, 1, ' dB') : 'jamais (sous son seuil)'}<br>écart ${m.borne ? '≥ ' : ''}${fmt(m.ecart, 1, ' dB')}${m.corrige ? ' (puissances déduites)' : ''}`, { className: 'info', sticky: true }).addTo(g);
+    }
+    carte.fitBounds(L.latLngBounds(pts), { padding: [80, 80], maxZoom: 12 });
+    return;
+  }
+  if (it.type === 'ia') {
+    if (!x.pos) return;
+    L.circleMarker([x.pos.lat, x.pos.lon], { radius: 14, color: '#ff5c6c', weight: 3, fillOpacity: 0.15, pane: 'traces' }).bindTooltip(`${esc(x.nom)} : personne ne l’entend`, { permanent: true, direction: 'top', className: 'info' }).addTo(g);
+    carte.flyTo([x.pos.lat, x.pos.lon], Math.max(carte.getZoom(), 11));
+    return;
+  }
+  const a = it.type === 'su' ? x.b : x.posA, b = it.type === 'su' ? x.a : x.posB; // a = celui qui entend, b = celui qui est entendu (su)
+  if (!a || !b) return;
+  if (it.type === 'su') {
+    // Deux traits parallèles légèrement décalés, avec une flèche au milieu : le sens qui passe et celui qui ne passe pas
+    const dx = a.lon - b.lon, dy = a.lat - b.lat, lg = Math.hypot(dx, dy) || 1, k = lg * 0.012;
+    const ox = (-dy / lg) * k, oy = (dx / lg) * k;
+    const fleche = (de, vers, coul) => {
+      const m = [(de[0] + vers[0]) / 2, (de[1] + vers[1]) / 2];
+      const ang = (-Math.atan2(vers[0] - de[0], vers[1] - de[1]) * 180) / Math.PI; // ➤ pointe vers l’est ; rotation horaire en CSS
+      L.marker(m, { icon: L.divIcon({ className: 'fleche-sens', html: `<span style="color:${coul};transform:rotate(${ang}deg)">➤</span>`, iconSize: [20, 20], iconAnchor: [10, 10] }), pane: 'traces', interactive: false }).addTo(g);
+    };
+    const ok1 = [b.lat + oy, b.lon + ox], ok2 = [a.lat + oy, a.lon + ox], ko1 = [a.lat - oy, a.lon - ox], ko2 = [b.lat - oy, b.lon - ox];
+    L.polyline([ok1, ok2], { color: '#3ee6c4', weight: 4, pane: 'traces' }).bindTooltip(`✔ ${esc(x.nomEntend)} entend ${esc(x.nomEntendu)}${x.snr != null ? ' (SNR ' + fmt(x.snr, 1, ' dB') + ')' : ''}`, { className: 'info', sticky: true }).addTo(g);
+    L.polyline([ko1, ko2], { color: '#ff5c6c', weight: 3, dashArray: '4 8', pane: 'traces' }).bindTooltip(`✖ ${esc(x.nomEntendu)} n’entend jamais ${esc(x.nomEntend)}`, { className: 'info', sticky: true }).addTo(g);
+    fleche(ok1, ok2, '#3ee6c4'); fleche(ko1, ko2, '#ff5c6c');
+  } else {
+    L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: '#ffb547', weight: 4, pane: 'traces' }).bindTooltip(`${fmt(x.snrFort, 1, ' dB')} / ${fmt(x.snrFaible, 1, ' dB')}`, { className: 'info', sticky: true }).addTo(g);
+  }
+  carte.fitBounds(L.latLngBounds([[a.lat, a.lon], [b.lat, b.lon]]), { padding: [80, 80], maxZoom: 12 });
+}
+
+// ---- Panneau : réseau --------------------------------------------------------
+function rendreReseau() {
+  const a = etat.alertes.filter((x) => x.num == null || dansZoneNum(x.num));
+  const pastille = $('#nb-alertes');
+  pastille.textContent = a.length;
+  pastille.className = 'pastille' + (a.some((x) => x.niveau === 'critique') ? ' critique' : a.length ? ' attention' : '');
+  $('#resume-alertes').textContent = resumeAlertes(a);
+  $('#alertes').innerHTML = a.length
+    ? a.map((x) => `<div class="alerte ${x.niveau}" data-num="${x.num}">${esc(x.message)}<small>${x.niveau === 'critique' ? 'Critique' : 'Attention'} · depuis ${ilYa(x.depuis).replace('il y a ', '')}</small></div>`).join('')
+    : '<div class="vide">Aucune alerte, le réseau est en bonne santé.</div>';
+
+  const tous = [...etat.noeuds.values()].filter(dansZone);
+  const passerelles = tous.filter((n) => n.passerelle).sort((x, y) => (y.dernierVuPasserelle || 0) - (x.dernierVuPasserelle || 0));
+  const seuilMuet = etat.config.seuils.muetMinutes * 60000;
+  const gwEnLigne = (n) => n.etatPasserelle !== 'offline' && Date.now() - (n.dernierVuPasserelle || 0) < seuilMuet;
+  const nbGw = passerelles.filter(gwEnLigne).length;
+  $('#resume-passerelles').innerHTML = passerelles.length ? `${nbGw}/${passerelles.length} en ligne` : 'aucune';
+  $('#passerelles').innerHTML = passerelles.length
+    ? passerelles.map((n) => {
+        const enLigne = gwEnLigne(n);
+        return ligneNoeud(n, enLigne ? 'actif' : 'alerte', `${enLigne ? 'En ligne' : 'Hors ligne'} · ${ilYa(n.dernierVuPasserelle)}`);
+      }).join('')
+    : '<div class="vide">Aucune passerelle n’a encore publié sur le broker.</div>';
+
+  const infra = tous.filter((n) => n.infrastructure && !n.passerelle).sort((x, y) => (x.nomLong || '').localeCompare(y.nomLong || ''));
+  const alertes = numAlerte();
+  const nbInfraAlerte = infra.filter((n) => alertes.has(n.num)).length;
+  $('#resume-infra').textContent = infra.length ? `${infra.length}${nbInfraAlerte ? ` · ${nbInfraAlerte} ⚠` : ''}` : 'aucun';
+  $('#infra').innerHTML = infra.length
+    ? infra.map((n) => ligneNoeud(n, alertes.has(n.num) ? 'alerte' : n.statut, ilYa(n.dernierVu), true)).join('')
+    : '<div class="vide">Aucun relais identifié (rôle ROUTER, REPEATER, CLIENT_BASE ou liste NOEUDS_SURVEILLES).</div>';
+
+  const parPort = (etat.stats && etat.stats.parPort) || {};
+  const total = Object.values(parPort).reduce((x, y) => x + y, 0);
+  const max = Math.max(1, ...Object.values(parPort));
+  $('#repartition').innerHTML = total
+    ? Object.entries(parPort).sort((x, y) => y[1] - x[1]).map(([p, nb]) =>
+        `<div class="barre-port"><span>${esc(portInfo(p).nom)}</span><div class="piste"><i style="width:${(nb / max) * 100}%;background:${portInfo(p).couleur}"></i></div><span class="nb">${nb}</span></div>`).join('')
+    : '<div class="vide">Pas encore de trafic.</div>';
+}
+
+function jauge(v, seuilA, seuilC, inverse) {
+  if (v == null) return '';
+  const pct = Math.max(0, Math.min(100, v));
+  const niveau = inverse ? (v <= seuilC ? 'critique' : v <= seuilA ? 'attention' : '') : (v >= seuilC ? 'critique' : v >= seuilA ? 'attention' : '');
+  return `<span class="jauge"><i class="${niveau}" style="width:${pct}%"></i></span>`;
+}
+
+// ---- Favoris et « mes nœuds » du compte (Meshtastic : numéro ; MeshCore : clé publique) ------------------
+etat.suivis = { favoris: new Set(), administres: new Set(), auto: new Set() };
+const idSuivi = (x) => String(x);
+const estFavori = (x) => etat.suivis.favoris.has(idSuivi(x));
+const estAdministre = (x) => etat.suivis.administres.has(idSuivi(x));
+function prendreSuivis(r) {
+  etat.suivis = { favoris: new Set(r.favoris || []), administres: new Set(r.administres || []), auto: new Set(r.auto || []) };
+}
+async function chargerSuivis() {
+  if (!etat.membre) return;
+  try { prendreSuivis(await api('/api/suivis')); } catch { return; }
+  rendreMesNoeuds();
+}
+async function basculerSuivi(id, liste) {
+  const valeur = !(liste === 'favoris' ? estFavori(id) : estAdministre(id));
+  try { prendreSuivis(await postJson('/api/suivis', { id: idSuivi(id), liste, valeur })); } catch (e) { alert(e.message); return; }
+  rendreMesNoeuds();
+  try { rendreNoeuds(); } catch { /* panneau absent */ }
+  try { if (typeof mcRendreNoeuds === 'function' && mc.vue === 'noeuds' && $('#mc-recherche')) mcRendreNoeuds(); } catch { /* MeshCore absent */ }
+  document.querySelectorAll(`[data-suivi][data-id="${idSuivi(id)}"]`).forEach(majBoutonSuivi);
+}
+// Boutons ☆ Favori / 🛠 J'administre d'une fiche
+function boutonsSuivi(id) {
+  if (!etat.membre) return '';
+  const t = document.createElement('span');
+  t.innerHTML = `<button class="mini" data-suivi="favoris" data-id="${esc(idSuivi(id))}"></button><button class="mini" data-suivi="administres" data-id="${esc(idSuivi(id))}"></button>`;
+  t.querySelectorAll('[data-suivi]').forEach(majBoutonSuivi);
+  return `<span class="suivi-fiche">${t.innerHTML}</span>`;
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-suivi]'); if (b) { e.preventDefault(); basculerSuivi(b.dataset.id, b.dataset.suivi); } });
+function majBoutonSuivi(b) {
+  const id = b.dataset.id;
+  if (b.dataset.suivi === 'favoris') { const on = estFavori(id); b.textContent = on ? '⭐ Favori' : '☆ Favori'; b.classList.toggle('actif', on); b.title = on ? 'Retirer des favoris' : 'Ajouter aux favoris'; }
+  else { const on = estAdministre(id); b.textContent = on ? '🛠 Mes nœuds ✓' : '🛠 J’administre'; b.classList.toggle('actif', on); b.title = on ? (etat.suivis.auto.has(id) ? 'Ajouté d’office (nœud administrable) : cliquer pour le retirer de « Mes nœuds »' : 'Retirer de « Mes nœuds »') : 'Ajouter à « Mes nœuds » (groupe des nœuds que vous administrez)'; }
+}
+// Section « Mes nœuds » du panneau Réseau : favoris et nœuds administrés, Meshtastic et MeshCore, problèmes d'abord
+function rendreMesNoeuds() {
+  const bloc = $('#pli-mes-noeuds'), z = $('#mes-noeuds');
+  if (!bloc || !z) return;
+  const ids = [...new Set([...etat.suivis.administres, ...etat.suivis.favoris])];
+  bloc.hidden = !etat.membre;
+  if (!etat.membre) return;
+  const lignes = [];
+  for (const id of ids) {
+    if (/^[0-9A-F]{64}$/.test(id)) {
+      const n = typeof mc !== 'undefined' && mc.noeuds ? mc.noeuds.get(id) : null;
+      lignes.push({ id, mc: true, nom: n ? n.nom || n.id : id.slice(0, 8) + '…', statut: n ? n.statut : 'inactif', vu: n ? n.dernierVu : null, role: n ? mcRole(n.role).un : 'MeshCore', connu: !!n });
+    } else {
+      const n = etat.noeuds.get(Number(id));
+      lignes.push({ id, mc: false, nom: n ? n.nomLong || n.id : '!' + Number(id).toString(16).padStart(8, '0'), statut: n ? n.statut : 'inactif', vu: n ? n.dernierVu : null, role: n ? n.role || '' : 'Meshtastic', batterie: n ? n.batterie : null, connu: !!n });
+    }
+  }
+  const ordre = { inactif: 0, recent: 1, actif: 2 };
+  lignes.sort((a, b) => (estAdministre(b.id) - estAdministre(a.id)) || (ordre[a.statut] ?? 0) - (ordre[b.statut] ?? 0) || a.nom.localeCompare(b.nom));
+  const adm = lignes.filter((l) => estAdministre(l.id)), fav = lignes.filter((l) => !estAdministre(l.id));
+  const muets = adm.filter((l) => l.statut === 'inactif').length;
+  const p = $('#nb-mes-noeuds'); p.textContent = lignes.length; p.className = 'pastille' + (muets ? ' attention' : '');
+  $('#resume-mes-noeuds').textContent = lignes.length ? `${adm.length} administré${adm.length > 1 ? 's' : ''}${muets ? ` · ${muets} muet${muets > 1 ? 's' : ''}` : ''}${fav.length ? ` · ${fav.length} favori${fav.length > 1 ? 's' : ''}` : ''}` : 'aucun';
+  const ligne = (l) => `<div class="ligne cliquable" data-suivi-ouvrir="${l.id}" data-mc-suivi="${l.mc ? 1 : 0}"><span class="point ${l.statut}"></span><span class="titre">${estFavori(l.id) ? '⭐ ' : ''}${esc(l.nom)} <small>${l.mc ? 'MeshCore · ' : 'Meshtastic · '}${esc(l.role || '')}${l.batterie != null && l.batterie <= 100 ? ` · ${l.batterie} %` : ''}</small></span><span class="meta">${l.vu ? ilYa(l.vu) : l.connu ? '' : 'pas encore vu'}</span></div>`;
+  // Alerte « nœud muet » : notification quand un nœud administré ne s'est pas fait entendre depuis N heures
+  const al = lireLs('gaulix_alerte_muets', { actif: false, heures: 3 });
+  const reglage = `<div class="reglage-muets"><label class="case"><input type="checkbox" id="muets-actif" ${al.actif ? 'checked' : ''}> 🔔 Me prévenir quand un de mes nœuds se tait depuis</label>
+    <select id="muets-heures">${[1, 2, 3, 6, 12, 24].map((h) => `<option value="${h}" ${h === al.heures ? 'selected' : ''}>${h} h</option>`).join('')}</select>
+    <small>(notification de ce navigateur, carte ouverte, sur PC ou téléphone)</small></div>`;
+  if (al.actif) {
+    const deja = lireLs('gaulix_muets_notifies', {});
+    const seuil = Date.now() - al.heures * 3600000;
+    const nouveaux = adm.filter((l) => l.vu && l.vu < seuil && deja[l.id] !== l.vu);
+    for (const l of adm) if (l.vu && l.vu >= seuil && deja[l.id]) delete deja[l.id]; // revenu : on pourra reprévenir
+    if (nouveaux.length) {
+      for (const l of nouveaux) deja[l.id] = l.vu;
+      const titre = nouveaux.length === 1 ? `🛠 ${nouveaux[0].nom} se tait depuis ${ilYa(nouveaux[0].vu).replace('il y a ', '')}` : `🛠 ${nouveaux.length} de vos nœuds se taisent`;
+      const corps = nouveaux.map((l) => `${l.nom} (${l.mc ? 'MeshCore' : 'Meshtastic'}) : ${ilYa(l.vu)}`).join('\n');
+      if ('Notification' in window && Notification.permission === 'granted') { try { new Notification(titre, { body: corps, tag: 'gaulix-muets' }); } catch { /* ignoré */ } }
+      if (typeof afficherAlerteDirect === 'function') afficherAlerteDirect(titre, corps);
+      try { bip([660, 440], 0.2); } catch { /* son indisponible */ }
+    }
+    ecrireLs('gaulix_muets_notifies', deja);
+  }
+  z.innerHTML = reglage + (adm.length ? '<h4>🛠 Administrés</h4>' + adm.map(ligne).join('') : '')
+    + (fav.length ? '<h4>⭐ Favoris</h4>' + fav.map(ligne).join('') : '')
+    + (!lignes.length ? '<div class="vide">Ouvrez la fiche d’un nœud puis « ☆ Favori » ou « 🛠 J’administre ». Les nœuds que la carte peut programmer s’y ajoutent d’office.</div>' : '');
+  const ma = $('#muets-actif'), mh = $('#muets-heures');
+  const enregistrer = async () => {
+    const v = { actif: ma.checked, heures: Number(mh.value) || 3 };
+    if (v.actif && 'Notification' in window && Notification.permission === 'default') { try { await Notification.requestPermission(); } catch { /* ignoré */ } }
+    ecrireLs('gaulix_alerte_muets', v);
+  };
+  if (ma) ma.onchange = enregistrer;
+  if (mh) mh.onchange = enregistrer;
+  z.querySelectorAll('[data-suivi-ouvrir]').forEach((el) => (el.onclick = () => {
+    const id = el.dataset.suiviOuvrir;
+    if (el.dataset.mcSuivi === '1') { if (typeof mcOuvrirFiche === 'function') { const n = mc.noeuds.get(id); if (n && n.lat != null) carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 11), { duration: 0.6 }); mcOuvrirFiche(id); } }
+    else { const n = etat.noeuds.get(Number(id)); if (n && n.lat != null) carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 11), { duration: 0.6 }); ouvrirFiche(Number(id)); }
+  }));
+}
+function ligneNoeud(n, point, meta, details) {
+  const s = etat.config.seuils;
+  const sous = details
+    ? `<div class="sous-ligne">${n.tension ? `<span>${fmt(n.tension, 2, ' V')}</span>` : ''}${n.batterie != null && n.batterie <= 100 ? `<span>Batt. ${n.batterie} %${jauge(n.batterie, 40, s.batteriePourcent, true)}</span>` : n.batterie > 100 ? '<span>Secteur</span>' : ''}${n.canal != null ? `<span>Canal ${fmt(n.canal, 0, ' %')}${jauge(n.canal, s.canalPourcent, s.canalCritiquePourcent)}</span>` : ''}</div>`
+    : '';
+  return `<div class="ligne" data-num="${n.num}"><span class="point ${point}"></span><span class="titre">${estFavori(n.num) ? '⭐ ' : ''}${estAdministre(n.num) ? '🛠 ' : ''}${esc(n.nomLong || n.id)}<small>${esc(n.nomCourt || '')}</small></span><span class="meta">${esc(meta)}</span>${sous}</div>`;
+}
+
+// ---- Panneau : nœuds -----------------------------------------------------------
+function rendreNoeuds() {
+  const filtre = $('#recherche').value.trim().toLowerCase();
+  const tri = $('#tri').value;
+  const groupe = $('#groupe-noeuds') ? $('#groupe-noeuds').value : '';
+  let liste = [...etat.noeuds.values()].filter((n) => (groupe ? true : dansZone(n)) && (
+    !filtre || [n.nomLong, n.nomCourt].some((x) => x && x.toLowerCase().includes(filtre))
+    // L'identifiant (!a1b2c3d4) n'est cherché qu'avec « ! » ou au moins 4 caractères : « 43 » ne doit trouver que les noms
+    || ((filtre.startsWith('!') || filtre.length >= 4) && n.id && n.id.toLowerCase().includes(filtre)))
+    && (groupe !== 'favoris' || estFavori(n.num)) && (groupe !== 'administres' || estAdministre(n.num)));
+  const cmp = {
+    vu: (a, b) => (b.dernierVu || 0) - (a.dernierVu || 0),
+    nom: (a, b) => (a.nomLong || a.id).localeCompare(b.nomLong || b.id),
+    sauts: (a, b) => (a.sautsMin ?? 99) - (b.sautsMin ?? 99),
+    snr: (a, b) => (b.snr ?? -99) - (a.snr ?? -99),
+  }[tri];
+  liste.sort((a, b) => (estFavori(b.num) - estFavori(a.num)) || cmp(a, b)); // favoris en tête
+  const alertes = numAlerte();
+  const ligne = (n) => {
+    const sauts = n.sautsMin == null ? '' : n.sautsMin === 0 ? 'direct · ' : `${n.sautsMin} saut${n.sautsMin > 1 ? 's' : ''} · `;
+    return ligneNoeud(n, alertes.has(n.num) ? 'alerte' : n.statut, sauts + ilYa(n.dernierVu));
+  };
+  const parType = lireLs('gaulix_mt_par_type', true);
+  const bp = $('#mt-par-type');
+  if (bp) { bp.classList.toggle('actif', parType); if (!bp.dataset.branche) { bp.dataset.branche = '1'; bp.onclick = () => { ecrireLs('gaulix_mt_par_type', !lireLs('gaulix_mt_par_type', true)); rendreNoeuds(); }; } }
+  if (!liste.length) { $('#noeuds').innerHTML = '<div class="vide">Aucun nœud.</div>'; return; }
+  if (!parType) { $('#noeuds').innerHTML = liste.slice(0, 400).map(ligne).join(''); return; }
+  // Rangement par type (catégories de la légende), groupes repliables, état gardé dans ce navigateur
+  const replies = lireLs('gaulix_mt_replies', {});
+  $('#noeuds').innerHTML = CATEGORIES.map((c) => {
+    const l = liste.filter((n) => categorie(n) === c);
+    if (!l.length) return '';
+    const actifs = l.filter((n) => n.statut === 'actif').length;
+    return `<details class="groupe-mc" data-cat="${c.cle}" ${replies[c.cle] ? '' : 'open'}><summary><i class="pastille-cat" style="background:${c.couleur}"></i><b>${esc(c.nom)}</b> <span class="pastille">${l.length}</span> <small>${actifs} actif${actifs > 1 ? 's' : ''}</small></summary>${l.slice(0, 300).map(ligne).join('')}</details>`;
+  }).join('');
+  $('#noeuds').querySelectorAll('details.groupe-mc').forEach((d) => d.addEventListener('toggle', () => { const x = lireLs('gaulix_mt_replies', {}); x[d.dataset.cat] = !d.open; ecrireLs('gaulix_mt_replies', x); }));
+}
+
+// ---- Panneau : trafic ------------------------------------------------------------
+function rendreFiltres() {
+  $('#filtres').innerHTML = Object.entries(PORTS).map(([cle, p]) =>
+    `<button data-port="${cle}" class="${etat.filtresPorts.has(cle) ? 'actif' : ''}"><i style="background:${p.couleur}"></i>${esc(p.nom)}</button>`).join('');
+}
+function lignePaquet(p, nouveau) {
+  const info = portInfo(p.port);
+  const de = esc(nomNoeud(p.de));
+  const vers = p.vers && p.vers !== 0xffffffff ? ` → ${esc(nomNoeud(p.vers))}` : '';
+  const gw = p.passerelle != null ? `reçu par ${esc(nomCourt(p.passerelle))}` : '';
+  const radio = [
+    p.sauts == null ? null : p.sauts === 0 ? 'direct' : `${p.sauts} saut${p.sauts > 1 ? 's' : ''}`,
+    p.relais != null ? `via ${esc(nomCourt(p.relais))}` : null,
+    p.snr != null ? `SNR ${fmt(p.snr, 1)} dB` : null,
+    p.rssi != null ? `RSSI ${p.rssi} dBm` : null,
+  ].filter(Boolean).join(' · ');
+  const texte = p.texte ? `<div class="corps">💬 ${esc(p.texte)}</div>` : `<div class="corps">${esc(p.resume || '')}</div>`;
+  return `<div class="paquet${nouveau ? ' nouveau' : ''}" data-num="${p.de}" data-port="${p.port}">
+    <div class="entete"><span class="heure">${heure(p.heure)}</span><span class="tag"><i style="background:${info.couleur}"></i>${esc(info.nom)}</span><span>${esc(p.canal || '')}</span></div>
+    <div class="corps"><b>${de}</b>${vers} <span class="radio">${gw}</span></div>${texte}
+    ${radio ? `<div class="radio">${radio}</div>` : ''}</div>`;
+}
+function ajouterAuFlux(p) {
+  if (!p.premiere || !etat.filtresPorts.has(p.port)) return;
+  if (etat.zone && !dansZoneNum(p.de) && !dansZoneNum(p.passerelle)) return;
+  const flux = $('#flux');
+  flux.insertAdjacentHTML('afterbegin', lignePaquet(p, true));
+  while (flux.children.length > (MOBILE ? 80 : 300)) flux.lastElementChild.remove();
+}
+async function chargerActiviteInitiale() {
+  try {
+    const liste = await api('/api/paquets?limite=1000');
+    const limite = Date.now() - 10 * 60000;
+    liste.filter((p) => p.heure >= limite).sort((a, b) => a.heure - b.heure).forEach((p) => noterActivite(p.de, p.heure));
+    dessinerChaleur();
+  } catch { /* ignore */ }
+}
+async function chargerFlux() {
+  const paquets = await api('/api/paquets?limite=200');
+  $('#flux').innerHTML = paquets.filter((p) => etat.filtresPorts.has(p.port)).map((p) => {
+    const r = (p.receptions || [])[0] || {};
+    if (etat.zone && !dansZoneNum(p.de) && !dansZoneNum(r.passerelle)) return '';
+    return lignePaquet({ ...p, passerelle: r.passerelle, snr: r.snr, rssi: r.rssi }, false);
+  }).join('') || '<div class="vide">En attente de paquets…</div>';
+}
+// ---- Envoi de messages par le module (admin) ---------------------------------------------
+const envoi = { dest: null, suivis: new Map() };
+// Choix du destinataire d'un message direct : recherche par nom, nom court ou !id, nœuds récents d'abord
+function choisirDestinataire(choisi) {
+  let z = $('#choix-dest');
+  if (!z) { $('#form-envoi').insertAdjacentHTML('afterend', '<div id="choix-dest" class="choix-dest"></div>'); z = $('#choix-dest'); }
+  z.hidden = false;
+  z.innerHTML = `<div class="envoi-ligne"><input id="choix-dest-q" placeholder="Rechercher un nœud : nom, nom court, !id…" autocomplete="off"><button type="button" class="mini" id="choix-dest-fermer">✕</button></div><div class="liste" id="choix-dest-liste"></div>`;
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const rendre = () => {
+    const t = $('#choix-dest-q').value.toLowerCase().trim();
+    const l = [...etat.noeuds.values()].filter((x) => x.num !== local && (!t || [x.nomLong, x.nomCourt, x.id].some((v) => v && v.toLowerCase().includes(t))))
+      .sort((a, b) => (b.dernierVu || 0) - (a.dernierVu || 0)).slice(0, 40);
+    $('#choix-dest-liste').innerHTML = l.map((x) => `<div class="ligne cliquable" data-dest="${x.num}"><span class="point ${x.statut || 'inactif'}"></span><span class="titre">${esc(x.nomLong || x.id)}<small>${esc(x.nomCourt || '')} · ${esc(x.id || '')}${x.roleFr ? ' · ' + esc(x.roleFr) : ''}${x.sautsMin != null ? ` · ${x.sautsMin === 0 ? 'direct' : x.sautsMin + ' saut(s)'}` : ''}</small></span><span class="meta">${x.dernierVu ? ilYa(x.dernierVu) : ''}</span></div>`).join('') || '<div class="vide">Aucun nœud trouvé.</div>';
+    $('#choix-dest-liste').querySelectorAll('[data-dest]').forEach((d) => (d.onclick = () => { z.hidden = true; choisi(Number(d.dataset.dest)); }));
+  };
+  $('#choix-dest-q').oninput = rendre;
+  $('#choix-dest-q').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const d = $('#choix-dest-liste [data-dest]'); if (d) d.click(); } if (e.key === 'Escape') z.hidden = true; };
+  $('#choix-dest-fermer').onclick = () => { z.hidden = true; };
+  rendre();
+  $('#choix-dest-q').focus();
+}
+async function preparerEnvoi(dest) {
+  const f = $('#form-envoi');
+  if (!etat.admin || !f) return;
+  let i;
+  try { i = await api('/api/envoi'); } catch { return; }
+  f.hidden = false;
+  if (dest !== undefined) envoi.dest = dest;
+  const n = envoi.dest != null ? etat.noeuds.get(envoi.dest) : null;
+  envoi.canaux = i.canaux;
+  // Correspondants récents (messages directs) proposés directement dans la liste
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const recents = [];
+  for (const m of derniersMessages) {
+    if (m.vers === 0xffffffff) continue;
+    const autre = m.de === local ? m.vers : m.de;
+    if (autre != null && autre !== local && autre !== (n && n.num) && !recents.includes(autre)) recents.push(autre);
+    if (recents.length >= 6) break;
+  }
+  f.vers.innerHTML = i.canaux.map((c) => `<option value="c${c.index}" data-nom="${esc(c.nom)}">📢 Canal ${esc(c.nom)}</option>`).join('')
+    + (n ? `<option value="d${n.num}" selected>✉️ Direct → ${esc(n.nomLong || n.id)}</option>` : '')
+    + (recents.length ? `<optgroup label="Correspondants récents">${recents.map((x) => { const r = etat.noeuds.get(x); return `<option value="d${x}">✉️ ${esc(r ? r.nomLong || r.nomCourt || r.id : '!' + (x >>> 0).toString(16))}</option>`; }).join('')}</optgroup>` : '')
+    + '<option value="choisir">✉️ Message direct… (choisir un nœud)</option>';
+  envoi.connecte = i.connecte;
+  // Un message direct demandé : on passe en vue « Mes messages directs »
+  if (n && filtreMessages !== 'direct') { filtreMessages = 'direct'; try { localStorage.setItem('filtreMessages', 'direct'); } catch { /* navigation privée */ } rendreMessages(); }
+  f.vers.onchange = () => {
+    if (f.vers.value !== 'choisir') return;
+    const premier = [...f.vers.options].find((o) => o.value.startsWith('d'));
+    if (premier) f.vers.value = premier.value;
+    choisirDestinataire((num) => preparerEnvoi(num));
+  };
+  synchroEnvoi();
+  const maj = () => { const o = new TextEncoder().encode(f.texte.value).length; $('#compteur-envoi').textContent = `${o}/200`; $('#compteur-envoi').classList.toggle('trop', o > 200); };
+  f.texte.oninput = maj; maj();
+  f.texte.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); f.requestSubmit(); } };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const v = f.vers.value;
+    const corps = { texte: f.texte.value };
+    if (v.startsWith('d')) corps.dest = Number(v.slice(1)); else corps.canal = Number(v.slice(1));
+    const r$ = $('#retour-envoi');
+    try {
+      const r = await postJson('/api/envoi', corps);
+      f.texte.value = ''; maj();
+      r$.textContent = corps.dest != null ? 'Envoyé… en attente de l’accusé du destinataire' : 'Envoyé… en attente d’un relais';
+      suivreEnvoi(r.id, corps.dest != null);
+      setTimeout(chargerMessages, 800);
+    } catch (x) { r$.textContent = x.message; }
+  };
+}
+function suivreEnvoi(id, direct) {
+  let n = 0;
+  const t = setInterval(async () => {
+    n++;
+    let e;
+    try { e = await api('/api/envoi/' + id); } catch { return; }
+    const r$ = $('#retour-envoi');
+    if (e.statut !== 'envoye' && e.statut !== suivreEnvoi.dernier) { suivreEnvoi.dernier = e.statut; chargerMessages().catch(() => {}); }
+    if (e.statut === 'recu') { r$.innerHTML = '<span class="succes">✓ Reçu par le destinataire</span>'; clearInterval(t); }
+    else if (e.statut === 'relaye') { r$.innerHTML = `<span class="succes">✓ ${direct ? 'Relayé par un voisin, en route' : 'Émis et relayé par un voisin'}</span>`; if (!direct) clearInterval(t); }
+    else if (e.statut === 'echec') { r$.innerHTML = `<span class="erreur">✗ Échec : ${esc(e.detail || '')}</span>`; clearInterval(t); }
+    if (n > 45) { if (e.statut === 'envoye') r$.textContent = direct ? 'Aucun accusé reçu (destinataire hors de portée ?)' : 'Aucun relais entendu'; clearInterval(t); }
+  }, 2000);
+}
+
+// Comment le message est arrivé : par LoRa sur mon module, par le broker MQTT (passerelles), et s'il a transité par internet
+function origineMessage(m) {
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const b = [];
+  if (local != null && m.de === local) b.push('<span class="orig lora" title="Message émis par votre module radio">📡 Émis par mon module</span>');
+  else if (m.radio) b.push(`<span class="orig lora" title="Reçu en radio LoRa par votre module${m.sautsRadio != null ? ' après ' + m.sautsRadio + ' saut(s)' : ''}">📻 LoRa${m.sautsRadio === 0 ? ' direct' : m.sautsRadio != null ? ' · ' + m.sautsRadio + ' saut' + (m.sautsRadio > 1 ? 's' : '') : ''}${m.snrRadio != null ? ' · ' + fmt(m.snrRadio, 1, ' dB') : ''}</span>`);
+  if (m.mqtt) b.push(`<span class="orig mqtt" title="Publié sur le broker MQTT par ${m.mqtt} passerelle(s) qui l’ont entendu">🌐 MQTT · ${m.mqtt} passerelle${m.mqtt > 1 ? 's' : ''}</span>`);
+  if (m.viaMqtt) b.push('<span class="orig internet" title="Le message a été réinjecté sur le maillage par une passerelle MQTT : il a traversé internet avant d’arriver en radio (pont, autre région…)">⚠ Passé par internet</span>');
+  return b.length ? `<div class="origines">${b.join('')}</div>` : '';
+}
+// Suivi d'un message : accusé radio (messages envoyés depuis la carte) et récepteurs qui l'ont remonté (passerelles, module)
+function suiviMessage(m) {
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const moi = !!m.accuse || (local != null && m.de === local);
+  const l = [];
+  const a = m.accuse;
+  if (a) {
+    const age = Date.now() - m.heure;
+    const h = a.heure ? ` <small>à ${heure(a.heure)}</small>` : '';
+    if (a.statut === 'recu') l.push(`<span class="acc ok" title="Le destinataire a renvoyé un accusé de réception">✓✓ Reçu par ${esc(nomNoeud(a.dest))}${h}</span>`);
+    else if (a.statut === 'relaye') l.push(`<span class="acc ok" title="Le module de la carte a entendu un voisin retransmettre le message (accusé implicite). Cela prouve qu’il est parti, pas que tous l’ont reçu.">✓ Relayé par un voisin${h}</span>`);
+    else if (a.statut === 'echec') l.push(`<span class="acc ko">✗ ${esc(a.detail || 'échec')}${h}</span>`);
+    else l.push(age > 120000 ? '<span class="acc ko" title="Aucun accusé radio reçu (la carte a peut-être redémarré pendant l’envoi)">⚠ Aucun accusé reçu</span>' : '<span class="acc">⏳ Émis, en attente d’un relais…</span>');
+  }
+  const ent = Array.isArray(m.entendus) ? m.entendus : [];
+  if (ent.length) {
+    const vus = new Map();
+    for (const r of ent) if (!vus.has(r.g) || (r.s ?? 9) < (vus.get(r.g).s ?? 9)) vus.set(r.g, r);
+    const desc = (r) => `${nomNoeud(r.g)} (${r.s === 0 ? 'direct' : r.s != null ? r.s + ' saut' + (r.s > 1 ? 's' : '') : '?'}${r.snr != null ? ', ' + fmt(r.snr, 1, ' dB') : ''}${r.rel && r.s > 0 ? ', via ' + nomNoeud(r.rel) : ''})`;
+    const liste = [...vus.values()].sort((x, y) => (x.s ?? 9) - (y.s ?? 9));
+    l.push(`<span class="acc ent" title="${esc(liste.map(desc).join('\n'))}">📡 Entendu par ${liste.length} récepteur${liste.length > 1 ? 's' : ''} : ${esc(liste.slice(0, 3).map(desc).join(', '))}${liste.length > 3 ? ` +${liste.length - 3}` : ''}</span>`);
+  } else if (moi) l.push('<span class="acc ko" title="Aucune passerelle MQTT ni aucun module de la carte n’a remonté ce message : soit personne ne l’a entendu, soit seuls des nœuds sans passerelle l’ont reçu.">📡 Aucun récepteur ne l’a remonté</span>');
+  return l.length ? `<div class="suivi-msg">${l.join('')}</div>` : '';
+}
+// Pendant l'affichage d'un parcours : les liaisons des heures précédentes et les axes de trafic sont masqués,
+// pour ne voir que le trajet du message. « Effacer » (ou fermer la fiche) les remet.
+function masquerLiaisons(reseau) {
+  for (const c of [etat.coucheLiens, typeof mc !== 'undefined' ? mc.coucheLiens : null, typeof anim !== 'undefined' ? anim.couche : null]) if (c && carte.hasLayer(c)) carte.removeLayer(c);
+  etat.parcoursReseau = reseau;
+}
+function restaurerLiaisons() {
+  if (!etat.parcoursReseau) return;
+  etat.parcoursReseau = null;
+  for (const c of [etat.coucheLiens, typeof mc !== 'undefined' ? mc.coucheLiens : null, typeof anim !== 'undefined' ? anim.couche : null]) if (c && !carte.hasLayer(c)) c.addTo(carte);
+}
+function effacerParcours() {
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  etat.coucheCouvrir = null;
+  $('#btn-effacer').hidden = !etat.coucheCouverture;
+  restaurerLiaisons();
+}
+// Étiquette au milieu d'un saut : numéro et SNR
+function etiquetteSaut(a, b, texte, couleur, g) {
+  const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  L.marker(m, { icon: L.divIcon({ className: 'etiquette-saut', html: `<span style="border-color:${couleur}">${texte}</span>`, iconSize: null }), pane: 'traces', interactive: false, zIndexOffset: 950 }).addTo(g);
+}
+// Flèche au 2/3 d'un saut (sens du trajet)
+function flecheSaut(a, b, couleur, g) {
+  const p = [a[0] + (b[0] - a[0]) * 0.66, a[1] + (b[1] - a[1]) * 0.66];
+  const ang = (Math.atan2((b[0] - a[0]), (b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180)) * 180) / Math.PI;
+  L.marker(p, { icon: L.divIcon({ className: 'fleche-saut', html: `<span style="color:${couleur};transform:rotate(${-ang}deg)">➤</span>`, iconSize: [16, 16], iconAnchor: [8, 8] }), pane: 'traces', interactive: false }).addTo(g);
+}
+// Parcours d'un message : pour chaque réception, émetteur → relais (connu ou probable) → passerelle / module
+async function afficherParcours(rowid) {
+  let t;
+  try { t = await api(`/api/messages/${rowid}/parcours`); } catch (e) { return; }
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const pt = (num) => { const n = etat.noeuds.get(num); return n && n.lat != null ? n : null; };
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  masquerLiaisons('meshtastic');
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  const pts = [];
+  const sautsDessines = new Set(); // un même saut partagé par plusieurs réceptions n'est tracé qu'une fois
+  const src = pt(t.de);
+  if (src) { pts.push([src.lat, src.lon]); L.marker([src.lat, src.lon], { icon: L.divIcon({ className: 'sommet plan', html: '<span>E</span>', iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 900 }).bindTooltip(`<b>Émetteur</b> · ${esc(nomNoeud(t.de))}`, { className: 'info' }).addTo(g); }
+  const lignes = t.receptions.map((r, i) => {
+    const gw = pt(r.passerelle);
+    const radio = /^radio/.test(r.sujet || '');
+    const propre = r.passerelle === t.de;
+    let chemin = null, estime = false;
+    if (!propre && r.sauts != null) {
+      if (r.sauts === 0) chemin = [t.de, r.passerelle];
+      else if (r.relais != null && r.sauts === 1) chemin = [t.de, r.relais, r.passerelle];
+      else {
+        const avant = r.relais != null ? cheminProbableMt(t.de, r.relais, r.sauts) : cheminProbableMt(t.de, r.passerelle, r.sauts + 1);
+        chemin = avant ? (r.relais != null ? [...avant, r.passerelle] : avant) : (r.relais != null ? [t.de, r.relais, r.passerelle] : null);
+        estime = true;
+      }
+    }
+    const couleur = radio ? '#3ee6c4' : '#60a5fa';
+    if (chemin && chemin.every((n) => pt(n))) {
+      const ll = chemin.map((n) => { const x = pt(n); return [x.lat, x.lon]; });
+      ll.forEach((x) => pts.push(x));
+      // Liseré sombre sous le trait : lisible sur tous les fonds de carte
+      L.polyline(ll, { color: '#0b1220', weight: 9, opacity: 0.55, pane: 'traces', interactive: false }).addTo(g);
+      L.polyline(ll, { color: couleur, weight: 5, opacity: 0.95, dashArray: estime ? '8 8' : null, lineCap: 'round', pane: 'traces' }).bindTooltip(`Vers ${esc(nomNoeud(r.passerelle))}${estime ? ' (trajet probable)' : ''}`, { className: 'info', sticky: true }).addTo(g);
+      for (let k = 0; k + 1 < ll.length; k++) {
+        const cle = chemin[k] + '>' + chemin[k + 1];
+        if (sautsDessines.has(cle)) continue;
+        sautsDessines.add(cle);
+        flecheSaut(ll[k], ll[k + 1], couleur, g);
+        const dernier = k + 2 === ll.length;
+        if (dernier && r.snr != null) etiquetteSaut(ll[k], ll[k + 1], `${fmt(r.snr, 1)} dB`, couleur, g);
+      }
+      chemin.slice(1, -1).forEach((n) => { const x = pt(n); L.circleMarker([x.lat, x.lon], { radius: 7, color: '#fff', weight: 2, fillColor: couleur, fillOpacity: 1, pane: 'traces' }).bindTooltip(`<b>Relais</b> · ${esc(nomNoeud(n))}`, { className: 'info' }).addTo(g); });
+    } else if (gw && src && !propre) {
+      pts.push([gw.lat, gw.lon]);
+      L.polyline([[src.lat, src.lon], [gw.lat, gw.lon]], { color: couleur, weight: 2, opacity: 0.6, dashArray: '2 8', pane: 'traces' }).addTo(g);
+    }
+    if (gw) L.marker([gw.lat, gw.lon], { icon: L.divIcon({ className: 'sommet plan existant-relier', html: `<span>${i + 1}</span>`, iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 800 }).bindTooltip(`<b>${radio ? 'Mon module' : 'Passerelle'}</b> · ${esc(nomNoeud(r.passerelle))}`, { className: 'info' }).addTo(g);
+    const etapes = chemin ? chemin.slice(1, -1).map((n) => esc(nomNoeud(n))).join(' → ') : '';
+    return `<div class="proposition etape-relier ${radio ? 'depart' : 'existant'}">
+      <div class="entete-prop"><span class="lettre">${i + 1}</span><b>${esc(nomNoeud(r.passerelle))}</b><span class="marge">${radio ? '📻 Mon module (LoRa)' : propre ? '🌐 Publié par l’émetteur' : '🌐 Passerelle MQTT'}</span></div>
+      <div class="meta-longue">${propre ? 'L’émetteur est lui-même passerelle : il a publié son propre message sur MQTT, ce qui ne prouve pas qu’il a été entendu en radio.' : `${r.sauts == null ? 'sauts inconnus' : r.sauts === 0 ? 'Reçu <b>en direct</b> (aucun relais)' : `<b>${r.sauts} saut${r.sauts > 1 ? 's' : ''}</b>`}${r.snr != null ? ` · SNR ${fmt(r.snr, 1, ' dB')}` : ''}${r.rssi != null ? ` · RSSI ${fmt(r.rssi, 0, ' dBm')}` : ''}`}</div>
+      ${!propre && r.sauts > 0 ? `<div class="meta-longue">Dernier relais : <b>${r.relais != null ? esc(nomNoeud(r.relais)) : 'non identifié'}</b>${etapes ? `<br>${estime ? 'Trajet probable' : 'Trajet'} : ${esc(nomNoeud(t.de))} → ${etapes} → ${esc(nomNoeud(r.passerelle))}` : ''}</div>` : ''}
+    </div>`;
+  });
+  const autres = t.receptions.filter((r) => r.passerelle !== t.de);
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>Parcours du message</h2>
+    <div class="actions-prop"><button class="mini" id="parcours-fermer" title="Effacer le parcours et réafficher les liaisons">✕ Effacer le parcours</button></div>
+    <div class="ident">${esc(nomNoeud(t.de))} · ${heure(t.heure)} · ${esc(t.canal || (t.vers !== 0xffffffff ? 'Direct' : ''))}${t.hopDepart != null ? ` · limite de sauts au départ : ${t.hopDepart}` : ''}</div>
+    ${t.texte ? `<div class="texte-parcours">« ${esc(t.texte)} »</div>` : ''}
+    ${t.viaMqtt ? '<div class="alerte attention">⚠ Ce message a traversé internet : une passerelle MQTT l’a réinjecté en radio.</div>' : ''}
+    ${!autres.length ? `<div class="alerte attention">Aucun récepteur autre que l’émetteur ne l’a remonté : ${t.de === local ? 'ton message n’a été entendu en LoRa par aucune passerelle du réseau.' : 'pas de preuve de réception radio.'}</div>` : ''}
+    ${lignes.join('')}
+    <p class="note">Meshtastic ne transmet que le nombre de sauts et le dernier octet du dernier relais : les relais intermédiaires sont déduits des liaisons déjà observées (tracé en pointillé, « trajet probable »). Vert = reçu par ton module, bleu = passerelle MQTT.</p>`;
+  if (pts.length) carte.fitBounds(L.latLngBounds(pts), { padding: [80, 80], maxZoom: 12 });
+}
+// ---- Messages non lus par canal, sons et alerte des messages directs --------------------------------
+const lireLs = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? d; } catch { return d; } };
+const ecrireLs = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* navigation privée */ } };
+const nonLus = lireLs('gaulix_non_lus', {}); // clé : 'c:<canal>' ou 'direct' -> nombre
+const sons = { canaux: {}, direct: true, notifDirect: true, ...lireLs('gaulix_sons', {}) };
+const cleMessage = (m) => (m.vers != null && m.vers !== 0xffffffff ? 'direct' : 'c:' + String(m.canal || '?').toLowerCase());
+const ongletMessagesVisible = () => !document.hidden && !!document.querySelector('.onglets button[data-onglet="messages"].actif');
+// Ce que la liste affichée montre (et que l'utilisateur a donc sous les yeux)
+const filtreVoit = (k) => !filtreMessages || (filtreMessages === 'direct' ? k === 'direct' : k === 'c:' + filtreMessages.slice(2).toLowerCase());
+let contexteAudio = null;
+function bip(frequences, duree = 0.13) {
+  try {
+    contexteAudio = contexteAudio || new (window.AudioContext || window.webkitAudioContext)();
+    let t = contexteAudio.currentTime;
+    for (const f of frequences) {
+      const o = contexteAudio.createOscillator(), g = contexteAudio.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + duree);
+      o.connect(g).connect(contexteAudio.destination); o.start(t); o.stop(t + duree + 0.02);
+      t += duree + 0.04;
+    }
+  } catch { /* son indisponible */ }
+}
+// Une note différente par canal (déduite de son nom), deux notes montantes pour un message direct
+const NOTES = [523, 587, 659, 698, 784, 880, 988, 1047];
+const noteCanal = (nom) => NOTES[[...String(nom).toLowerCase()].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % NOTES.length];
+function sonner(k) {
+  if (k === 'direct') { if (sons.direct) bip([880, 1320, 1760], 0.12); return; }
+  const nom = k.slice(2);
+  if (sons.canaux[nom]) bip([noteCanal(nom)], 0.18);
+}
+// Mes nœuds pour les messages directs : module principal et modules en écoute reliés à la carte
+function mesNums() {
+  const l = new Set();
+  if (etat.radio && etat.radio.noeudLocal != null) l.add(etat.radio.noeudLocal >>> 0);
+  for (const e of etat.ecoutesMt || []) if (e.noeud != null) l.add(e.noeud >>> 0);
+  return l;
+}
+const estMonDirect = (m, mes = mesNums()) => m.vers !== 0xffffffff && (mes.has(m.de >>> 0) || mes.has(m.vers >>> 0));
+function noterMessageRecu(m) {
+  if (!m.premiere) return;
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  if (local != null && m.de === local) return; // mes propres messages
+  const k = cleMessage(m);
+  if (k === 'direct' && !mesNums().has(m.vers >>> 0)) return; // message direct qui ne m'est pas adressé
+  noterDernierRecu(k);
+  if (!(ongletMessagesVisible() && filtreVoit(k))) { nonLus[k] = (nonLus[k] || 0) + 1; ecrireLs('gaulix_non_lus', nonLus); }
+  sonner(k);
+  if (k === 'direct') {
+    const n = etat.noeuds.get(m.de);
+    const titre = `✉️ Message direct de ${n ? n.nomLong || n.id : '!' + (m.de >>> 0).toString(16)}`;
+    if (sons.notifDirect && 'Notification' in window && Notification.permission === 'granted' && document.hidden) { try { new Notification(titre, { body: m.texte || '', tag: 'gaulix-direct' }); } catch { /* ignoré */ } }
+    afficherAlerteDirect(titre, m.texte);
+  }
+  majBadgesMessages();
+}
+function afficherAlerteDirect(titre, texte) {
+  let a = $('#alerte-direct');
+  if (!a) { document.body.insertAdjacentHTML('beforeend', '<div id="alerte-direct" class="alerte-direct" role="alert"></div>'); a = $('#alerte-direct'); }
+  a.innerHTML = `<b>${esc(titre)}</b><div>${esc(texte || '')}</div><div class="actions-prop"><button class="mini principal" id="alerte-direct-voir">Lire</button><button class="mini" id="alerte-direct-ok">OK</button></div>`;
+  a.hidden = false;
+  $('#alerte-direct-ok').onclick = () => { a.hidden = true; };
+  $('#alerte-direct-voir').onclick = () => { a.hidden = true; const b = document.querySelector('.onglets button[data-onglet="messages"]'); if (b) b.click(); choisirFiltreMessages('direct'); };
+  clearTimeout(afficherAlerteDirect.t); afficherAlerteDirect.t = setTimeout(() => { a.hidden = true; }, 60000);
+}
+function majBadgesMessages() {
+  const total = Object.entries(nonLus).filter(([k]) => !k.startsWith('mc')).reduce((a, [, n]) => a + n, 0);
+  if (typeof mcMajBadgeMessages === 'function') mcMajBadgeMessages();
+  const b = $('#onglet-messages');
+  if (b) {
+    let s = b.querySelector('.badge-non-lus');
+    if (!s) { b.insertAdjacentHTML('beforeend', ' <span class="badge-non-lus"></span>'); s = b.querySelector('.badge-non-lus'); }
+    s.textContent = total ? String(total) : '';
+    s.hidden = !total;
+    s.classList.toggle('direct', !!nonLus.direct);
+  }
+  const tout = Object.values(nonLus).reduce((a, n) => a + n, 0);
+  document.title = (tout ? `(${tout}) ` : '') + document.title.replace(/^\(\d+\) /, '');
+}
+// La liste affichée vaut lecture pour ce qu'elle montre
+function marquerLus() {
+  if (!ongletMessagesVisible()) return;
+  let change = false;
+  for (const k of Object.keys(nonLus)) if (!k.startsWith('mc') && filtreVoit(k)) { delete nonLus[k]; change = true; }
+  if (change) { ecrireLs('gaulix_non_lus', nonLus); majBadgesMessages(); }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { marquerLus(); if (typeof rendreMessages === 'function' && ongletMessagesVisible()) rendreMessages(); } });
+// Réglage des sons : une case par canal, alerte des messages directs
+function reglerSons(canaux) {
+  let z = $('#reglage-sons');
+  if (!z) { $('#filtre-messages').insertAdjacentHTML('afterend', '<div id="reglage-sons" class="reglage-sons"></div>'); z = $('#reglage-sons'); }
+  z.hidden = !z.hidden && z.dataset.ouvert === '1';
+  z.dataset.ouvert = z.hidden ? '0' : '1';
+  if (z.hidden) return;
+  z.innerHTML = `<p class="note">Un bip différent par canal coché, et une alerte (trois notes) pour un message direct reçu par le module de la carte. Le son ne marche qu’après un premier clic dans la page.</p>
+    ${canaux.map((c) => `<label class="case"><input type="checkbox" data-son="${esc(c)}" ${sons.canaux[c.toLowerCase()] ? 'checked' : ''}> 📢 ${esc(c)} <button type="button" class="mini" data-test-son="c:${esc(c.toLowerCase())}">▶</button></label>`).join('')}
+    <label class="case"><input type="checkbox" id="son-direct" ${sons.direct ? 'checked' : ''}> ✉️ Messages directs <button type="button" class="mini" data-test-son="direct">▶</button></label>
+    <label class="case"><input type="checkbox" id="notif-direct" ${sons.notifDirect ? 'checked' : ''}> Notification de Windows / du téléphone pour un message direct (onglet en arrière-plan)</label>`;
+  z.querySelectorAll('[data-son]').forEach((c) => (c.onchange = () => { sons.canaux[c.dataset.son.toLowerCase()] = c.checked; ecrireLs('gaulix_sons', sons); }));
+  z.querySelectorAll('[data-test-son]').forEach((b) => (b.onclick = (e) => { e.preventDefault(); const k = b.dataset.testSon; if (k === 'direct') bip([880, 1320, 1760], 0.12); else bip([noteCanal(k.slice(2))], 0.18); }));
+  $('#son-direct').onchange = (e) => { sons.direct = e.target.checked; ecrireLs('gaulix_sons', sons); };
+  $('#notif-direct').onchange = async (e) => {
+    sons.notifDirect = e.target.checked; ecrireLs('gaulix_sons', sons);
+    if (e.target.checked && 'Notification' in window && Notification.permission === 'default') { try { await Notification.requestPermission(); } catch { /* refus */ } }
+  };
+}
+
+// Filtre des messages : tous, un canal, ou les messages directs (retenu dans le navigateur)
+let filtreMessages = (() => { try { return localStorage.getItem('filtreMessages') || ''; } catch { return ''; } })();
+let derniersMessages = [];
+// Message relayé par une passerelle inter-réseaux : texte préfixé [MT] / [MC] (ou [MT|nom])
+const estRelaye = (t) => /^\[(MT|MC)[\]|]/.test(String(t || ''));
+function choisirFiltreMessages(v) {
+  filtreMessages = v || '';
+  try { localStorage.setItem('filtreMessages', filtreMessages); } catch { /* navigation privée */ }
+  rendreMessages();
+  synchroEnvoi();
+}
+// Un seul choix pour lire et écrire : le canal affiché est celui où l'on écrit ; « Mes messages directs » propose
+// le destinataire ; « Tous les canaux » et « Relayés » sont en lecture seule.
+function synchroEnvoi() {
+  const f = $('#form-envoi');
+  if (!f || f.hidden || !f.vers) return;
+  const r$ = $('#retour-envoi'), bouton = f.querySelector('button[type=submit]');
+  const direct = filtreMessages === 'direct';
+  [...f.vers.querySelectorAll('option')].forEach((o) => { o.hidden = o.value.startsWith('c'); });
+  f.vers.hidden = !direct;
+  let ok = false, note = '';
+  if (direct) {
+    if (!f.vers.value.startsWith('d')) { const o = [...f.vers.options].find((x) => x.value.startsWith('d')); if (o) f.vers.value = o.value; else f.vers.selectedIndex = -1; }
+    ok = f.vers.value.startsWith('d');
+    if (!ok) note = 'Choisissez un destinataire dans la liste (« Message direct… »).';
+  } else if (filtreMessages.startsWith('c:')) {
+    const o = [...f.vers.options].find((x) => x.dataset.nom != null && memeCanal(x.dataset.nom, filtreMessages.slice(2)));
+    if (o) { f.vers.value = o.value; ok = true; }
+    else note = `Le canal « ${filtreMessages.slice(2)} » n’est pas sur le module de la carte : lecture seule.`;
+  } else note = 'Choisissez un canal ci-dessus pour y écrire.';
+  if (!envoi.connecte) { ok = false; note = 'Module radio non connecté : connectez-le dans Réseau › Modules Wi-Fi.'; }
+  bouton.disabled = !ok; f.texte.disabled = !ok && !!envoi.connecte && !direct;
+  f.texte.placeholder = ok ? (direct ? 'Votre message direct…' : `Message sur ${filtreMessages.slice(2)}…`) : 'Choisissez un canal pour écrire';
+  if (r$ && !/^Envoyé/.test(r$.textContent)) r$.textContent = note;
+}
+const memeCanal = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+// ---- Barre des canaux : chaque canal (Meshtastic et MeshCore) en pastille, ceux qui ont du nouveau en tête et en couleur ----
+const dernierRecu = lireLs('gaulix_dernier_recu', {}); // clé de non-lus -> heure du dernier message reçu
+function noterDernierRecu(k) { dernierRecu[k] = Date.now(); ecrireLs('gaulix_dernier_recu', dernierRecu); }
+const msgNouveaux = new Map(); // identifiant de message -> heure où il a été montré comme nouveau
+// Couleur stable par nom de canal (la même partout : pastille et entête des messages)
+const couleurCanal = (nom) => `hsl(${[...String(nom || '').toLowerCase()].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 11) % 360} 75% 62%)`;
+function canauxMtConnus() {
+  const l = [];
+  for (const c of [...(envoi.canaux || []).map((c) => c.nom), ...derniersMessages.filter((m) => m.vers === 0xffffffff).map((m) => m.canal)]) if (c && !l.some((x) => memeCanal(x, c))) l.push(c);
+  return l;
+}
+function barreCanauxHtml(reseau, filtre) {
+  const el = [];
+  const mt = canauxMtConnus(), mcl = typeof canauxMcConnus === 'function' && etat.config.meshcore ? canauxMcConnus() : [];
+  mt.forEach((c, i) => el.push({ k: 'c:' + c.toLowerCase(), r: 'mt', v: 'c:' + c, nom: c, ic: '📢', o: i, coul: couleurCanal(c) }));
+  el.push({ k: 'direct', r: 'mt', v: 'direct', nom: 'Directs', ic: '✉️', o: 50 });
+  mcl.forEach((c, i) => el.push({ k: 'mc:' + c.toLowerCase(), r: 'mc', v: 'c:' + c, nom: c, ic: '📢', o: 100 + i, coul: couleurCanal(c) }));
+  if (mcl.length || etat.config.meshcore) el.push({ k: 'mcdirect', r: 'mc', v: 'direct', nom: 'Directs', ic: '✉️', o: 150 });
+  // Du nouveau d'abord (le plus récent en premier), puis l'ordre habituel
+  el.sort((a, b) => (!!nonLus[b.k] - !!nonLus[a.k]) || (nonLus[a.k] ? (dernierRecu[b.k] || 0) - (dernierRecu[a.k] || 0) : a.o - b.o));
+  const tot = Object.entries(nonLus).filter(([k]) => (reseau === 'mc') === k.startsWith('mc')).reduce((a, [, n]) => a + n, 0);
+  const puce = (x) => {
+    const n = nonLus[x.k] || 0, t = dernierRecu[x.k], actif = x.r === reseau && filtre === x.v;
+    const recent = t && Date.now() - t < 20000;
+    return `<button type="button" class="puce-canal${n ? ' a-lire' : ''}${x.k.endsWith('direct') ? ' direct' : ''}${actif ? ' actif' : ''}${recent && n ? ' vient' : ''}" data-puce-r="${x.r}" data-puce-v="${esc(x.v)}" ${x.coul ? `style="--coul:${x.coul}"` : ''} aria-pressed="${actif}" title="${esc((x.r === 'mc' ? 'MeshCore' : 'Meshtastic') + ' · ' + x.nom + (n ? ` : ${n} message${n > 1 ? 's' : ''} en attente` : '') + (t ? ' · dernier reçu ' + ilYa(t) : ''))}">`
+      + `<span class="reseau ${x.r}">${x.r === 'mc' ? 'MC' : 'MT'}</span>${x.ic} ${esc(x.nom)}${n ? `<b class="nb">${n}</b>` : ''}${n && t ? `<small>${ilYa(t)}</small>` : ''}</button>`;
+  };
+  return `<div class="barre-canaux" role="toolbar" aria-label="Canaux : ceux qui ont des messages en attente sont en tête">`
+    + `<button type="button" class="puce-canal tous${!filtre ? ' actif' : ''}" data-puce-r="${reseau}" data-puce-v="">Tous${tot ? `<b class="nb">${tot}</b>` : ''}</button>${el.map(puce).join('')}</div>`;
+}
+function brancherBarreCanaux(z) {
+  z.querySelectorAll('[data-puce-r]').forEach((b) => (b.onclick = () => {
+    const r = b.dataset.puceR, v = b.dataset.puceV;
+    if (r === 'mc') { choisirFiltreMc(v); if (typeof cliquerOnglet === 'function' && !(document.querySelector('[data-vue="meshcore"]') || {}).classList?.contains('actif')) cliquerOnglet('meshcore', 'messages'); else mcRendreMessages(); }
+    else { const ici = !!document.querySelector('.onglets button[data-onglet="messages"].actif'); choisirFiltreMessages(v); if (!ici && typeof cliquerOnglet === 'function') cliquerOnglet('messages', 'messages'); }
+  }));
+}
+// Les messages arrivés depuis la dernière lecture restent surlignés quelques minutes
+function marquerNouveaux(liste, cle, idDe, estRecu, avant) {
+  const vus = {};
+  for (const m of liste) {
+    const k = cle(m); const n = avant[k] || 0;
+    if (!n || !estRecu(m)) continue;
+    vus[k] = (vus[k] || 0) + 1;
+    if (vus[k] <= n) msgNouveaux.set(idDe(m), Date.now());
+  }
+  for (const [i, t] of msgNouveaux) if (Date.now() - t > 180000) msgNouveaux.delete(i);
+}
+// ---- Positions partagées par message (« meshand: 45.04,3.88 », comme l'appli MeshAnd ; aussi « geo:… » et « 📍 … ») ----
+const RE_EPINGLE = /(?:meshand:|geo:|📍)\s*(-?\d{1,2}\.\d{3,7})\s*[,;]\s*(-?\d{1,3}\.\d{3,7})/i;
+function lireEpingle(texte) {
+  const m = RE_EPINGLE.exec(String(texte || ''));
+  if (!m) return null;
+  const lat = Number(m[1]), lon = Number(m[2]);
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+// Texte d'un message, avec un bouton « voir sur la carte » s'il contient une position
+function texteMessageHtml(texte, qui, heureMsg) {
+  const e = lireEpingle(texte);
+  if (!e) return esc(texte);
+  return `${esc(texte)} <button type="button" class="mini epingle-msg" data-epingle="${e.lat},${e.lon}" data-qui="${esc(qui || '')}" data-heure="${heureMsg || ''}" title="Afficher la position sur la carte">📍 Voir sur la carte</button>`;
+}
+etat.coucheEpingles = null;
+const epinglesVues = new Map(); // "lat,lon" -> marqueur
+function poserEpingle(lat, lon, qui, h, ouvrir) {
+  if (!etat.coucheEpingles) etat.coucheEpingles = L.layerGroup().addTo(carte);
+  const k = `${lat},${lon}`;
+  let m = epinglesVues.get(k);
+  if (!m) {
+    const div = document.createElement('div');
+    div.className = 'popup-lieu';
+    div.innerHTML = `<b>📍 Position partagée</b><div class="meta-longue">${qui ? 'par ' + esc(qui) : ''}${h ? ' · ' + ilYa(h) : ''}</div>${blocCoords(lat, lon)}
+      <div class="menu-contexte"><a class="bouton-lien" href="https://www.openstreetmap.org/directions?route=%3B${lat}%2C${lon}" target="_blank" rel="noopener">🧭 Itinéraire</a><button data-a="ici">Couverture depuis ici</button><button data-a="retirer">Retirer l’épingle</button></div>`;
+    m = L.marker([lat, lon], { icon: L.divIcon({ className: 'epingle', html: '<span>📍</span>', iconSize: [26, 26], iconAnchor: [13, 24] }), pane: 'sommets', zIndexOffset: 900 })
+      .bindPopup(div, { className: 'popup-contexte', maxWidth: 320 })
+      .bindTooltip(`📍 ${esc(qui || 'Position partagée')}`, { className: 'info', direction: 'top', offset: [0, -20] })
+      .addTo(etat.coucheEpingles);
+    div.onclick = (ev) => {
+      const a = ev.target.closest('button[data-a]'); if (!a) return;
+      carte.closePopup();
+      if (a.dataset.a === 'ici') couvertureIci(L.latLng(lat, lon), 6);
+      else { etat.coucheEpingles.removeLayer(m); epinglesVues.delete(k); }
+    };
+    epinglesVues.set(k, m);
+  }
+  if (ouvrir) { carte.flyTo([lat, lon], Math.max(carte.getZoom(), 13), { duration: 0.7 }); setTimeout(() => m.openPopup(), 750); }
+}
+// Positions des messages des 12 dernières heures : épinglées d'office
+function epinglerMessages(liste) {
+  const limite = Date.now() - 12 * 3600000;
+  for (const m of liste || []) { if ((m.heure || 0) < limite) continue; const e = lireEpingle(m.texte); if (e) poserEpingle(e.lat, e.lon, m.qui, m.heure, false); }
+}
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-epingle]');
+  if (!b) return;
+  ev.preventDefault(); ev.stopPropagation();
+  const [lat, lon] = b.dataset.epingle.split(',').map(Number);
+  poserEpingle(lat, lon, b.dataset.qui, Number(b.dataset.heure) || null, true);
+}, true);
+// Partager un point : dans le formulaire MeshCore si la vue MeshCore est affichée, sinon dans celui de Meshtastic
+// ---- Recherche d'un réglage ou d'une fonction (Ctrl+K) ------------------------------------------------------
+// Catalogue fixe des réglages « profonds » (fenêtres, sous-onglets), complété à chaque ouverture par ce que
+// l'interface affiche : onglets, menus du haut, outils de Programmer.
+const sansAccent = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function surligner(el) {
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('flash-recherche');
+  setTimeout(() => el.classList.remove('flash-recherche'), 2600);
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) setTimeout(() => el.focus(), 300);
+}
+const attendreEl = (sel, max = 3000) => new Promise((ok) => { const t0 = Date.now(); const f = () => { const e = document.querySelector(sel); if (e || Date.now() - t0 > max) ok(e); else setTimeout(f, 100); }; f(); });
+function ouvrirOnglet(nom) { const b = document.querySelector(`.onglets button[data-onglet="${nom}"]`); if (b && !b.hidden) b.click(); if ($('#panneau') && $('#panneau').classList.contains('replie')) $('#replier').click(); }
+async function ouvrirDlg(pan, champ) {
+  ouvrirGestion();
+  const b = document.querySelector(`#dlg-gestion [data-dlg="${pan}"]`); if (b) b.click();
+  if (champ) surligner(await attendreEl(`#pan-${pan} ${champ}`));
+}
+async function ouvrirMcVue(vue, champ) {
+  ouvrirOnglet('meshcore');
+  const b = await attendreEl(`.sous-onglets-mc button[data-mc-vue="${vue}"]`); if (b) b.click();
+  if (champ) surligner(await attendreEl(champ));
+}
+async function ouvrirOutilProgrammer(id) { ouvrirOnglet('gestion'); const b = await attendreEl('#' + id); if (b) b.click(); }
+const CATALOGUE_REGLAGES = [
+  // Réglages de la carte (administrateur)
+  ['Nom de la carte', 'Compte › Réglages', 'titre', 'admin', () => ouvrirDlg('reglages', '[name=titre]')],
+  ['Département de la carte', 'Compte › Réglages', 'zone contour centrage relief', 'admin', () => ouvrirDlg('reglages', '[name=departement]')],
+  ['Serveur MQTT (broker)', 'Compte › Réglages', 'mqtt url broker adresse serveur connexion', 'admin', () => ouvrirDlg('reglages', '[name=mqttUrl]')],
+  ['Sujet racine MQTT', 'Compte › Réglages', 'mqtt topic racine msh', 'admin', () => ouvrirDlg('reglages', '[name=mqttRacine]')],
+  ['Utilisateur et mot de passe MQTT', 'Compte › Réglages', 'mqtt identifiant login', 'admin', () => ouvrirDlg('reglages', '[name=mqttUtilisateur]')],
+  ['Sujets MQTT supplémentaires', 'Compte › Réglages', 'mqtt topics abonnement', 'admin', () => ouvrirDlg('reglages', '[name=mqttSujets]')],
+  ['Inscriptions des comptes', 'Compte › Réglages', 'inscription ouverte fermée validation', 'admin', () => ouvrirDlg('reglages', '[name=inscriptions]')],
+  ['Précision des positions publiques', 'Compte › Réglages', 'arrondi confidentialité carte publique', 'admin', () => ouvrirDlg('reglages', '[name=precisionPublique]')],
+  ['Durée de conservation des données', 'Compte › Réglages', 'retention jours historique purge', 'admin', () => ouvrirDlg('reglages', '[name=retentionJours]')],
+  ['Canaux Meshtastic à déchiffrer (clés)', 'Compte › Réglages', 'canaux cle psk aq== messages chiffrement longfast', 'admin', () => ouvrirDlg('reglages', '[name=canaux]')],
+  ['Télécharger toute la France (relief)', 'Outils', 'relief france paquet mnt télécharger préparer installer carte', 'admin', () => ficheFrance()],
+  ['Comptes des utilisateurs', 'Compte › Comptes', 'utilisateur ajouter rôle gestionnaire secteur blocage', 'admin', () => ouvrirDlg('comptes')],
+  ['Sauvegardes', 'Compte › Sauvegardes', 'sauvegarde restaurer export', 'admin', () => ouvrirDlg('sauvegardes')],
+  ['Archive PostgreSQL', 'Compte › Archive', 'postgres base archive', 'admin', () => ouvrirDlg('archive')],
+  ['Journal du serveur', 'Compte › Journal', 'logs journal erreurs', 'admin', () => ouvrirDlg('journal')],
+  ['Changer mon mot de passe', 'Compte › Mon compte', 'mot de passe password', 'membre', () => ouvrirDlg('moncompte', '#form-mdp')],
+  ['Double authentification', 'Compte › Mon compte', '2fa totp code authentificateur sécurité', 'membre', () => ouvrirDlg('moncompte', '#zone-2fa')],
+  ['Déconnecter mes autres appareils', 'Compte › Mon compte', 'session déconnexion', 'membre', () => ouvrirDlg('moncompte', '#btn-deco-partout')],
+  // MeshCore
+  ['Relier le companion MeshCore', 'MeshCore › Companion', 'companion usb wifi ble relier', 'admin', () => ouvrirMcVue('companion', '#mc-f-wifi')],
+  ['Code de zone MeshCore (IATA)', 'MeshCore › Companion', 'iata zone lpy aéroport', 'admin', () => ouvrirMcVue('companion', '#mc-f-reglages [name=iata]')],
+  ['Racine des sujets MeshCore', 'MeshCore › Companion', 'mqtt meshcore topic racine', 'admin', () => ouvrirMcVue('companion', '#mc-f-reglages [name=racine]')],
+  ['Paquets MeshCore conservés (périmètre)', 'MeshCore › Companion', 'périmètre département voisins national filtre ignorés', 'admin', () => ouvrirMcVue('companion', '#mc-f-reglages [name=perimetre]')],
+  ['Canaux MeshCore à déchiffrer', 'MeshCore › Companion', 'canaux public hashtag clé', 'admin', () => ouvrirMcVue('companion', '#mc-f-reglages [name=canaux]')],
+  ['Republication MQTT MeshCore', 'MeshCore › Companion', 'republier meshcoretomqtt', 'admin', () => ouvrirMcVue('companion', '#mc-f-reglages [name=republier]')],
+  ['Messages MeshCore', 'MeshCore › Messages', 'message canal direct', 'membre', () => ouvrirMcVue('messages')],
+  ['Administrer les répéteurs MeshCore', 'MeshCore › Programmer', 'répéteur room server cli mot de passe', 'gestion', () => ouvrirMcVue('gestion')],
+  ['Analyse MeshCore', 'MeshCore › Analyse', 'statistiques régions audit', 'membre', () => ouvrirMcVue('analyse')],
+  // Programmer (Meshtastic)
+  ['Clés d’administration', 'Programmer', 'admin key pki clé publique', 'gestion', () => ouvrirOutilProgrammer('voir-cles')],
+  ['Équipes (canal chiffré par équipe)', 'Programmer', 'équipe canal clé psk intervenant cle_equipes', 'admin', () => ouvrirOutilProgrammer('voir-equipes')],
+  ['Favoris entre relais', 'Programmer', 'favoris sauts relais', 'gestion', () => ouvrirOutilProgrammer('voir-favoris')],
+  ['Modèles de réglages', 'Programmer', 'modèle yaml export import', 'gestion', () => ouvrirOutilProgrammer('voir-modeles')],
+  ['Contrôle du trafic', 'Programmer', 'bavard trafic mqtt réinjecté', 'gestion', () => ouvrirOutilProgrammer('voir-trafic')],
+  ['Firmware par le Wi-Fi', 'Programmer', 'firmware mise à jour ota wifi version', 'gestion', () => ouvrirOutilProgrammer('voir-fw')],
+  // Couverture
+  ['Plan de couverture du département', 'Couverture', 'plan sites relais objectif', 'membre', () => { ouvrirOnglet('sites'); attendreEl('#plan-objectif').then(surligner); }],
+  ['Hauteur d’antenne des sites (zone dessinée)', 'Couverture', 'antenne hauteur mât sol', 'membre', () => { ouvrirOnglet('sites'); attendreEl('#plan-hs').then(surligner); }],
+  ['Accès aux sites (voiture, 4×4, à pied)', 'Couverture', 'accès voiture 4x4 pied piste', 'membre', () => { ouvrirOnglet('sites'); attendreEl('#plan-acces').then(surligner); }],
+  ['Passerelle Meshtastic ⇄ MeshCore', 'Outils', 'passerelle relais canal adrasec meshpass activer règle', 'admin', () => ouvrirPasserelle()],
+  ['Diagnostic : pourquoi ça ne marche pas ?', 'Réglages', 'diagnostic problème panne vérifier mqtt messages ne remontent pas', 'admin', () => ficheDiagnostic()],
+  ['Sauvegarde complète (changer de serveur)', 'Réglages', 'sauvegarde complète export base migration déménager serveur', 'admin', () => { location.href = '/api/sauvegarde-complete'; }],
+  ['Main courante (signalements imprimables)', 'Outils', 'main courante journal intervention pdf imprimer', 'membre', () => window.open('/main-courante', '_blank')],
+  ['Mettre à jour la carte', 'Version', 'mise à jour version upgrade docker image nouvelle', 'admin', () => ficheMaj()],
+  ['Signalements (route inondée…)', 'Outils', 'signaler événement inondation alerte waypoint bipper germacrise', 'membre', () => ficheSignalements()],
+];
+function indexReglages() {
+  const r = etat.admin ? 3 : etat.gestion ? 2 : etat.membre ? 1 : 0;
+  const niv = { admin: 3, gestion: 2, membre: 1 };
+  const l = CATALOGUE_REGLAGES.filter((e) => !e[3] || r >= niv[e[3]]).map(([t, ch, m, , go]) => ({ t, ch, m, go }));
+  const cleT = (t) => sansAccent(t).replace(/^[^a-z0-9]+/, '').trim();
+  const vus = new Set(l.map((e) => cleT(e.t)));
+  const ajouter = (t, ch, m, go) => { t = String(t || '').replace(/\s+/g, ' ').trim(); if (!t || t.length < 2 || vus.has(cleT(t))) return; vus.add(cleT(t)); l.push({ t, ch, m, go }); };
+  document.querySelectorAll('.onglets button[data-onglet]').forEach((b) => { if (!b.hidden) ajouter(b.textContent, 'Onglet', b.title, () => b.click()); });
+  document.querySelectorAll('.outils details.menu-couches').forEach((d) => {
+    const nomMenu = (d.querySelector('summary') || {}).textContent || 'Menu';
+    d.querySelectorAll('button, a, label').forEach((el) => {
+      if (el.closest('[hidden]') || el.hidden) return;
+      const txt = el.tagName === 'LABEL' ? el.textContent : el.textContent;
+      ajouter(txt, nomMenu.replace('▾', '').trim(), el.title || '', () => { d.open = true; surligner(el); });
+    });
+  });
+  return l;
+}
+function ouvrirRechercheReglages() {
+  const dlg = $('#dlg-chercher'), inp = $('#chercher-reglage'), zr = $('#resultats-reglage');
+  const index = indexReglages();
+  let res = [], sel = 0;
+  const rendre = () => {
+    const mots = sansAccent(inp.value).split(/\s+/).filter(Boolean);
+    res = !mots.length ? index.slice(0, 12) : index.map((e) => {
+      const h = sansAccent(`${e.t} ${e.ch} ${e.m}` + (window.LANGUE === 'en' ? ` ${tr(e.t)} ${tr(e.ch || '')} ${tr(e.m || '')}` : '')), ti = sansAccent(window.LANGUE === 'en' ? tr(e.t) : e.t);
+      if (!mots.every((w) => h.includes(w))) return null;
+      return { e, score: (ti.startsWith(mots[0]) ? 0 : ti.includes(mots[0]) ? 1 : 2) + ti.length / 200 };
+    }).filter(Boolean).sort((a, b) => a.score - b.score).map((x) => x.e).slice(0, 14);
+    sel = Math.min(sel, Math.max(0, res.length - 1));
+    zr.innerHTML = res.length ? res.map((e, i) => `<button type="button" class="res-reglage ${i === sel ? 'actif' : ''}" data-i="${i}" role="option"><b>${esc(e.t)}</b><small>${esc(e.ch)}</small></button>`).join('') : '<div class="vide">Aucun réglage trouvé. Essayez un autre mot (MQTT, clé, mot de passe, IATA, firmware…).</div>';
+    zr.querySelectorAll('[data-i]').forEach((b) => (b.onclick = () => aller(Number(b.dataset.i))));
+  };
+  const aller = (i) => { const e = res[i]; if (!e) return; dlg.close(); try { e.go(); } catch (x) { annonce('⚠ ' + x.message, 'erreur'); } };
+  inp.oninput = () => { sel = 0; rendre(); };
+  inp.onkeydown = (ev) => {
+    if (ev.key === 'ArrowDown') { sel = Math.min(sel + 1, res.length - 1); rendre(); ev.preventDefault(); }
+    else if (ev.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); rendre(); ev.preventDefault(); }
+    else if (ev.key === 'Enter') { aller(sel); ev.preventDefault(); }
+  };
+  inp.value = '';
+  rendre();
+  // Fermeture : clic à côté de la fenêtre (sur le fond assombri) ou bouton ×
+  dlg.onclick = (ev) => {
+    if (ev.target !== dlg) return;
+    const b = dlg.getBoundingClientRect();
+    if (ev.clientX < b.left || ev.clientX > b.right || ev.clientY < b.top || ev.clientY > b.bottom) dlg.close();
+  };
+  $('#fermer-chercher').onclick = () => dlg.close();
+  if (!dlg.open) dlg.showModal();
+  inp.focus();
+}
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); ouvrirRechercheReglages(); }
+});
+// Petit message temporaire en bas de l'écran (clic : action facultative)
+function annonce(texte, genre = 'info', action = null) {
+  let z = document.getElementById('annonces');
+  if (!z) { z = document.createElement('div'); z.id = 'annonces'; z.setAttribute('aria-live', 'polite'); document.body.appendChild(z); }
+  const d = document.createElement('div');
+  d.className = 'annonce ' + genre;
+  d.textContent = texte;
+  if (action) { d.classList.add('cliquable'); d.title = 'Cliquer pour centrer la carte'; }
+  d.onclick = () => { if (action) action(); d.remove(); };
+  z.appendChild(d);
+  setTimeout(() => d.remove(), action ? 15000 : 7000);
+}
+// ---- Signalements : un événement posé sur la carte et diffusé en LoRa (membres) ----------------------------
+const sig = { liste: [], couche: null, info: null };
+// Hors connexion : signalements gardés dans le navigateur et envoyés au retour du réseau ; dernière liste connue affichée
+const CLE_SIG_ATTENTE = 'gaulix_sig_attente', CLE_SIG_CACHE = 'gaulix_sig_cache';
+const sigEnAttente = () => lireLs(CLE_SIG_ATTENTE, []) || [];
+let envoiSigEnCours = false;
+async function envoyerSigEnAttente() {
+  const l = sigEnAttente();
+  if (!l.length || envoiSigEnCours || !navigator.onLine) return;
+  envoiSigEnCours = true;
+  const reste = [];
+  let partis = 0;
+  for (const s of l) {
+    try { await postJson('/api/signalements', { ...s, details: `${s.details ? s.details + ' ' : ''}(signalé hors réseau à ${new Date(s.heureLocale).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})`.trim() }); partis++; }
+    catch (e) { if (/fetch|réseau|network|Failed/i.test(e.message)) reste.push(s); else annonce(`⚠ Signalement « ${s.titre} » refusé : ${e.message}`, 'erreur'); }
+  }
+  ecrireLs(CLE_SIG_ATTENTE, reste);
+  envoiSigEnCours = false;
+  if (partis) { annonce(`✔ ${partis} signalement(s) fait(s) hors réseau envoyé(s)`, 'ok'); chargerSignalements(); }
+}
+window.addEventListener('online', () => setTimeout(envoyerSigEnAttente, 2000));
+setInterval(envoyerSigEnAttente, 60000);
+async function chargerSignalements() {
+  let r;
+  try { r = await api('/api/signalements'); ecrireLs(CLE_SIG_CACHE, r); } catch { r = lireLs(CLE_SIG_CACHE, null); if (!r) return; r = { ...r, horsLigne: true }; }
+  sig.liste = r.signalements; sig.info = r;
+  if (!sig.couche) sig.couche = L.layerGroup().addTo(carte);
+  sig.couche.clearLayers();
+  for (const s of sig.liste.filter((x) => x.actif)) {
+    const m = L.marker([s.lat, s.lon], {
+      icon: L.divIcon({ className: 'sig-marqueur', html: `<span>${s.icone}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] }),
+      title: s.titre, zIndexOffset: 900,
+    }).addTo(sig.couche);
+    m.bindPopup(() => popupSignalement(s), { maxWidth: 300 });
+    if (s.trace && s.trace.length > 1) (s.forme === 'zone' ? L.polygon(s.trace, { color: '#dc2626', weight: 3, fillOpacity: 0.18 }) : L.polyline(s.trace, { color: '#dc2626', weight: 6, opacity: 0.85 })).addTo(sig.couche).bindPopup(() => popupSignalement(s), { maxWidth: 300 });
+  }
+  // En attente d'envoi (fait hors réseau) : marqueur pointillé
+  for (const s of sigEnAttente()) L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'sig-marqueur sig-attente', html: `<span>${esc((sig.info.types[s.type] || {}).icone || '❗')}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] }), title: s.titre + ' (en attente du réseau)' }).bindPopup(`<b>${esc(s.titre)}</b><div class="note">⏳ Fait hors réseau : sera envoyé au retour du réseau.</div>`).addTo(sig.couche);
+  const b = $('#outil-signalements');
+  if (b) b.textContent = `🚩 Signalements${sig.liste.some((x) => x.actif) ? ` (${sig.liste.filter((x) => x.actif).length})` : ''}`;
+  if (document.querySelector('#fiche-contenu .liste-signalements')) ficheSignalements();
+}
+const etatEnvoiSig = (e, nom) => !e ? '' : `<div class="envoi-sig ${e.statut}">${nom} canal ${e.canal} : ${e.statut === 'envoye' ? '✔ envoyé ' + ilYa(e.heure) : e.statut === 'echec' ? '⚠ ' + esc(e.erreur || 'échec') : '⏳'}</div>`;
+function popupSignalement(s) {
+  const d = document.createElement('div');
+  d.className = 'popup-sig';
+  d.innerHTML = `<b>${s.icone} ${esc(s.titre)}</b>${s.details ? `<div>${esc(s.details)}</div>` : ''}
+    <div class="note">par ${esc(s.auteur)} ${ilYa(s.cree)} · jusqu’au ${new Date(s.expire).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}<br><span class="mono">${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</span></div>
+    ${s.source === 'radio' ? `<div class="note">📻 reçu par radio${s.canal ? ' sur ' + esc(s.canal) : ''} (point de passage)</div>` : ''}
+    ${(s.envois.mt || []).map((e) => etatEnvoiSig(e, 'Meshtastic')).join('')}${etatEnvoiSig(s.envois.mc, 'MeshCore')}
+    ${s.actif ? `<div class="actions-prop"><button class="mini principal" data-fin title="${s.source === 'radio' ? 'Le retirer de la carte' : 'Annoncer la fin en LoRa et retirer le point des applis'}">✅ Terminé</button>${s.source === 'radio' ? '' : '<button class="mini" data-renvoi title="Renvoyer en LoRa">↻ Renvoyer</button>'}</div>` : `<div class="note">${s.fin ? 'Terminé par ' + esc(s.finPar || '?') + ' ' + ilYa(s.fin) : 'Expiré'}</div>`}`;
+  const fin = d.querySelector('[data-fin]');
+  if (fin) fin.onclick = async () => {
+    if (!(await confirmer(s.source === 'radio' ? `Retirer « ${s.titre} » de la carte ?` : `Terminer « ${s.titre} » ? Un message de fin part en LoRa et le point disparaît des applis.`))) return;
+    try { await postJson(`/api/signalements/${s.id}/terminer`, {}); carte.closePopup(); } catch (e) { alert(e.message); }
+  };
+  const rv = d.querySelector('[data-renvoi]');
+  if (rv) rv.onclick = async () => { rv.disabled = true; try { await postJson(`/api/signalements/${s.id}/renvoyer`, {}); carte.closePopup(); } catch (e) { alert(e.message); rv.disabled = false; } };
+  return d;
+}
+async function formSignalement(lat, lon) {
+  await chargerSignalements();
+  const r = sig.info;
+  if (!r) return;
+  const mem = lireLs('gaulix_sig', {}) || {};
+  $('#fiche').hidden = false; etat.selection = null;
+  const z = $('#fiche-contenu');
+  // Canaux Meshtastic cochés : ceux du dernier envoi, sinon Fr_Balise et Alerte (comme GerMaCrise / Bipper)
+  const parDefaut = (c) => Array.isArray(mem.mt) ? mem.mt.includes(c.index) : /^(fr_balise|alerte)$/i.test(c.nom);
+  const optMc = r.mc.pret && r.mc.canaux.length ? r.mc.canaux.map((c) => `<option value="${c.index}" ${String(mem.mc) === String(c.index) ? 'selected' : ''}>${c.index} · ${esc(c.nom)}</option>`).join('') : '';
+  let cat = mem.cat && r.categories[mem.cat] ? mem.cat : 'routes';
+  let type = Object.keys(r.types).find((k) => r.types[k].cat.includes(cat));
+  z.innerHTML = `<div class="form-sig"><h2>🚩 Signaler un événement</h2>
+    <div class="note mono">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
+    <div class="cats-sig">${Object.entries(r.categories).map(([k, n]) => `<button type="button" data-cat="${k}">${esc(n)}</button>`).join('')}</div>
+    <div class="types-sig"></div>
+    <div class="parametres">
+      <label>Titre <input id="sig-titre" maxlength="60"></label>
+      <label>Précisions <input id="sig-details" maxlength="140" placeholder="RD 103 entre Vorey et Retournac, 40 cm d’eau…"></label>
+      <label>Forme <select id="sig-forme"><option value="point">📍 Un point</option><option value="ligne">〰️ Un tronçon (route entre deux points ou plus)</option><option value="zone">⬠ Une zone (périmètre)</option></select></label>
+      <label>Durée <select id="sig-duree">${r.durees.map((h) => `<option value="${h}" ${h === 24 ? 'selected' : ''}>${h < 24 ? h + ' h' : h / 24 + ' j'}</option>`).join('')}</select></label>
+    </div>
+    <h4>Meshtastic <small>point de passage (carte des applis, Bipper, GerMaCrise)</small></h4>
+    ${r.mt.connecte && r.mt.canaux.length ? `<div class="canaux-sig">${r.mt.canaux.map((c) => `<label class="case"><input type="checkbox" data-mt="${c.index}" ${parDefaut(c) ? 'checked' : ''}> ${c.index} · ${esc(c.nom)}</label>`).join('')}</div>
+      <label class="case"><input type="checkbox" id="sig-texte" ${mem.texte === false ? '' : 'checked'}> Envoyer aussi un message texte sur ces canaux</label>` : '<p class="note">Module radio non connecté : pas d’envoi Meshtastic.</p>'}
+    <h4>MeshCore</h4>
+    ${optMc ? `<label>Canal <select id="sig-mc"><option value="">ne pas envoyer</option>${optMc}</select></label>` : '<p class="note">Companion non relié : pas d’envoi MeshCore.</p>'}
+    <div id="sig-trace" class="note" hidden></div>
+    <div class="apercu-sig"><div class="note">Message texte :</div><div id="sig-apercu" class="mono"></div></div>
+    <div class="actions-prop"><button class="principal" id="sig-envoyer">🚩 Signaler et envoyer</button></div>
+    <p class="erreur" id="sig-retour"></p>
+    <p class="note">Le point de passage apparaît sur la carte des applis Meshtastic avec l’icône et la durée choisies, et sur les Bipper / GerMaCrise. Les points de passage reçus d’autres stations s’affichent aussi ici. « Terminé » retire le point des applis et annonce la fin.</p></div>`;
+  const coup = (t, n) => { const e = new TextEncoder(); while (e.encode(t).length > n) t = [...t].slice(0, -1).join(''); return t; };
+  const auteur = (etat.config.compte && (etat.config.compte.indicatif || etat.config.compte.identifiant)) || '';
+  const apercu = () => {
+    const t = r.types[type];
+    const tx = `${t.icone} ${$('#sig-titre').value.trim() || t.nom}${$('#sig-details').value.trim() ? ' : ' + $('#sig-details').value.trim() : ''} · ${lat.toFixed(5)},${lon.toFixed(5)} · ${auteur}`;
+    const n = new TextEncoder().encode(tx).length;
+    $('#sig-apercu').textContent = coup(tx, 200) + (n > 140 && $('#sig-mc') && $('#sig-mc').value !== '' ? `  (${n} octets : coupé à 140 pour MeshCore)` : '');
+  };
+  const choisirType = (k) => {
+    const ancien = type && r.types[type].nom;
+    type = k;
+    z.querySelectorAll('[data-type]').forEach((x) => x.classList.toggle('actif', x.dataset.type === k));
+    if (!$('#sig-titre').value.trim() || $('#sig-titre').value === ancien) $('#sig-titre').value = r.types[k].nom;
+    apercu();
+  };
+  const montrerCat = (c) => {
+    cat = c;
+    z.querySelectorAll('[data-cat]').forEach((x) => x.classList.toggle('actif', x.dataset.cat === c));
+    const zt = z.querySelector('.types-sig');
+    zt.innerHTML = Object.entries(r.types).filter(([, t]) => t.cat.includes(c)).map(([k, t]) => `<button type="button" data-type="${k}" class="${k === type ? 'actif' : ''}"><span>${t.icone}</span>${esc(t.nom)}</button>`).join('');
+    zt.querySelectorAll('[data-type]').forEach((b) => (b.onclick = () => choisirType(b.dataset.type)));
+  };
+  z.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => montrerCat(b.dataset.cat)));
+  montrerCat(cat);
+  $('#sig-titre').value = r.types[type].nom;
+  z.querySelectorAll('input, select').forEach((e) => { if (!e.dataset.mt) e.addEventListener('input', apercu); e.addEventListener('change', apercu); });
+  apercu();
+  // Tronçon ou zone : les points suivants se posent en touchant la carte ; le premier point reste celui du signalement
+  const trace = [[lat, lon]];
+  let dessin = null;
+  const finTrace = () => { carte.off('click', poser); document.body.classList.remove('choix-point'); };
+  const majTrace = () => {
+    const forme = $('#sig-forme') ? $('#sig-forme').value : 'point', zt = $('#sig-trace');
+    if (dessin) { dessin.remove(); dessin = null; }
+    if (!zt) { finTrace(); return; }
+    if (forme === 'point') { zt.hidden = true; finTrace(); return; }
+    zt.hidden = false;
+    zt.innerHTML = `<b>${trace.length} point(s)</b> : touchez la carte pour ajouter les points ${forme === 'zone' ? 'du périmètre (3 au moins)' : 'du tronçon (2 au moins)'}. <button type="button" class="mini" id="sig-trace-annuler">↩ Retirer le dernier</button>`;
+    $('#sig-trace-annuler').onclick = () => { if (trace.length > 1) trace.pop(); majTrace(); };
+    if (trace.length > 1) dessin = (forme === 'zone' ? L.polygon(trace, { color: '#f59e0b', dashArray: '6 6' }) : L.polyline(trace, { color: '#f59e0b', weight: 5, dashArray: '6 6' })).addTo(carte);
+    carte.off('click', poser); carte.on('click', poser); document.body.classList.add('choix-point');
+  };
+  function poser(ev) { if (!document.querySelector('#fiche-contenu .form-sig')) { finTrace(); if (dessin) dessin.remove(); return; } if (trace.length < 40) trace.push([ev.latlng.lat, ev.latlng.lng]); majTrace(); }
+  $('#sig-forme').onchange = majTrace;
+  $('#sig-envoyer').onclick = async () => {
+    const forme = $('#sig-forme').value;
+    if (forme !== 'point' && trace.length < (forme === 'zone' ? 3 : 2)) { $('#sig-retour').textContent = forme === 'zone' ? 'Posez au moins 3 points sur la carte pour la zone.' : 'Posez au moins un deuxième point sur la carte pour le tronçon.'; return; }
+    const mt = [...z.querySelectorAll('[data-mt]:checked')].map((x) => Number(x.dataset.mt)), mc = $('#sig-mc') ? $('#sig-mc').value : '';
+    const texte = $('#sig-texte') ? $('#sig-texte').checked : true;
+    if (!mt.length && mc === '' && !(await confirmer('Aucun réseau choisi : le signalement restera seulement sur la carte. Continuer ?'))) return;
+    const b = $('#sig-envoyer'); b.disabled = true; b.textContent = 'Envoi…';
+    ecrireLs('gaulix_sig', { mt, mc, cat, texte });
+    try {
+      const corpsSig = { lat, lon, type, titre: $('#sig-titre').value, details: $('#sig-details').value, dureeH: Number($('#sig-duree').value), mt, mc, texte, forme, trace: forme === 'point' ? null : trace };
+      let s;
+      try { if (!navigator.onLine) throw new TypeError('Failed to fetch'); s = await postJson('/api/signalements', corpsSig); }
+      catch (x) {
+        if (!(x instanceof TypeError) && !/fetch|network/i.test(x.message)) throw x;
+        // Pas de réseau : gardé dans le navigateur, envoyé tout seul au retour du réseau
+        ecrireLs(CLE_SIG_ATTENTE, [...sigEnAttente(), { ...corpsSig, heureLocale: Date.now() }]);
+        finTrace(); if (dessin) dessin.remove();
+        await chargerSignalements();
+        ficheSignalements('⏳ Pas de réseau : le signalement est gardé sur cet appareil et partira tout seul au retour du réseau.');
+        return;
+      }
+      finTrace(); if (dessin) dessin.remove();
+      const pb = [...(s.envois.mt || []), s.envois.mc].filter((e) => e && e.statut === 'echec').map((e) => `canal ${e.canal} : ${e.erreur}`);
+      await chargerSignalements();
+      ficheSignalements(pb.length ? '⚠ ' + pb.join(' ; ') : '✔ Signalement envoyé.');
+    } catch (e) { $('#sig-retour').textContent = e.message; b.disabled = false; b.textContent = '🚩 Signaler et envoyer'; }
+  };
+}
+// Alertes Bipper / GerMaCrise : « #alerte N texte #entité » sur le canal Alerte, accusés de lecture des pagers
+function blocAlertesBipper() {
+  const r = sig.info || {}, canaux = (r.mt && r.mt.connecte && r.mt.canaux) || [], al = r.alertes || [];
+  const lib = { alerte: '🚨 Alerte', secours: '🚑 Secours', vigilance: '⚠️ Vigilance', info: 'ℹ️ Info' };
+  return `<h3>📟 Alertes Bipper / GerMaCrise</h3>
+    ${canaux.length ? `<div class="parametres compact">
+      <label>Type <select id="ab-genre">${Object.keys(r.genresAlerte || lib).map((k) => `<option value="${k}">${lib[k] || k}</option>`).join('')}</select></label>
+      <label>Canal <select id="ab-canal">${canaux.map((c) => `<option value="${c.index}" ${/^alerte$/i.test(c.nom) ? 'selected' : ''}>${c.index} · ${esc(c.nom)}</option>`).join('')}</select></label>
+      <label>Texte <input id="ab-texte" maxlength="140" placeholder="incendie hall, rassemblement mairie…"></label>
+      <label>Entités <input id="ab-entites" placeholder="SDIS43 ADRASEC43 (vide = tous)"></label>
+    </div><div class="actions-prop"><button type="button" class="principal" id="ab-envoyer">📟 Envoyer l’alerte</button></div><p class="erreur" id="ab-retour"></p>`
+    : '<p class="note">Module radio non connecté : reliez-le pour envoyer une alerte aux pagers.</p>'}
+    ${al.map((x) => `<div class="alerte-bipper ${x.fin ? 'passe' : ''}"><b>${lib[x.genre] || x.genre} n° ${x.n}</b> ${esc(x.texte)} ${x.entites.map((e) => '#' + esc(e)).join(' ')}<small>${esc(x.auteur)} ${ilYa(x.heure)}${x.fin ? ' · clôturée ' + ilYa(x.fin) : ''} · ${x.acks.length} accusé(s) de lecture${x.acks.length ? ' : ' + x.acks.map((k) => esc(k.nom)).join(', ') : ''}</small>${x.fin ? '' : `<button type="button" class="mini" data-ab-fin="${x.n}">✅ Clôturer (#fin ${x.n})</button>`}</div>`).join('') || '<p class="note">Aucune alerte ces 7 derniers jours.</p>'}`;
+}
+function brancherAlertesBipper() {
+  const b = $('#ab-envoyer');
+  if (b) b.onclick = async () => {
+    if (!(await confirmer(`Envoyer cette alerte aux pagers ? Elle fait sonner tous les Bipper concernés.`, { ok: 'Envoyer l’alerte' }))) return;
+    try { await postJson('/api/alertes-bipper', { genre: $('#ab-genre').value, canal: Number($('#ab-canal').value), texte: $('#ab-texte').value, entites: $('#ab-entites').value }); await chargerSignalements(); ficheSignalements('✔ Alerte envoyée.'); } catch (e) { $('#ab-retour').textContent = e.message; }
+  };
+  document.querySelectorAll('[data-ab-fin]').forEach((x) => (x.onclick = async () => { try { await postJson('/api/alertes-bipper', { fin: Number(x.dataset.abFin) }); await chargerSignalements(); ficheSignalements('✔ Alerte clôturée.'); } catch (e) { annonce('⚠ ' + e.message, 'erreur'); } }));
+}
+async function ficheSignalements(msg) {
+  $('#fiche').hidden = false; etat.selection = null;
+  const z = $('#fiche-contenu');
+  if (!sig.info) await chargerSignalements();
+  const l = sig.liste;
+  const attente = sigEnAttente();
+  z.innerHTML = `<div class="liste-signalements"><h2>🚩 Signalements</h2>${msg ? `<p class="note"><b>${esc(msg)}</b></p>` : ''}
+    ${sig.info && sig.info.horsLigne ? '<div class="alerte attention">Pas de réseau : dernière liste connue.</div>' : ''}
+    ${attente.length ? `<div class="alerte info-lecture">⏳ ${attente.length} signalement(s) fait(s) hors réseau, en attente d’envoi : ${attente.map((s) => esc(s.titre)).join(', ')} <button type="button" class="mini" id="sig-reessayer">Réessayer maintenant</button></div>` : ''}
+    <p class="note">Bouton ＋ ou clic droit sur la carte › <b>🚩 Signaler un événement ici</b>. <a href="/main-courante" target="_blank" rel="noopener">📋 Main courante imprimable</a></p>
+    ${l.length ? l.map((s) => `<div class="ligne sig-ligne ${s.actif ? '' : 'passe'}" data-sig="${s.id}"><span class="sig-ic">${s.icone}</span><span class="titre">${esc(s.titre)}<small>${esc(s.details || '')} · ${esc(s.auteur)} ${ilYa(s.cree)}${s.actif ? '' : s.fin ? ' · terminé' : ' · expiré'}</small></span>
+      <span class="meta">${s.source === 'radio' ? '📻' : ''}${[...(s.envois.mt || []), s.envois.mc].filter(Boolean).map((e) => e.statut === 'envoye' ? '✔' : e.statut === 'echec' ? '⚠' : '⏳').join(' ')}</span></div>`).join('') : '<div class="vide">Aucun signalement ces 7 derniers jours. <button type="button" class="mini principal" id="sig-premier">🚩 Signaler un événement</button></div>'}
+    ${etat.gestion ? blocAlertesBipper() : ''}</div>`;
+  { const b = $('#sig-reessayer'); if (b) b.onclick = () => envoyerSigEnAttente(); }
+  { const b = $('#sig-premier'); if (b) b.onclick = () => choisirPointPuis('Touchez la carte à l’endroit à signaler.', (ll) => formSignalement(ll.lat, ll.lng)); }
+  brancherAlertesBipper();
+  z.querySelectorAll('[data-sig]').forEach((d) => (d.onclick = () => {
+    const s = l.find((x) => x.id === d.dataset.sig);
+    carte.setView([s.lat, s.lon], Math.max(carte.getZoom(), 13));
+    if (s.actif) sig.couche.eachLayer((m) => { const p = m.getLatLng(); if (p.lat === s.lat && p.lng === s.lon) m.openPopup(); });
+    else L.popup().setLatLng([s.lat, s.lon]).setContent(popupSignalement(s)).openOn(carte);
+  }));
+}
+
+async function partagerPoint(lat, lon) {
+  const mcVue = typeof mc !== 'undefined' && document.body.dataset.reseau === 'meshcore';
+  if (mcVue) {
+    const o = document.querySelector('.onglets button[data-onglet="meshcore"]'); if (o) o.click();
+    const b = document.querySelector('.sous-onglets-mc button[data-mc-vue="messages"]'); if (b) b.click();
+    setTimeout(() => insererPosition($('#mc-texte'), lat, lon), 600);
+    return;
+  }
+  const o = document.querySelector('.onglets button[data-onglet="messages"]'); if (o) o.click();
+  if (etat.admin && ($('#form-envoi').hidden || !$('#form-envoi').vers.querySelector('option[data-nom]'))) await preparerEnvoi();
+  setTimeout(() => insererPosition($('#form-envoi').texte, lat, lon), 300);
+}
+// ---- Clic droit (ou appui long) sur un nœud : menu d'actions, dans les listes comme sur la carte ----------
+function menuNoeud(x, y, id) {
+  fermerMenuNoeud();
+  const estMc = /^[0-9A-F]{64}$/.test(String(id));
+  const n = estMc ? (typeof mc !== 'undefined' && mc.noeuds ? mc.noeuds.get(id) : null) : etat.noeuds.get(Number(id));
+  const nom = n ? (estMc ? n.nom || n.id : n.nomLong || n.nomCourt || n.id) : String(id).slice(0, 8);
+  const pos = n && n.lat != null;
+  const ident = estMc ? id : (n ? n.id : '!' + (Number(id) >>> 0).toString(16).padStart(8, '0'));
+  const items = [
+    ['fiche', 'ℹ️ Ouvrir la fiche'],
+    pos && ['centrer', '🎯 Centrer sur la carte'],
+    etat.membre && ['favori', estFavori(id) ? '⭐ Retirer des favoris' : '☆ Ajouter aux favoris'],
+    etat.membre && ['admin', estAdministre(id) ? '🛠 Retirer de « Mes nœuds »' : '🛠 Ajouter à « Mes nœuds »'],
+    etat.admin && ['message', '✉️ Message direct'],
+    !estMc && ['ecouter', '📶 Écouter en direct'],
+    pos && ['couverture', '📡 Couverture depuis ce nœud'],
+    pos && etat.membre && ['partager', '📍 Partager sa position dans un message'],
+    ['copier', `📋 Copier l’identifiant (${estMc ? id.slice(0, 8) + '…' : ident})`],
+    !estMc && etat.gestion && ['demander-pos', '📍 Demander sa position'],
+    estMc && etat.membre && ['chemin', '🧭 Chemin depuis le companion'],
+    etat.admin && ['supprimer', '🗑 Supprimer ce nœud'],
+  ].filter(Boolean);
+  const d = document.createElement('div');
+  d.id = 'menu-noeud'; d.className = 'menu-noeud'; d.setAttribute('role', 'menu');
+  d.innerHTML = `<div class="menu-noeud-titre">${esc(nom)} <small>${estMc ? 'MeshCore' : 'Meshtastic'}</small></div>` + items.map(([k, t]) => `<button type="button" role="menuitem" data-mn="${k}">${esc(t)}</button>`).join('');
+  document.body.appendChild(d);
+  const r = d.getBoundingClientRect();
+  d.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + 'px';
+  d.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + 'px';
+  d.onclick = async (ev) => {
+    const b = ev.target.closest('[data-mn]'); if (!b) return;
+    fermerMenuNoeud();
+    const k = b.dataset.mn;
+    if (k === 'fiche') { if (pos) carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 11), { duration: 0.6 }); estMc ? mcOuvrirFiche(id) : ouvrirFiche(Number(id)); }
+    else if (k === 'centrer') carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 13), { duration: 0.6 });
+    else if (k === 'favori') basculerSuivi(id, 'favoris');
+    else if (k === 'admin') basculerSuivi(id, 'administres');
+    else if (k === 'ecouter') testPortee(Number(id));
+    else if (k === 'couverture') couvertureIci(L.latLng(n.lat, n.lon), n.infrastructure ? 6 : 3);
+    else if (k === 'partager') partagerPoint(n.lat, n.lon);
+    else if (k === 'demander-pos') {
+      try { await postJson('/api/demander-position', { nums: [Number(id)] }); annonce(`📍 Position demandée à ${nom}… la réponse arrive en général en moins d’une minute.`); } catch (e) { annonce('⚠ ' + e.message, 'erreur'); }
+    }
+    else if (k === 'copier') { try { await navigator.clipboard.writeText(ident); } catch { /* presse-papiers indisponible */ } }
+    else if (k === 'chemin') { mcOuvrirFiche(id); setTimeout(() => { const o = document.querySelector('[data-of="admin"]'); if (o) o.click(); setTimeout(() => { const c = document.getElementById('mc-chemin'); if (c) c.scrollIntoView({ block: 'center' }); }, 600); }, 500); }
+    else if (k === 'supprimer') {
+      if (!(await confirmer(`Supprimer « ${nom} » de la carte et du serveur ?\n\nSa fiche, ses positions, ses liaisons et sa télémétrie sont effacées${estMc ? ', et il est retiré des contacts du companion' : ''}. S’il émet de nouveau, il réapparaîtra.`))) return;
+      try {
+        const r = await fetch(estMc ? `/api/mc/noeuds/${id}` : `/api/noeuds/${Number(id) >>> 0}`, { method: 'DELETE' });
+        const j = await r.json(); if (!r.ok) throw new Error(j.erreur || 'suppression impossible');
+        if (estMc && j.contact && j.contact !== 'retiré') alert(`Nœud supprimé de la carte. Contact du companion : ${j.contact}.`);
+      } catch (e) { alert(e.message); }
+    }
+    else if (k === 'message') {
+      if (estMc) {
+        mc.destMessage = 'direct:' + id;
+        const o = document.querySelector('.onglets button[data-onglet="meshcore"]'); if (o) o.click();
+        const sv = document.querySelector('.sous-onglets-mc button[data-mc-vue="messages"]'); if (sv) sv.click();
+        setTimeout(() => { mcRendreMessages().then(() => { const t = $('#mc-texte'); if (t) t.focus(); }); }, 200);
+      } else {
+        const o = document.querySelector('.onglets button[data-onglet="messages"]'); if (o) o.click();
+        await preparerEnvoi(Number(id)); $('#form-envoi').texte.focus();
+      }
+    }
+  };
+}
+function fermerMenuNoeud() { const d = $('#menu-noeud'); if (d) d.remove(); }
+// Identifiant du nœud sous un élément (listes, alertes, paquets, tableaux)
+function noeudSous(el) {
+  const m = el.closest('[data-mc], [data-num], [data-suivi-ouvrir], [data-mc-fiche], [data-mc-fiche-audit], [data-bavard]');
+  if (!m || m.closest('#menu-noeud')) return null;
+  const v = m.dataset.mc || m.dataset.mcFiche || m.dataset.mcFicheAudit || m.dataset.suiviOuvrir || m.dataset.num || m.dataset.bavard;
+  if (!v) return null;
+  if (/^[0-9A-F]{64}$/i.test(v)) return v.toUpperCase();
+  return /^\d+$/.test(v) && Number(v) > 0 ? String(Number(v) >>> 0) : null;
+}
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('input, textarea, select, .leaflet-container')) return; // la carte a son propre menu
+  const id = noeudSous(e.target);
+  if (!id) return;
+  e.preventDefault();
+  menuNoeud(e.clientX, e.clientY, id);
+});
+// Appui long (téléphone) : même menu
+{
+  let minut = null, depart = null;
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || e.target.closest('input, textarea, select, .leaflet-container, #menu-noeud')) return;
+    const id = noeudSous(e.target); if (!id) return;
+    const t = e.touches[0]; depart = [t.clientX, t.clientY];
+    minut = setTimeout(() => { minut = null; menuNoeud(depart[0], depart[1], id); }, 550);
+  }, { passive: true });
+  const annuler = () => { clearTimeout(minut); minut = null; };
+  document.addEventListener('touchmove', (e) => { if (minut && depart && Math.hypot(e.touches[0].clientX - depart[0], e.touches[0].clientY - depart[1]) > 10) annuler(); }, { passive: true });
+  document.addEventListener('touchend', annuler, { passive: true });
+}
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#menu-noeud')) fermerMenuNoeud(); }, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fermerMenuNoeud(); });
+document.addEventListener('scroll', fermerMenuNoeud, true);
+
+// Insère une position (« meshand: lat,lon ») dans une zone de saisie
+function insererPosition(zone, lat, lon) {
+  if (!zone) return;
+  const t = `meshand: ${lat.toFixed(5)},${lon.toFixed(5)}`;
+  zone.value = (zone.value ? zone.value.trimEnd() + ' ' : '') + t;
+  zone.dispatchEvent(new Event('input'));
+  zone.focus();
+}
+async function chargerMessages() {
+  if (!etat.membre) return;
+  if (etat.admin && ($('#form-envoi').hidden || !$('#form-envoi').vers.querySelector('option[data-nom]'))) await preparerEnvoi();
+  derniersMessages = await api('/api/messages?limite=300');
+  rendreMessages();
+}
+function rendreMessages() {
+  const tous = derniersMessages;
+  // Canaux proposés : ceux du module connecté puis ceux vus dans les messages
+  const canaux = [];
+  for (const c of [...(envoi.canaux || []).map((c) => c.nom), ...tous.filter((m) => m.vers === 0xffffffff).map((m) => m.canal)]) {
+    if (c && !canaux.some((x) => memeCanal(x, c))) canaux.push(c);
+  }
+  const nb = (f) => tous.filter(f).length;
+  const avantLecture = ongletMessagesVisible() ? { ...nonLus } : {};
+  marquerLus(); // le canal affiché est lu : ses compteurs repartent de zéro avant d'être dessinés
+  const local0 = etat.radio ? etat.radio.noeudLocal : null;
+  marquerNouveaux(tous.filter((m) => filtreVoit(cleMessage(m))), cleMessage, (m) => 'mt' + m.rowid, (m) => m.de !== local0, avantLecture);
+  const zf = $('#filtre-messages');
+  if (zf) {
+    zf.innerHTML = barreCanauxHtml('mt', filtreMessages) + `<label title="Le canal choisi est celui que vous lisez et celui où vous écrivez">Canal <select id="sel-filtre-messages">
+      <option value="">Tous les canaux${(() => { const t = Object.entries(nonLus).filter(([k]) => !k.startsWith('mc')).reduce((a, [, n]) => a + n, 0); return t ? ` · ${t} nouveau${t > 1 ? 'x' : ''}` : ''; })()}</option>
+      ${canaux.map((c) => { const n = nonLus['c:' + c.toLowerCase()]; return `<option value="c:${esc(c)}" ${filtreMessages === 'c:' + c ? 'selected' : ''}>📢 ${esc(c)}${n ? ` · ${n} nouveau${n > 1 ? 'x' : ''}` : ''}</option>`; }).join('')}
+      <option value="direct" ${filtreMessages === 'direct' ? 'selected' : ''}>✉️ Mes messages directs${nonLus.direct ? ` · ${nonLus.direct} nouveau${nonLus.direct > 1 ? 'x' : ''}` : ''}</option>
+      ${etat.config.passerelle || tous.some((m) => estRelaye(m.texte)) ? `<option value="passerelle" ${filtreMessages === 'passerelle' ? 'selected' : ''}>⇄ Relayés par la passerelle</option>` : ''}
+      ${(() => { const l = typeof canauxMcConnus === 'function' ? canauxMcConnus() : []; return l.length ? `<optgroup label="MeshCore">${l.map((c) => `<option value="mc:${esc(c)}">🟠 ${esc(c)}</option>`).join('')}</optgroup>` : ''; })()}
+    </select></label>
+    <button type="button" class="mini" id="btn-sons" title="Bip par canal et alerte des messages directs">🔔 Sons</button>
+    `;
+    $('#sel-filtre-messages').onchange = (e) => {
+      const v = e.target.value;
+      // Canal MeshCore choisi : on passe aux messages MeshCore, sur ce canal
+      if (v.startsWith('mc:')) { e.target.value = filtreMessages; choisirFiltreMc('c:' + v.slice(3)); if (typeof cliquerOnglet === 'function') { ergo.groupe = 'messages'; cliquerOnglet('meshcore', 'messages'); } return; }
+      choisirFiltreMessages(v);
+    };
+    $('#btn-sons').onclick = () => reglerSons(canaux);
+    brancherBarreCanaux(zf);
+  }
+  marquerLus();
+  const msgs = !filtreMessages ? tous
+    : filtreMessages === 'passerelle' ? tous.filter((m) => estRelaye(m.texte))
+    : filtreMessages === 'direct' ? tous.filter((m) => estMonDirect(m))
+      : tous.filter((m) => m.vers === 0xffffffff && memeCanal(m.canal, filtreMessages.slice(2)));
+  $('#messages').innerHTML = msgs.length
+    ? msgs.map((m) => `<div class="message${etat.radio && m.de === etat.radio.noeudLocal ? ' moi' : ''}${msgNouveaux.has('mt' + m.rowid) ? ' nouveau' : ''}${etat.admin ? ' cliquable' : ''}" data-rowid="${m.rowid}" data-de="${m.de}" data-vers="${m.vers}" data-canal="${esc(m.canal || '')}" title="${etat.admin ? 'Cliquer pour répondre dans ce canal' : ''}"><div class="entete">${heure(m.heure)} · ${new Date(m.heure).toLocaleDateString('fr-FR')} · ${m.vers !== 0xffffffff ? '<b class="canal-msg direct">✉️ Direct</b>' : `<b class="canal-msg" style="--coul:${couleurCanal(m.canal)}">📢 ${esc(m.canal || '?')}</b>`}${msgNouveaux.has('mt' + m.rowid) ? ' <span class="etiquette-nouveau">nouveau</span>' : ''}${estRelaye(m.texte) ? ' <span class="badge-passerelle" title="Relayé par une passerelle inter-réseaux">⇄ passerelle</span>' : ''} · ${esc(nomNoeud(m.de))}${m.vers !== 0xffffffff ? ' → ' + esc(nomNoeud(m.vers)) : ''}</div><div class="texte" translate="no">${m.texte ? texteMessageHtml(m.texte, nomNoeud(m.de), m.heure) : '(non conservé)'}</div>${origineMessage(m)}${suiviMessage(m)}</div>`).join('')
+    : `<div class="vide">${filtreMessages === 'direct' && !mesNums().size ? 'Aucun module relié à la carte : vos messages directs sont ceux envoyés ou reçus par votre module.' : filtreMessages === 'direct' ? 'Aucun message direct envoyé ou reçu par votre module sur la période.' : filtreMessages ? 'Aucun message dans ce choix sur la période.' : 'Aucun message texte sur la période.'}</div>`;
+  epinglerMessages(msgs.map((m) => ({ texte: m.texte, heure: m.heure, qui: nomNoeud(m.de) })));
+  if (etat.admin) $('#messages').querySelectorAll('.message[data-de]').forEach((el) => (el.onclick = () => repondreA(el)));
+  $('#messages').querySelectorAll('.origines, .suivi-msg').forEach((el) => {
+    el.title = 'Voir le parcours du message sur la carte';
+    el.onclick = (e) => { e.stopPropagation(); afficherParcours(Number(el.closest('.message').dataset.rowid)); };
+  });
+}
+
+// Clic sur un message : le formulaire bascule sur le bon canal (ou en direct vers l'expéditeur) pour répondre
+async function repondreA(el) {
+  const f = $('#form-envoi');
+  if (!f) return;
+  const de = Number(el.dataset.de) >>> 0, vers = Number(el.dataset.vers) >>> 0, canal = el.dataset.canal;
+  const local = etat.radio ? etat.radio.noeudLocal : null;
+  const r$ = $('#retour-envoi');
+  if (vers !== 0xffffffff) {
+    await preparerEnvoi(de === local ? vers : de); // message direct : on répond à l'autre
+  } else {
+    if (f.hidden || !f.vers.querySelector('option[data-nom]')) await preparerEnvoi();
+    const opt = [...f.vers.options].find((o) => o.dataset.nom === canal) || [...f.vers.options].find((o) => (o.dataset.nom || '').toLowerCase() === canal.toLowerCase());
+    if (!memeCanal(filtreMessages.slice(2), canal) || !filtreMessages.startsWith('c:')) choisirFiltreMessages('c:' + (opt ? opt.dataset.nom : canal));
+    if (!opt) { r$.textContent = `Le canal « ${canal} » n’est pas configuré sur le module connecté : impossible d’y répondre.`; return; }
+  }
+  $('#messages').querySelectorAll('.message.choisi').forEach((x) => x.classList.remove('choisi'));
+  el.classList.add('choisi');
+  f.vers.classList.remove('flash'); void f.vers.offsetWidth; f.vers.classList.add('flash');
+  f.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  f.texte.focus();
+}
+
+// ---- Fiche nœud ------------------------------------------------------------------
+function courbe(points, cle, lib, unite, dec, seuil) {
+  const pts = points.filter((p) => p[cle] != null);
+  if (pts.length < 2) return '';
+  const vals = pts.map((p) => p[cle]);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (seuil != null) { min = Math.min(min, seuil); max = Math.max(max, seuil); }
+  if (max - min < 1e-6) { max += 1; min -= 1; }
+  // Graduations « rondes » : pas de 1, 2 ou 5 × 10^n, 3 à 5 lignes
+  const brut = (max - min) / 4, p10 = 10 ** Math.floor(Math.log10(brut));
+  const pas = [1, 2, 5, 10].map((m) => m * p10).find((v) => v >= brut) || brut;
+  min = Math.floor(min / pas) * pas; max = Math.ceil(max / pas) * pas;
+  if (max - min < pas) max = min + pas;
+  const decAxe = Math.max(0, Math.min(3, -Math.floor(Math.log10(pas) + 1e-9)));
+  const t0 = pts[0].heure, t1 = pts[pts.length - 1].heure || t0 + 1;
+  const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * 300;
+  const y = (v) => 66 - ((v - min) / (max - min)) * 62;
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.heure).toFixed(1)},${y(p[cle]).toFixed(1)}`).join('');
+  const ligneSeuil = seuil != null ? `<line x1="0" x2="300" y1="${y(seuil)}" y2="${y(seuil)}" stroke="#ffb547" stroke-dasharray="3 4" stroke-width="1" opacity=".7" vector-effect="non-scaling-stroke"/>` : '';
+  const graduations = [];
+  for (let v = min; v <= max + pas / 2; v += pas) graduations.push(v);
+  const grille = graduations.map((v) => `<line x1="0" x2="300" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="currentColor" stroke-width="1" opacity=".14" vector-effect="non-scaling-stroke"/>`).join('');
+  const u = unite && unite.trim() ? ' ' + esc(unite.trim()) : '';
+  const etiqY = graduations.map((v, k) => `<span style="top:${((y(v) / 70) * 100).toFixed(1)}%">${fmt(v, decAxe)}${k === graduations.length - 1 ? u : ''}</span>`).join('');
+  // Axe du temps : heures sur moins de 36 h, sinon dates
+  const long = t1 - t0 > 36 * 3600000;
+  const fmtT = (t) => new Date(t).toLocaleString('fr-FR', long ? { day: '2-digit', month: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  const etiqX = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">${fmtT(t0 + f * (t1 - t0))}</span>`).join('');
+  const verticales = [0.25, 0.5, 0.75].map((f) => `<line x1="${f * 300}" x2="${f * 300}" y1="0" y2="70" stroke="currentColor" stroke-width="1" opacity=".08" vector-effect="non-scaling-stroke"/>`).join('');
+  return `<div class="courbe"><div class="lib"><span>${lib}</span><span>dernier ${fmt(vals[vals.length - 1], dec, unite)} · min ${fmt(Math.min(...vals), dec)} · max ${fmt(Math.max(...vals), dec)}</span></div>
+    <div class="courbe-axes"><div class="axe-y">${etiqY}</div><div class="courbe-trace">
+    <svg viewBox="0 0 300 70" preserveAspectRatio="none">${grille}${verticales}${ligneSeuil}<path d="${d}" fill="none" stroke="#3ee6c4" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
+    <div class="axe-x">${etiqX}</div></div></div></div>`;
+}
+
+// ---- Fiche d'installation d'un relais (antenne, hauteur, alimentation, site) -----------------------
+const LIB_ALIM = { secteur: 'Secteur', solaire: 'Solaire', batterie: 'Batterie seule', 'secteur+batterie': 'Secteur + batterie', 'solaire+batterie': 'Solaire + batterie', autre: 'Autre' };
+function htmlInstallation(n, f) {
+  f = f || {};
+  const v = (k) => (f[k] != null ? esc(String(f[k])) : '');
+  if (!gerable(n.num)) {
+    if (!Object.keys(f).length) return '<div class="vide">Aucune fiche d’installation pour ce nœud.</div>';
+    const l = [['Hauteur d’antenne', f.hauteur != null ? f.hauteur + ' m' : null], ['Antenne', f.antenne], ['Gain', f.gain != null ? f.gain + ' dBi' : null], ['Pertes câble', f.pertesCable != null ? f.pertesCable + ' dB' : null], ['Puissance', f.puissance != null ? f.puissance + ' dBm' : null], ['Alimentation', LIB_ALIM[f.alimentation]], ['Batterie', f.batterieAh != null ? f.batterieAh + ' Ah' : null], ['Panneau', f.panneauW != null ? f.panneauW + ' W' : null], ['Site', f.site], ['Mise en service', f.miseEnService]];
+    return `<div class="grille">${l.filter((x) => x[1] != null && x[1] !== '').map(([a, b]) => `<div class="mesure"><span>${a}</span><b>${esc(String(b))}</b></div>`).join('')}</div>${f.notes ? `<p class="note">${esc(f.notes)}</p>` : ''}`;
+  }
+  return `<form id="f-install" class="form-edit">
+    <h4>Antenne et radio</h4><div class="grille-edit">
+      <label>Hauteur au-dessus du sol (m) <input name="hauteur" type="number" step="0.5" min="0.5" max="120" value="${v('hauteur')}" placeholder="ex. 8"></label>
+      <label>Antenne (modèle, type) <input name="antenne" maxlength="80" value="${v('antenne')}" placeholder="ex. colinéaire 868 MHz 5,8 dBi"></label>
+      <label>Gain (dBi) <input name="gain" type="number" step="0.1" min="-5" max="15" value="${v('gain')}" placeholder="2,15 par défaut"></label>
+      <label>Pertes câble + connecteurs (dB) <input name="pertesCable" type="number" step="0.1" min="0" max="20" value="${v('pertesCable')}" placeholder="ex. 1,5"></label>
+      <label>Puissance d’émission (dBm) <input name="puissance" type="number" step="1" min="0" max="30" value="${v('puissance')}" placeholder="27 par défaut"></label></div>
+    <h4>Alimentation</h4><div class="grille-edit">
+      <label>Type <select name="alimentation"><option value="">–</option>${Object.entries(LIB_ALIM).map(([k, t]) => `<option value="${k}" ${f.alimentation === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Batterie (Ah) <input name="batterieAh" type="number" step="0.1" min="0" value="${v('batterieAh')}"></label>
+      <label>Panneau solaire (W) <input name="panneauW" type="number" step="1" min="0" value="${v('panneauW')}"></label></div>
+    <h4>Site</h4><div class="grille-edit">
+      <label>Site (lieu, support) <input name="site" maxlength="120" value="${v('site')}" placeholder="ex. château d’eau, mât 6 m"></label>
+      <label>Mise en service <input name="miseEnService" type="date" value="${v('miseEnService')}"></label>
+      <label>Propriétaire du site <input name="proprietaire" maxlength="120" value="${v('proprietaire')}"></label>
+      <label>Contact <input name="contact" maxlength="160" value="${v('contact')}"></label></div>
+    <label>Notes <textarea name="notes" rows="3" maxlength="1000">${v('notes')}</textarea></label>
+    <div class="actions-prop"><button type="submit" class="principal">Enregistrer la fiche</button></div>
+    <p class="note">La hauteur, le gain, les pertes et la puissance remplacent les valeurs supposées (6 m, 2,15 dBi, 27 dBm) dans la couverture du réseau, le plan et Relier. Propriétaire et contact ne sont visibles que des administrateurs.${f.maj ? ` Dernière mise à jour ${ilYa(f.maj)}${f.par ? ' par ' + esc(f.par) : ''}.` : ''}</p>
+    <p class="erreur" id="install-retour"></p>
+  </form>`;
+}
+function brancherInstallation(n) {
+  const fo = $('#f-install');
+  if (!fo) return;
+  fo.onsubmit = async (e) => {
+    e.preventDefault();
+    const nums = ['hauteur', 'gain', 'pertesCable', 'puissance', 'batterieAh', 'panneauW'];
+    const corps = Object.fromEntries([...new FormData(fo).entries()].map(([k, x]) => [k, nums.includes(k) ? String(x).replace(',', '.').trim() : String(x).trim()]));
+    try { await postJson(`/api/noeuds/${n.num}/installation`, corps, 'PUT'); $('#install-retour').textContent = '✔ Fiche enregistrée.'; $('#install-retour').classList.add('ok'); }
+    catch (err) { $('#install-retour').textContent = err.message; }
+  };
+}
+async function ouvrirFiche(num) {
+  etat.selection = num;
+  const fiche = $('#fiche');
+  fiche.hidden = false;
+  $('#fiche-contenu').innerHTML = '<div class="vide">Chargement…</div>';
+  let d;
+  try { d = await api('/api/noeuds/' + num); } catch (e) { $('#fiche-contenu').innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.selection !== num) return;
+  const n = d.noeud;
+  const s = etat.config.seuils;
+  const mesures = [
+    ['Dernier entendu', ilYa(n.dernierVu)],
+    ['Sauts', n.sautsDernier == null ? '–' : n.sautsDernier === 0 ? 'Direct' : n.sautsDernier],
+    ['SNR', fmt(n.snr, 1, ' dB')],
+    ['RSSI', fmt(n.rssi, 0, ' dBm')],
+    ['Batterie', n.batterie == null ? '–' : n.batterie > 100 ? 'Secteur' : n.batterie + ' %'],
+    ['Tension', fmt(n.tension, 2, ' V')],
+    ['Occupation canal', fmt(n.canal, 1, ' %')],
+    ['Temps d’émission', fmt(n.emission, 2, ' %')],
+    ['Altitude', n.alt != null ? n.alt + ' m' : '–'],
+    ['Allumé depuis', duree(n.uptime)],
+    ['Matériel', n.materiel || '–'],
+    ['Firmware', n.firmware || '–'],
+  ];
+  if (n.temperature != null) mesures.push(['Température', fmt(n.temperature, 1, ' °C')]);
+  if (n.humidite != null) mesures.push(['Humidité', fmt(n.humidite, 0, ' %')]);
+  if (n.pression != null) mesures.push(['Pression', fmt(n.pression, 0, ' hPa')]);
+  if (n.statsLocales) {
+    const st = n.statsLocales;
+    mesures.push(['Nœuds en ligne', st.enLigne ?? '–'], ['Paquets relayés', st.relais ?? '–'], ['Bruit de fond', st.bruit != null ? st.bruit + ' dBm' : '–']);
+  }
+  const alertesNoeud = etat.alertes.filter((a) => a.num === num);
+  const voisins = d.voisins.slice(0, 30).map((v) => `<tr data-num="${v.num}">
+      <td><span style="color:${couleurSnr(v.snrEntendu ?? v.snrEmis)}">●</span> ${esc(v.nom)}</td>
+      <td class="num">${fmt(v.snrEntendu, 1)}</td><td class="num">${fmt(v.snrEmis, 1)}</td>
+      <td class="num">${v.distanceKm != null ? fmt(v.distanceKm, 1) : '–'}</td><td class="num">${fmt(v.part, 1, ' %')}</td>
+      <td class="num">${n.lat != null && etat.noeuds.get(v.num) && etat.noeuds.get(v.num).lat != null ? `<button class="mini" data-profil="${v.num}" title="Profil de relief et bilan de liaison">⛰</button>` : ''}</td></tr>`).join('');
+  const receptions = d.receptions.map((r) => `<tr data-num="${r.passerelle}"><td>${esc(r.nom)}</td><td class="num">${r.nb}</td><td class="num">${fmt(r.snr, 1)}</td><td class="num">${fmt(r.rssi, 0)}</td><td class="num">${r.sauts_min ?? '–'}</td></tr>`).join('');
+
+  $('#fiche-contenu').innerHTML = `
+    <h2>${esc(n.nomLong || n.id)}</h2>
+    <div class="ident">${esc(n.nomCourt || '')} · ${esc(n.id)} · ${n.num} ${boutonsSuivi(n.num)}</div>
+    ${blocCoords(n.lat, n.lon, { alt: n.alt, approx: !etat.membre && !n.infrastructure && etat.config.precisionPublique >= 0 })}
+    <div class="badges">
+      <span class="badge ${n.statut}">${{ actif: 'Actif', recent: 'Récent', inactif: 'Inactif' }[n.statut]}</span>
+      <span class="badge ${n.infrastructure ? 'infra' : ''}">${esc(n.roleFr)}</span>
+      ${n.passerelle ? `<span class="badge passerelle">Passerelle MQTT · ${n.etatPasserelle === 'offline' ? 'hors ligne' : 'en ligne'}</span>` : ''}
+      ${n.preset ? `<span class="badge">${esc(n.preset)}</span>` : ''}
+      ${[...new Set(d.paquets.map((p) => p.canal).filter(Boolean))].slice(0, 4).map((c) => `<span class="badge canal">${esc(c)}</span>`).join('')}
+      ${n.materiel ? `<span class="badge">${esc(n.materiel)}</span>` : ''}
+    </div>
+    <nav class="onglets-fiche">
+      <button data-of="infos" class="actif">Informations</button><button data-of="telem">Télémétries</button><button data-of="voisins">Voisins</button><button data-of="config">Configuration</button>${etat.membre ? `<button data-of="install">Installation${d.installation ? ' ✓' : ''}</button>` : ''}<button data-of="trames">Trames</button>
+    </nav>
+    <div data-pf="infos">
+    ${alertesNoeud.map((a) => `<div class="liste-alertes"><div class="alerte ${a.niveau}">${esc(a.message)}</div></div>`).join('')}
+    <div class="grille">${mesures.map(([l, v]) => `<div class="mesure"><span>${l}</span><b>${esc(v)}</b></div>`).join('')}</div>
+    <div class="boutons">
+      ${n.lat != null ? '<button id="centrer">Centrer sur la carte</button>' : ''}
+      ${d.trajet.length > 1 ? `<button id="trajet">Afficher le trajet (${d.trajet.length} points)</button>` : ''}
+      ${n.infrastructure && n.lat != null ? '<button id="simu-retrait" title="Que perdrait-on si ce relais tombait en panne ?">🧪 Et s’il tombait en panne ?</button>' : ''}
+      ${n.lat != null ? '<button id="mes-noeud" title="D’où ce nœud a réellement été reçu, par quelles passerelles et avec quel SNR">📶 Couverture mesurée de ce nœud</button>' : ''}
+      ${n.lat != null && d.voisins.length ? '<button id="couverture">Liaisons mesurées</button>' : ''}
+      ${n.lat != null ? `<button id="couv-relief">Couverture selon le relief</button><label class="champ-mini">antenne <input id="h-relief" type="number" min="0.5" max="80" step="0.5" value="${d.installation && d.installation.hauteur ? d.installation.hauteur : n.infrastructure ? 6 : 2}"> m</label>` : ''}
+      ${gerable(n.num) && etat.config.radio && (!etat.radio || etat.radio.noeudLocal !== n.num) ? '<button id="tester">Tester (traceroute)</button>' : ''}
+      <button id="test-portee" title="Écouter ce nœud en direct : qui l’entend, avec quel signal">📶 Test de portée</button>
+      ${gerable(n.num) ? '<button id="modifier-reglages" title="Lire et modifier ses réglages à distance ; canaux, redémarrage, firmware… depuis l’éditeur">✏️ Programmer ce nœud</button>' : ''}${etat.admin ? '<button id="ecrire">✉️ Message direct</button><button data-qr-reglages>🔳 QR code des réglages</button>' : ''}
+    </div>
+    <div id="retour-test" class="vide" hidden></div>
+    </div>
+    <div data-pf="telem" hidden>
+    ${rendreSante(d.sante, n)}
+    <h4>Évolution sur ${etat.config.retentionJours} jours</h4>
+    ${courbe(d.telemetrie, 'tension', 'Tension', ' V', 2, s.tensionVolts) || ''}
+    ${courbe(d.telemetrie, 'batterie', 'Batterie', ' %', 0) || ''}
+    ${courbe(d.telemetrie, 'canal', 'Occupation du canal', ' %', 1, s.canalPourcent) || ''}
+    ${courbe(d.telemetrie, 'emission', 'Temps d’émission', ' %', 2) || ''}
+    ${courbe(d.telemetrie, 'temperature', 'Température', ' °C', 1) || ''}
+    ${d.telemetrie.length < 2 ? '<div class="vide">Pas encore assez de télémétrie.</div>' : ''}
+    </div>
+    <div data-pf="voisins" hidden>
+    <h4>Entendu par</h4>
+    <div id="entendu-par"><div class="vide">Chargement…</div></div>
+    <h4>Voisins radio (${d.voisins.length})</h4>
+    ${voisins ? `<table class="voisins"><thead><tr><th>Nœud</th><th class="num">SNR reçu</th><th class="num">SNR émis</th><th class="num">km</th><th class="num">Part</th><th></th></tr></thead><tbody>${voisins}</tbody></table>` : '<div class="vide">Aucun lien direct connu.</div>'}
+    </div>
+    <div data-pf="config" hidden>
+    <div class="grille">
+      ${[['Rôle', n.roleFr], ['Matériel', n.materiel], ['Firmware', n.firmware], ['Preset LoRa', n.preset],
+        ['Sauts au départ', d.paquets.find((p) => p.hop_depart) ? d.paquets.find((p) => p.hop_depart).hop_depart : null],
+        ['Canaux utilisés', [...new Set(d.paquets.map((p) => p.canal).filter(Boolean))].join(', ')],
+        ['Passerelle MQTT', n.passerelle ? (n.etatPasserelle === 'offline' ? 'oui, hors ligne' : 'oui, en ligne') : 'non'],
+        ['Messages chiffrés PKI', d.paquets.some((p) => p.pki) ? 'oui (firmware ≥ 2.5)' : '–'],
+        ['Vu la première fois', n.premierVu ? new Date(n.premierVu).toLocaleString('fr-FR') : null],
+        ['Dernière position', n.heurePosition ? ilYa(n.heurePosition) : null]].map(([l, v]) => `<div class="mesure"><span>${l}</span><b>${esc(v ?? '–')}</b></div>`).join('')}
+    </div>
+    <p class="note">Valeurs déduites des trames entendues. Pour la configuration complète lue dans le nœud lui-même : onglet Programmer › Lire sa configuration (admin).</p>
+    ${etat.admin ? '<div class="boutons"><button data-qr-reglages class="principal">🔳 QR code des réglages (canaux + radio)</button></div><p class="note">Le QR code reprend les canaux et le réglage LoRa du nœud : scanné par un autre module, il lui donne exactement la même configuration de canaux.</p>' : ''}
+    </div>
+    ${etat.membre ? `<div data-pf="install" hidden>${htmlInstallation(n, d.installation)}</div>` : ''}
+    <div data-pf="trames" hidden>
+    <div class="boutons"><button id="toutes-trames">📋 Toutes les trames, avec filtres</button></div>
+    <div class="flux">${d.paquets.slice(0, 25).map((p) => lignePaquet({ ...p, passerelle: null }, false)).join('') || '<div class="vide">Aucun paquet.</div>'}</div>
+    </div>`;
+  $('#fiche-contenu').querySelectorAll('[data-of]').forEach((b) => (b.onclick = () => {
+    $('#fiche-contenu').querySelectorAll('[data-of]').forEach((x) => x.classList.toggle('actif', x === b));
+    $('#fiche-contenu').querySelectorAll('[data-pf]').forEach((x) => (x.hidden = x.dataset.pf !== b.dataset.of));
+  }));
+  $('#toutes-trames').onclick = () => ouvrirTrames(n.num);
+  brancherInstallation(n, d.installation);
+  chargerEntenduPar(n);
+  $('#fiche-contenu').querySelectorAll('[data-qr-reglages]').forEach((b) => (b.onclick = () => ouvrirQr(n)));
+
+  const centrer = $('#centrer');
+  if (centrer) centrer.onclick = () => carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 12));
+  const bmn = $('#mes-noeud'); if (bmn) bmn.onclick = () => couvertureMesuree(null, n.num);
+  const bsr = $('#simu-retrait'); if (bsr) bsr.onclick = () => { etat.simu = { retirer: new Set([String(n.num)]), ajouter: [] }; simulation(); };
+  const btnTrajet = $('#trajet');
+  if (btnTrajet) btnTrajet.onclick = () => {
+    if (etat.trajet) etat.trajet.remove();
+    etat.trajet = L.polyline(d.trajet.map((p) => [p.lat, p.lon]), { color: '#ffd166', weight: 2.5, opacity: 0.9 }).addTo(carte);
+    carte.fitBounds(etat.trajet.getBounds(), { padding: [60, 60] });
+  };
+  $('#fiche-contenu').querySelectorAll('tr[data-num]').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('[data-profil]')) ouvrirFiche(Number(tr.dataset.num)); }));
+  $('#fiche-contenu').querySelectorAll('[data-profil]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); ouvrirProfil(n.num, Number(b.dataset.profil)); }));
+  const btnCouv = $('#couverture');
+  if (btnCouv) btnCouv.onclick = () => afficherCouverture(n, d.voisins);
+  const btnEcrire = $('#ecrire');
+  if (btnEcrire) btnEcrire.onclick = () => {
+    $('#panneau').classList.remove('replie'); $('#deplier').hidden = true;
+    document.querySelector('.onglets button[data-onglet="messages"]').click();
+    preparerEnvoi(n.num).then(() => $('#form-envoi').texte.focus());
+  };
+  const btnPortee = $('#test-portee');
+  if (btnPortee) btnPortee.onclick = () => testPortee(n.num);
+  const btnMod = $('#modifier-reglages');
+  if (btnMod) btnMod.onclick = () => editeurReglages(n.num);
+  const btnAdm = $('#administrer');
+  if (btnAdm) btnAdm.onclick = () => {
+    gestion.selection = new Set([n.num]);
+    gestion.filtre = '';
+    $('#panneau').classList.remove('replie'); $('#deplier').hidden = true;
+    document.querySelector('.onglets button[data-onglet="gestion"]').click();
+  };
+  const btnRelief = $('#couv-relief');
+  if (btnRelief) btnRelief.onclick = async () => {
+    await voirCouvertureSite({ lat: n.lat, lon: n.lon }, n.nomLong || n.nomCourt || n.id, Number($('#h-relief').value) || 2, { cadrer: true });
+    ajouterLiaisonsMesurees(n, d.voisins);
+  };
+  const btnTest = $('#tester');
+  if (btnTest) btnTest.onclick = async () => {
+    btnTest.disabled = true;
+    const zoneRetour = $('#retour-test');
+    zoneRetour.hidden = false;
+    try {
+      await api('/api/traceroute/' + n.num, { method: 'POST' });
+      zoneRetour.textContent = 'Traceroute envoyé par le module de la maison. Réponse attendue sous 1 à 3 minutes…';
+      let essais = 0;
+      const suivi = setInterval(async () => {
+        essais++;
+        if (etat.selection !== num || essais > 12) return clearInterval(suivi);
+        const dd = await api('/api/noeuds/' + num).catch(() => null);
+        const t = dd && dd.sante && dd.sante.traceroutes[0];
+        if (t && t.statut !== 'envoye') { clearInterval(suivi); ouvrirFiche(num); }
+      }, 15000);
+    } catch (err) {
+      zoneRetour.textContent = 'Impossible : ' + err.message;
+      btnTest.disabled = false;
+    }
+  };
+}
+
+// ---- Santé d'un nœud -------------------------------------------------------------
+function rendreSante(sa, n) {
+  if (!sa) return '';
+  const pr = sa.prevision;
+  const autonomie = pr && pr.heuresAvantSeuil != null ? (pr.heuresAvantSeuil > 72 ? `${Math.round(pr.heuresAvantSeuil / 24)} j` : `${pr.heuresAvantSeuil} h`) : '–';
+  const tendance = pr ? { secteur: 'Secteur', charge: '↗ en charge', 'décharge': '↘ décharge', stable: '→ stable' }[pr.tendance] : '–';
+  const jours = sa.jours.length
+    ? `<table class="voisins"><thead><tr><th>Jour</th><th class="num">Min</th><th class="num">Max</th><th class="num">Recharge</th></tr></thead><tbody>${sa.jours.map((j) =>
+        `<tr><td>${esc(j.jour)}</td><td class="num" style="color:${j.min < etat.config.seuils.tensionVolts ? 'var(--critique)' : 'inherit'}">${fmt(j.min, 2)}</td><td class="num" style="color:${j.max < etat.config.seuils.chargeSolaireVolts ? 'var(--attention)' : 'inherit'}">${fmt(j.max, 2)}</td><td class="num">${fmt(j.recharge, 2, ' V')}</td></tr>`).join('')}</tbody></table>`
+    : '';
+  const statuts = { repondu: ['✔', 'var(--ok)', 'répondu'], echec: ['✖', 'var(--critique)', 'échec'], sans_reponse: ['✖', 'var(--critique)', 'sans réponse'], envoye: ['…', 'var(--attention)', 'en attente'] };
+  const trs = sa.traceroutes.length
+    ? sa.traceroutes.slice(0, 8).map((t) => {
+        const [ic, col, lib] = statuts[t.statut] || statuts.envoye;
+        const chemin = t.chemin ? t.chemin.map((c, i) => `${i ? `<span class="snr" style="color:${couleurSnr(c.snr)}">${c.snr != null ? fmt(c.snr, 1) : '?'} dB →</span> ` : ''}${esc(c.nom)}`).join(' ') : esc(t.detail || lib);
+        return `<div class="tr"><span style="color:${col}">${ic}</span> <small>${new Date(t.heure).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${t.declencheur === 'auto' ? 'auto' : 'manuel'}${t.duree ? ' · ' + Math.round(t.duree / 1000) + ' s' : ''}</small><div>${chemin}</div></div>`;
+      }).join('')
+    : '<div class="vide">Aucun traceroute pour l’instant.</div>';
+  return `
+    <h4>Santé sur 7 jours</h4>
+    <div class="grille">
+      <div class="mesure"><span>Disponibilité</span><b style="color:${sa.disponibilite < 80 ? 'var(--attention)' : 'inherit'}">${sa.disponibilite} %</b></div>
+      <div class="mesure"><span>Redémarrages</span><b>${sa.redemarrages}</b></div>
+      <div class="mesure"><span>Tendance tension</span><b>${tendance}</b></div>
+      <div class="mesure"><span>Pente</span><b>${pr ? fmt(pr.penteVoltsParJour, 2, ' V/j') : '–'}</b></div>
+      <div class="mesure"><span>Autonomie avant 3,3 V</span><b>${autonomie}</b></div>
+      <div class="mesure"><span>Traceroutes réussis</span><b>${sa.tauxReponseTraceroute != null ? sa.tauxReponseTraceroute + ' %' : '–'}</b></div>
+    </div>
+    ${jours}
+    <h4>Traceroutes</h4>
+    <div class="traceroutes">${trs}</div>`;
+}
+
+// ---- Couverture radio d'un nœud ------------------------------------------------------
+function afficherCouverture(n, voisins) {
+  if (etat.coucheCouverture) { etat.coucheCouverture.remove(); etat.coucheCouverture = null; }
+  const groupe = L.layerGroup();
+  const pts = [[n.lat, n.lon]];
+  for (const v of voisins) {
+    const o = etat.noeuds.get(v.num);
+    if (!o || o.lat == null) continue;
+    const snr = v.snrEntendu ?? v.snrEmis;
+    pts.push([o.lat, o.lon]);
+    L.polyline([[n.lat, n.lon], [o.lat, o.lon]], { color: couleurSnr(snr), weight: 2, opacity: 0.8, pane: 'traces' }).addTo(groupe);
+    L.circleMarker([o.lat, o.lon], { radius: 9, color: couleurSnr(snr), weight: 2, fillOpacity: 0.35, pane: 'traces' })
+      .bindTooltip(`<b>${esc(v.nom)}</b><br>${v.distanceKm != null ? fmt(v.distanceKm, 1, ' km') : ''} · SNR ${fmt(snr, 1, ' dB')}`, { className: 'info' })
+      .addTo(groupe);
+  }
+  const enveloppe = enveloppeConvexe(pts);
+  if (enveloppe.length >= 3) L.polygon(enveloppe, { color: '#3ee6c4', weight: 1, dashArray: '4 4', fillOpacity: 0.06, pane: 'liens' }).addTo(groupe);
+  groupe.addTo(carte);
+  etat.coucheCouverture = groupe;
+  carte.fitBounds(L.latLngBounds(pts), { padding: [80, 80] });
+  $('#btn-effacer').hidden = false;
+}
+function enveloppeConvexe(points) {
+  const p = points.map(([a, b]) => [b, a]).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  if (p.length < 3) return points;
+  const croix = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const bas = [], haut = [];
+  for (const pt of p) { while (bas.length >= 2 && croix(bas[bas.length - 2], bas[bas.length - 1], pt) <= 0) bas.pop(); bas.push(pt); }
+  for (const pt of p.slice().reverse()) { while (haut.length >= 2 && croix(haut[haut.length - 2], haut[haut.length - 1], pt) <= 0) haut.pop(); haut.push(pt); }
+  return bas.slice(0, -1).concat(haut.slice(0, -1)).map(([x, y]) => [y, x]);
+}
+
+// ---- Profil de relief et bilan de liaison ---------------------------------------------
+async function ouvrirProfil(a, b) {
+  const dlg = $('#dlg-profil');
+  const f = $('#form-profil');
+  f.dataset.a = a;
+  f.dataset.b = b;
+  delete f.dataset.coords;
+  const na = etat.noeuds.get(a), nb = etat.noeuds.get(b);
+  f.ha.value = na && na.infrastructure ? 6 : 3;
+  f.hb.value = nb && nb.infrastructure ? 6 : 3;
+  if (etat.radio && etat.radio.preset) f.preset.value = etat.radio.preset;
+  if (!dlg.open) dlg.showModal();
+  await calculerProfil();
+}
+async function calculerProfil() {
+  const f = $('#form-profil');
+  const sortie = $('#profil-resultat');
+  sortie.innerHTML = '<div class="vide">Calcul du profil (altitudes IGN)…</div>';
+  const ext = f.dataset.coords ? JSON.parse(f.dataset.coords) : { a: f.dataset.a, b: f.dataset.b };
+  const qs = new URLSearchParams({ ...ext, ha: f.ha.value, hb: f.hb.value, ptx: f.ptx.value, ga: f.ga.value, gb: f.ga.value, pertes: f.pertes.value, preset: f.preset.value });
+  let r;
+  try { r = await api('/api/profil?' + qs); } catch (e) { sortie.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const b = r.bilan;
+  const coul = b.marge >= 10 ? 'var(--ok)' : b.marge >= 0 ? 'var(--attention)' : 'var(--critique)';
+  const mes = (m) => (m ? `${fmt(m.snr, 1, ' dB')} <small>(${m.source === 'rf' ? 'radio' : m.source}, ${m.nb} obs.)</small>` : '–');
+  sortie.innerHTML = `
+    <div class="profil-titre"><b>${esc(r.a.nom)}</b> → <b>${esc(r.b.nom)}</b> · ${fmt(r.distanceKm, 2, ' km')} · ${esc(r.preset)}</div>
+    ${graphiqueProfil(r)}
+    <div class="verdict" style="border-color:${coul}">${esc(r.verdict)}</div>
+    <div class="grille">
+      <div class="mesure"><span>Affaiblissement espace libre</span><b>${fmt(b.fspl, 1, ' dB')}</b></div>
+      <div class="mesure"><span>Perte de diffraction</span><b>${fmt(b.diffraction, 1, ' dB')}</b></div>
+      <div class="mesure"><span>Puissance reçue estimée</span><b>${fmt(b.puissanceRecue, 1, ' dBm')}</b></div>
+      <div class="mesure"><span>Sensibilité (${esc(r.preset)})</span><b>${fmt(b.sensibilite, 1, ' dBm')}</b></div>
+      <div class="mesure"><span>SNR estimé</span><b>${fmt(b.snrEstime, 1, ' dB')}</b></div>
+      <div class="mesure"><span>Marge de liaison</span><b style="color:${coul}">${fmt(b.marge, 1, ' dB')}</b></div>
+      ${r.a.num != null && r.b.num != null ? `<div class="mesure"><span>SNR mesuré ${esc(r.a.nom.slice(0, 10))} → ${esc(r.b.nom.slice(0, 10))}</span><b>${mes(r.mesure.aVersB)}</b></div>
+      <div class="mesure"><span>SNR mesuré ${esc(r.b.nom.slice(0, 10))} → ${esc(r.a.nom.slice(0, 10))}</span><b>${mes(r.mesure.bVersA)}</b></div>` : ''}
+      ${[['A', r.a, f.ha.value, r.serie[0]], ['B', r.b, f.hb.value, r.serie[r.serie.length - 1]]].map(([k, o, h, p]) => `<div class="mesure"><span>Antenne ${k} · ${esc(String(o.nom).slice(0, 14))}</span><b>${fmt(Number(h), 1, ' m')} au-dessus du sol <small>(sol ${fmt(p.sol ?? p.solCourbe, 0, ' m')} → antenne ${fmt((p.sol ?? p.solCourbe) + Number(h), 0, ' m')})</small></b></div>`).join('')}
+      <div class="mesure"><span>Obstacle principal</span><b>à ${fmt(r.obstacle.distanceKm, 1, ' km')} · ${r.obstacle.degagementM >= 0 ? `dégagement ${fmt(r.obstacle.degagementM, 0, ' m')}` : `dépasse la visée de ${fmt(-r.obstacle.degagementM, 0, ' m')}`}</b></div>
+    </div>
+    <p class="note">Survolez le profil pour lire l’altitude ; cliquez pour voir l’endroit sur la carte.</p>
+    <p class="note">Altitudes : ${esc(r.sourceAltitude)} · terre à 4/3 du rayon réel · 1re zone de Fresnel à ${r.parametres.frequenceMHz} MHz · diffraction lame de couteau (ITU-R P.526) · bruit −174 dBm/Hz + 6 dB. Estimation indicative : la végétation et le bâti ne sont pas modélisés.</p>`;
+  brancherCurseurProfil(r);
+}
+function graphiqueProfil(r) {
+  const W = 640, H = 220, m = { g: 44, d: 10, h: 10, b: 24 };
+  const s = r.serie, D = s[s.length - 1].d || 1;
+  const zmin = Math.min(...s.map((p) => Math.min(p.solCourbe, p.visee - p.fresnel))) - 20;
+  const zmax = Math.max(...s.map((p) => Math.max(p.solCourbe, p.visee))) + 30;
+  const x = (d) => m.g + (d / D) * (W - m.g - m.d);
+  const y = (z) => H - m.b - ((z - zmin) / (zmax - zmin)) * (H - m.h - m.b);
+  const sol = `M${x(0)},${H - m.b} ` + s.map((p) => `L${x(p.d).toFixed(1)},${y(p.solCourbe).toFixed(1)}`).join(' ') + ` L${x(D)},${H - m.b} Z`;
+  const visee = `M${x(0)},${y(s[0].visee)} L${x(D)},${y(s[s.length - 1].visee)}`;
+  const fres = s.map((p, i) => `${i ? 'L' : 'M'}${x(p.d).toFixed(1)},${y(p.visee - p.fresnel).toFixed(1)}`).join(' ');
+  const fres60 = s.map((p, i) => `${i ? 'L' : 'M'}${x(p.d).toFixed(1)},${y(p.visee - 0.6 * p.fresnel).toFixed(1)}`).join(' ');
+  const ob = s.reduce((a, p) => (p.visee - p.solCourbe < a.visee - a.solCourbe ? p : a), s[Math.floor(s.length / 2)]);
+  const grad = [];
+  const pas = Math.pow(10, Math.floor(Math.log10(zmax - zmin))) / 2 || 50;
+  for (let z = Math.ceil(zmin / pas) * pas; z <= zmax; z += pas) grad.push(`<line x1="${m.g}" x2="${W - m.d}" y1="${y(z)}" y2="${y(z)}" class="grille-svg"/><text x="${m.g - 4}" y="${y(z) + 3}" text-anchor="end">${Math.round(z)}</text>`);
+  const kms = [];
+  const pasKm = D > 20000 ? 5000 : D > 8000 ? 2000 : 1000;
+  for (let d = 0; d <= D; d += pasKm) kms.push(`<text x="${x(d)}" y="${H - 8}" text-anchor="middle">${d / 1000} km</text>`);
+  return `<svg class="profil" viewBox="0 0 ${W} ${H}" role="img" aria-label="Profil de relief">
+    ${grad.join('')}${kms.join('')}
+    <path d="${sol}" class="sol"/>
+    <path d="${fres}" class="fresnel"/><path d="${fres60}" class="fresnel60"/>
+    <path d="${visee}" class="visee"/>
+    <line x1="${x(0)}" x2="${x(0)}" y1="${y(s[0].solCourbe)}" y2="${y(s[0].visee)}" class="mat"/><line x1="${x(D)}" x2="${x(D)}" y1="${y(s[s.length - 1].solCourbe)}" y2="${y(s[s.length - 1].visee)}" class="mat"/>
+    <circle cx="${x(0)}" cy="${y(s[0].visee)}" r="4" class="ant"/><circle cx="${x(D)}" cy="${y(s[s.length - 1].visee)}" r="4" class="ant"/>
+    <text x="${x(0) + 6}" y="${y(s[0].visee) - 6}" class="etiq-ant">A ${fmt(s[0].visee - s[0].solCourbe, 1, ' m')}</text>
+    <text x="${x(D) - 6}" y="${y(s[s.length - 1].visee) - 6}" text-anchor="end" class="etiq-ant">B ${fmt(s[s.length - 1].visee - s[s.length - 1].solCourbe, 1, ' m')}</text>
+    <circle cx="${x(ob.d)}" cy="${y(ob.solCourbe)}" r="4" class="obstacle"/>
+    <g class="curseur-profil" visibility="hidden"><line y1="${m.h}" y2="${H - m.b}"/><circle r="4"/><rect class="fond-info" rx="4" height="30"/><text class="info-l1"></text><text class="info-l2"></text></g>
+    <rect class="zone-profil" x="${m.g}" y="${m.h}" width="${W - m.g - m.d}" height="${H - m.h - m.b}" fill="transparent"/>
+  </svg>`;
+}
+
+// Survol et clic sur le profil : altitude du point, puis localisation sur la carte
+function brancherCurseurProfil(r) {
+  const svg = document.querySelector('#profil-resultat svg.profil');
+  if (!svg) return;
+  const W = 640, H = 220, m = { g: 44, d: 10, h: 10, b: 24 };
+  const s = r.serie, D = s[s.length - 1].d || 1;
+  const zmin = Math.min(...s.map((p) => Math.min(p.solCourbe, p.visee - p.fresnel))) - 20;
+  const zmax = Math.max(...s.map((p) => Math.max(p.solCourbe, p.visee))) + 30;
+  const x = (d) => m.g + (d / D) * (W - m.g - m.d);
+  const y = (z) => H - m.b - ((z - zmin) / (zmax - zmin)) * (H - m.h - m.b);
+  const g = svg.querySelector('.curseur-profil'), zone = svg.querySelector('.zone-profil');
+  const point = (ev) => {
+    const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const v = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const d = Math.max(0, Math.min(D, ((v.x - m.g) / (W - m.g - m.d)) * D));
+    let k = 0; while (k < s.length - 1 && s[k + 1].d < d) k++;
+    const p = s[Math.min(k + (d - s[k].d > (s[Math.min(k + 1, s.length - 1)].d - d) ? 1 : 0), s.length - 1)];
+    const f = p.d / D;
+    return { ...p, f, lat: r.a.lat + (r.b.lat - r.a.lat) * f, lon: r.a.lon + (r.b.lon - r.a.lon) * f };
+  };
+  zone.addEventListener('mousemove', (ev) => {
+    const p = point(ev);
+    const px = x(p.d), py = y(p.solCourbe);
+    g.setAttribute('visibility', 'visible');
+    g.querySelector('line').setAttribute('x1', px); g.querySelector('line').setAttribute('x2', px);
+    g.querySelector('circle').setAttribute('cx', px); g.querySelector('circle').setAttribute('cy', py);
+    const deg = p.visee - p.solCourbe;
+    const l1 = `${(p.d / 1000).toFixed(2).replace('.', ',')} km · sol ${Math.round(p.sol)} m`;
+    const l2 = deg >= 0 ? `visée ${Math.round(deg)} m au-dessus` : `relief ${Math.round(-deg)} m au-dessus de la visée`;
+    const larg = Math.max(l1.length, l2.length) * 5.6 + 12;
+    const bx = px + larg + 8 > W ? px - larg - 6 : px + 6;
+    const fond = g.querySelector('.fond-info');
+    fond.setAttribute('x', bx); fond.setAttribute('y', m.h + 2); fond.setAttribute('width', larg);
+    const t1 = g.querySelector('.info-l1'), t2 = g.querySelector('.info-l2');
+    t1.setAttribute('x', bx + 6); t1.setAttribute('y', m.h + 14); t1.textContent = l1;
+    t2.setAttribute('x', bx + 6); t2.setAttribute('y', m.h + 26); t2.textContent = l2;
+    t2.setAttribute('class', 'info-l2' + (deg < 0 ? ' mauvais' : ''));
+  });
+  zone.addEventListener('mouseleave', () => g.setAttribute('visibility', 'hidden'));
+  zone.addEventListener('click', (ev) => {
+    const p = point(ev);
+    $('#dlg-profil').close();
+    if (etat.coucheProfil) etat.coucheProfil.remove();
+    const grp = L.layerGroup().addTo(carte);
+    etat.coucheProfil = grp;
+    L.polyline([[r.a.lat, r.a.lon], [r.b.lat, r.b.lon]], { color: '#3ee6c4', weight: 2.5, dashArray: '6 6', pane: 'traces' }).addTo(grp);
+    for (const [q, nom] of [[r.a, 'A'], [r.b, 'B']]) L.circleMarker([q.lat, q.lon], { radius: 6, color: '#3ee6c4', weight: 2, fillOpacity: 0.6, pane: 'traces' }).bindTooltip(`${nom} · ${esc(q.nom)}`, { className: 'info' }).addTo(grp);
+    const deg = p.visee - p.solCourbe;
+    const div = document.createElement('div');
+    div.className = 'popup-lieu';
+    div.innerHTML = `<b>${(p.d / 1000).toFixed(2).replace('.', ',')} km depuis A</b>
+      <div class="meta-longue">Sol ${Math.round(p.sol)} m · ${deg >= 0 ? `visée ${Math.round(deg)} m au-dessus du relief` : `<span style="color:var(--critique)">relief ${Math.round(-deg)} m au-dessus de la visée</span>`}</div>
+      ${blocCoords(p.lat, p.lon, { alt: p.sol })}
+      <div class="menu-contexte"><button data-a="retour">↩ Revenir au profil</button><button data-a="effacer">Effacer le tracé</button></div>`;
+    div.onclick = (e) => {
+      const b = e.target.closest('button[data-a]');
+      if (!b) return;
+      if (b.dataset.a === 'retour') { carte.closePopup(); $('#dlg-profil').showModal(); }
+      else { grp.remove(); etat.coucheProfil = null; }
+    };
+    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'repere-lieu', html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] }), pane: 'traces', zIndexOffset: 1000 })
+      .addTo(grp).bindPopup(div, { className: 'popup-contexte', maxWidth: 340, minWidth: 280 }).openPopup();
+    carte.fitBounds(L.latLngBounds([[r.a.lat, r.a.lon], [r.b.lat, r.b.lon]]), { padding: [60, 60] });
+    setTimeout(() => carte.flyTo([p.lat, p.lon], Math.max(carte.getZoom(), 13), { duration: 0.8 }), 600);
+  });
+}
+
+// ---- Analyse du trafic -----------------------------------------------------------------
+// ---- Maintenance : charge radio, autonomie, firmwares, rôles (onglet Statistiques) ----------------------
+const ROLES_LIB = { CLIENT: 'Client', CLIENT_MUTE: 'Client muet', CLIENT_HIDDEN: 'Client caché', CLIENT_BASE: 'Client de base', ROUTER: 'Routeur', ROUTER_LATE: 'Routeur tardif', REPEATER: 'Répéteur', ROUTER_CLIENT: 'Routeur-client (obsolète)', TRACKER: 'Traceur', SENSOR: 'Capteur', TAK: 'TAK', TAK_TRACKER: 'TAK traceur', LOST_AND_FOUND: 'Objet perdu', inconnu: 'Inconnu' };
+async function chargerMaintenance(quoi) {
+  if (!etat.membre) { $('#m-' + quoi).innerHTML = '<div class="vide">Connexion requise.</div>'; return; }
+  const z = $('#m-' + quoi), r$ = $('#r-m-' + quoi);
+  z.innerHTML = '<div class="vide">Chargement…</div>';
+  let r;
+  try { r = await api('/api/maintenance/' + quoi); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const pt = (niv) => `<span class="point ${niv === 'critique' ? 'alerte' : niv === 'attention' ? 'attention' : 'actif'}"></span>`;
+  const clic = () => z.querySelectorAll('[data-fiche]').forEach((el) => (el.onclick = () => ouvrirFiche(Number(el.dataset.fiche))));
+  if (quoi === 'charge') {
+    const pb = r.filter((x) => x.niveau !== 'ok').length;
+    r$.textContent = r.length ? `${r.length} relais${pb ? ` · ${pb} à surveiller` : ''}` : 'aucune donnée';
+    z.innerHTML = r.length ? r.map((x) => `<div class="ligne maint-ligne" data-fiche="${x.num}">${pt(x.niveau)}<span class="titre">${esc(x.nom)}<small>émission ${fmt(x.emission24, 2, ' %')} en moyenne sur 24 h (max ${fmt(x.emissionMax24, 1, ' %')}) · canal ${fmt(x.canal24, 1, ' %')} (max ${fmt(x.canalMax24, 1, ' %')})${x.joursAvantLimite != null ? ` · <b style="color:var(--attention)">atteindrait 10 % d’émission dans ~${x.joursAvantLimite} j</b>` : x.tendanceEmission > 0.05 ? ` · en hausse (+${fmt(x.tendanceEmission, 2)} %/j)` : ''}</small></span><span class="meta">${fmt(x.emission, 1, ' %')}</span>
+      <span class="sous-ligne">${courbe(x.serie, 'emission', 'Temps d’émission (7 j)', ' %', 1, 10) || ''}</span></div>`).join('')
+      + `<p class="note">Temps d’émission : part du temps où le relais émet ; la limite réglementaire est de 10 % par heure dans la sous-bande 869,4–869,65 MHz. Occupation du canal : part du temps où le relais entend quelqu’un émettre (au-delà de ${etat.config.seuils.canalPourcent} %, les collisions augmentent). Tendance calculée sur 7 jours.</p>`
+      : '<div class="vide">Aucune télémétrie des relais de la zone.</div>';
+  } else if (quoi === 'autonomie') {
+    const pb = r.filter((x) => x.etat === 'critique' || x.etat === 'attention').length;
+    r$.textContent = r.length ? `${r.length} relais${pb ? ` · ${pb} à surveiller` : ''}` : 'aucune donnée';
+    const lib = { secteur: '🔌 secteur', solaire: '☀️ solaire', batterie: '🔋 batterie', 'secteur+batterie': '🔌 + 🔋', 'solaire+batterie': '☀️ + 🔋', autre: 'autre' };
+    z.innerHTML = r.length ? r.map((x) => `<div class="ligne" data-fiche="${x.num}">${pt(x.etat === 'secteur' || x.etat === 'inconnu' ? 'ok' : x.etat === 'ok' ? 'ok' : x.etat)}<span class="titre">${esc(x.nom)}<small>${x.alimentation ? lib[x.alimentation] || esc(x.alimentation) : 'alimentation non renseignée'}${x.tension != null ? ` · ${fmt(x.tension, 2, ' V')}` : ''}${x.dechargeVparJour != null ? ` · décharge ${fmt(x.dechargeVparJour, 3, ' V/j')}` : ''}${x.rechargeV != null ? ` · recharge ${fmt(x.rechargeV, 2, ' V/j')}` : ''}${x.pasDeCharge ? ' · <b style="color:var(--attention)">ne se recharge plus</b>' : ''}</small></span><span class="meta">${x.etat === 'secteur' ? '∞' : x.joursSansSoleil != null ? `<b>${fmt(x.joursSansSoleil, 1)} j</b>` : '–'}</span></div>`).join('')
+      + '<p class="note">« Jours sans soleil » : temps avant 3,3 V si le panneau ne charge plus, d’après la décharge mesurée la nuit (21 h – 6 h) sur 7 jours. Renseignez l’alimentation dans la fiche Installation de chaque relais.</p>'
+      : '<div class="vide">Aucune télémétrie de tension pour les relais de la zone.</div>';
+  } else if (quoi === 'firmwares') {
+    const ref = r.reference && r.reference.stable;
+    const ret = r.noeuds.filter((x) => x.etat === 'ancien' || x.etat === 'retard').length;
+    r$.textContent = ref ? `référence ${ref.v.join('.')}${ret ? ` · ${ret} en retard` : ''}` : `${r.noeuds.length} nœuds`;
+    const lib = { 'a-jour': ['✔', 'à jour'], retard: ['↻', 'en retard'], ancien: ['⚠', 'ancien'], connu: ['?', 'référence indisponible'], inconnu: ['–', 'version inconnue'] };
+    z.innerHTML = `${ref ? `<p class="note">Dernière version stable : <a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.tag)}</a> (${new Date(ref.date).toLocaleDateString('fr-FR')})${r.reference.test && r.reference.test.tag !== ref.tag ? ` · en test : ${esc(r.reference.test.tag)}` : ''}.</p>` : '<p class="note">Version de référence indisponible (GitHub injoignable).</p>'}
+      <div class="rang">${Object.entries(r.parVersion).sort((a, b) => b[1] - a[1]).map(([v, n]) => `<span class="pastille">${esc(v)} : ${n}</span>`).join(' ')}</div>
+      ${r.noeuds.map((x) => `<div class="ligne" data-fiche="${x.num}"><span class="etat-fw ${x.etat}">${lib[x.etat][0]}</span><span class="titre">${esc(x.nom)}<small>${esc(x.materiel || '')}${x.version ? ' · ' + esc(x.version) : ''}${x.retard ? ' · ' + esc(x.retard) + ' de retard' : ''}</small></span><span class="meta">${lib[x.etat][1]}</span></div>`).join('')}
+      <p class="note">La version vient des annonces des nœuds (rapport de carte) ou d’une lecture de configuration. Un firmware Meshtastic ne se met pas à jour par LoRa : il faut passer sur place (USB, ou Wi-Fi/Bluetooth selon le modèle) avec le flasheur (menu Outils). Les fiches Installation donnent l’accès et le contact de chaque site.</p>`;
+  } else if (quoi === 'roles') {
+    r$.textContent = r.conseils.length ? `${r.conseils.length} conseil${r.conseils.length > 1 ? 's' : ''}` : 'rien à signaler';
+    z.innerHTML = `<div class="rang">${Object.entries(r.repartition).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="pastille">${esc(ROLES_LIB[k] || k)} : ${n}</span>`).join(' ')}</div>
+      ${r.conseils.map((c) => `<div class="proposition conseil-role ${c.niveau}" data-fiche="${c.num}"><div class="entete-prop"><b>${esc(c.nom)}</b><span class="marge">${esc(ROLES_LIB[c.role] || c.role)} → <b>${esc(c.conseil)}</b></span></div><div class="meta-longue">${esc(c.raison)}</div>${c.roleCible && etat.gestion && gerable(c.num) ? `<div class="actions-prop"><button class="mini principal" data-role-num="${c.num}" data-role-cible="${esc(c.roleCible)}">Passer en ${esc(c.roleCible)}</button></div>` : ''}</div>`).join('') || '<div class="vide">Aucun conseil : les rôles paraissent cohérents.</div>'}
+      <p class="note">Conseils d’après les règles de Meshtastic : ROUTER seulement sur un point haut et dégagé, ROUTER_LATE seulement pour un site indispensable qui ne voit aucun routeur (il réémet tout), CLIENT_BASE sur un toit, CLIENT par défaut ; changer de rôle au-delà de 7-8 % d’émission ou 25 % d’occupation du canal. Calculés avec la couverture de chaque relais (relief)${r.relief ? '' : ' — <b>relief pas encore prêt : conseils partiels</b>'}, les liaisons directes, la télémétrie et les fiches d’installation (« toit » dans le champ Site).</p>`;
+    z.querySelectorAll('[data-role-num]').forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      const num = Number(b.dataset.roleNum), role = b.dataset.roleCible;
+      if (!(await confirmer(`Passer ${nomNoeud(num)} en ${role} ? Le nœud redémarre après le changement de rôle.`))) return;
+      b.disabled = true;
+      try {
+        await postJson('/api/admin-noeuds/taches', { type: 'config', cibles: [num], params: { section: 'device', valeurs: { role } } });
+        b.textContent = 'Lancé : suivi dans Programmer › Opérations récentes';
+      } catch (err) { b.disabled = false; alert(err.message); }
+    }));
+  }
+  clic();
+}
+document.addEventListener('toggle', (e) => { const d = e.target; if (d.matches && d.matches('details.maint') && d.open) chargerMaintenance(d.dataset.maint); }, true);
+
+// ---- Historique long (résumés horaires / journaliers) ------------------------------------------------
+async function chargerHistorique() {
+  const z = $('#historique');
+  if (!z) return;
+  const jours = Number(localStorage.getItem('gaulix_histo_jours')) || 30;
+  let r;
+  try { r = await api('/api/historique?jours=' + jours); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const p = r.points;
+  const dernier = p[p.length - 1] || {};
+  $('#resume-historique').textContent = p.length ? `${jours} j · ${p.length} point${p.length > 1 ? 's' : ''}` : 'en cours de constitution';
+  const s = etat.config.seuils;
+  const unite = r.pas === 'jour' ? 'jour' : 'heure';
+  const c = (cle, lib, u, dec, seuil) => courbe(p, cle, lib, u, dec, seuil) || '';
+  z.innerHTML = `<div class="parametres compact"><label>Période <select id="histo-jours">${[[2, '48 h'], [7, '7 jours'], [30, '30 jours'], [90, '3 mois'], [365, '1 an']].map(([v, t]) => `<option value="${v}" ${v === jours ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>
+    ${p.length < 2 ? '<div class="vide">L’historique se constitue : un point par heure. Les courbes apparaissent après quelques heures.</div>' : `
+    ${c('mt_actifs_zone', `Nœuds Meshtastic actifs (${esc(etat.config.zoneNom)})`, '', 0)}
+    ${c('mt_passerelles', 'Passerelles MQTT en ligne', '', 0)}
+    ${c('mt_paquets', `Paquets Meshtastic par ${unite}`, '', 0)}
+    ${c('mt_canal_moyen', 'Occupation moyenne du canal', ' %', 1, s.canalPourcent)}
+    ${c('couverture_pct', 'Couverture calculée du département', ' %', 1)}
+    ${c('mc_noeuds_actifs', 'Nœuds MeshCore actifs', '', 0)}
+    ${c('mc_paquets', `Paquets MeshCore par ${unite}`, '', 0)}`}
+    <p class="note">Un résumé par heure, et par jour au-delà de 7 jours, conservé plus d’un an (les données détaillées, elles, sont purgées après ${etat.config.retentionJours} jours). Base de données : ${r.base.totalMo} Mo, dont ${r.base.libreMo} Mo de place libérée ; compactage automatique le dimanche vers 4 h quand c’est utile.</p>
+    ${etat.admin && r.base.libreMo > 50 ? `<div class="actions-prop"><button id="histo-compacter">Compacter la base maintenant (${r.base.libreMo} Mo à récupérer)</button></div>` : ''}`;
+  $('#histo-jours').onchange = (e) => { try { localStorage.setItem('gaulix_histo_jours', e.target.value); } catch { /* ignoré */ } chargerHistorique(); };
+  const bc = $('#histo-compacter');
+  if (bc) bc.onclick = async () => {
+    if (!(await confirmer('Compacter la base ? La carte ne répond plus pendant quelques minutes (selon la taille).'))) return;
+    bc.disabled = true; bc.textContent = 'Compactage en cours…';
+    try { const x = await postJson('/api/historique/compacter', {}); alert(`Base compactée : ${x.avantMo} → ${x.apresMo} Mo en ${x.dureeS} s`); } catch (err) { alert(err.message); }
+    chargerHistorique();
+  };
+}
+async function chargerAnalyse() {
+  const zone = $('#analyse');
+  zone.innerHTML = '<div class="vide">Analyse en cours…</div>';
+  let r;
+  try { r = await api(`/api/analyse?heures=${$('#analyse-periode').value}&zone=${paramZone() || 0}`); } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const max = Math.max(1, ...r.sauts.map((x) => x.nb));
+  const signalements = r.noeuds.filter((n) => n.alertes.length);
+  zone.innerHTML = `
+    <div class="grille">
+      <div class="mesure"><span>Paquets d’origine</span><b>${r.totalPaquets}</b></div>
+      <div class="mesure"><span>Occupation estimée</span><b>${fmt(r.occupationEstimeePct, 2, ' %')}</b></div>
+      <div class="mesure"><span>Preset</span><b>${esc(r.preset)}</b></div>
+      <div class="mesure"><span>Temps d’une trame de 50 o</span><b>${fmt(r.tempsTrame50Octets * 1000, 0, ' ms')}</b></div>
+      <div class="mesure"><span>Paramètres</span><b>SF${r.parametres.sf} · ${r.parametres.bw} kHz · 4/${r.parametres.cr}</b></div>
+      <div class="mesure"><span>Signalements</span><b style="color:${r.nbAlertes ? 'var(--attention)' : 'inherit'}">${r.nbAlertes}</b></div>
+    </div>
+    <p class="note">Temps d’émission estimé pour la seule émission d’origine (les réémissions des relais s’y ajoutent), d’après la taille réelle des paquets reçus.</p>
+    <h3>Signalements</h3>
+    ${signalements.length ? signalements.map((n) => `<div class="alerte ${n.alertes.some((a) => a.niveau === 'critique') ? 'critique' : ''}" data-num="${n.num}"><b>${esc(n.nom)}</b>${n.alertes.map((a) => `<small>• ${esc(a.texte)}</small>`).join('')}</div>`).join('') : '<div class="vide">Aucun réglage suspect détecté.</div>'}
+    <h3>Plus gros émetteurs</h3>
+    <table class="voisins analyse"><thead><tr><th>Nœud</th><th class="num">Pq/h</th><th class="num">Canal</th><th class="num">Sauts max</th><th class="num">Récept.</th></tr></thead><tbody>
+    ${r.noeuds.slice(0, 25).map((n) => `<tr data-num="${n.num}"><td>${esc(n.nom)}<small> ${esc(n.role || '')}</small></td><td class="num">${fmt(n.parHeure, 1)}</td><td class="num">${fmt(n.airtimePct, 2, ' %')}</td><td class="num" style="color:${n.hopMax > 3 ? 'var(--attention)' : 'inherit'}">${n.hopMax || '–'}</td><td class="num">${n.redondance ?? '–'}</td></tr>`).join('')}
+    </tbody></table>
+    <h3>Répartition par nombre de sauts</h3>
+    <div class="repartition">${r.sauts.sort((a, b) => (a.sauts ?? 99) - (b.sauts ?? 99)).map((x) => `<div class="barre-port"><span>${x.sauts == null ? 'inconnu' : x.sauts === 0 ? 'direct' : x.sauts + ' saut' + (x.sauts > 1 ? 's' : '')}</span><div class="piste"><i style="width:${(x.nb / max) * 100}%;background:#4cc9f0"></i></div><span class="nb">${x.nb}</span></div>`).join('')}</div>
+    <h3>Canaux</h3>
+    <table class="voisins"><thead><tr><th>Canal</th><th class="num">Paquets</th><th class="num">Déchiffrés</th></tr></thead><tbody>
+    ${r.canaux.map((c) => `<tr><td>${esc(c.canal || '?')}</td><td class="num">${c.nb}</td><td class="num">${c.nb ? Math.round((c.dechiffres / c.nb) * 100) : 0} %</td></tr>`).join('')}
+    </tbody></table>`;
+  zone.querySelectorAll('tr[data-num]').forEach((tr) => (tr.onclick = () => ouvrirFiche(Number(tr.dataset.num))));
+  // Passerelle inter-réseaux : messages relayés par sens et ignorés par motif (administrateurs)
+  if (etat.config.passerelle && etat.admin) {
+    api('/api/passerelle').then((d) => {
+      const rej = Object.entries(d.stats.rejets).sort((x, y) => y[1] - x[1]);
+      zone.insertAdjacentHTML('beforeend', `<h3>⇄ Passerelle inter-réseaux <small>depuis ${esc(ilYa(d.stats.depuis).replace('il y a ', ''))}</small></h3>
+        <div class="grille"><div class="mesure"><span>Relayés MT → MC</span><b>${d.stats.mt2mc}</b></div><div class="mesure"><span>Relayés MC → MT</span><b>${d.stats.mc2mt}</b></div><div class="mesure"><span>Ignorés</span><b>${rej.reduce((t, x) => t + x[1], 0)}</b></div></div>
+        ${rej.length ? `<table class="voisins"><thead><tr><th>Motif</th><th>Messages ignorés</th></tr></thead><tbody>${rej.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table>` : ''}
+        ${d.stats.agreges ? `<p class="note">${d.stats.agreges} message(s) regroupé(s) (émissions évitées).</p>` : ''}`);
+    }).catch(() => {});
+  }
+}
+
+// ---- Rejeu des dernières 24 h ------------------------------------------------------------
+async function demarrerRejeu() {
+  const barre = $('#rejeu');
+  barre.hidden = false;
+  $('#rejeu-heure').textContent = 'Chargement…';
+  const fin = Date.now(), debut = fin - 24 * 3600000;
+  const evts = await api(`/api/rejeu?debut=${debut}&fin=${fin}`);
+  etat.rejeu = { actif: false, evts, debut, fin, t: debut, index: 0, minuterie: null };
+  $('#rejeu-curseur').min = debut;
+  $('#rejeu-curseur').max = fin;
+  $('#rejeu-curseur').value = debut;
+  $('#rejeu-info').textContent = `${evts.length} réceptions sur 24 h`;
+  majRejeu();
+  lireRejeu(true);
+}
+function majRejeu() {
+  const r = etat.rejeu;
+  if (!r) return;
+  $('#rejeu-heure').textContent = new Date(r.t).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  $('#rejeu-curseur').value = r.t;
+  $('#rejeu-lecture').textContent = r.actif ? '❚❚' : '▶';
+}
+function placerRejeu(t) {
+  const r = etat.rejeu;
+  r.t = t;
+  let i = 0;
+  while (i < r.evts.length && r.evts[i].heure < t) i++;
+  r.index = i;
+  majRejeu();
+}
+function lireRejeu(lecture) {
+  const r = etat.rejeu;
+  if (!r) return;
+  r.actif = lecture;
+  clearInterval(r.minuterie);
+  if (lecture) {
+    r.minuterie = setInterval(() => {
+      const pas = Number($('#rejeu-vitesse').value) * 0.2 * 1000;
+      const t2 = Math.min(r.t + pas, r.fin);
+      let n = 0;
+      while (r.index < r.evts.length && r.evts[r.index].heure <= t2) {
+        if (n++ < 40) animerPaquet(r.evts[r.index], true);
+        r.index++;
+      }
+      r.t = t2;
+      if (t2 >= r.fin) lireRejeu(false);
+      majRejeu();
+    }, 200);
+  }
+  majRejeu();
+}
+function fermerRejeu() {
+  if (etat.rejeu) clearInterval(etat.rejeu.minuterie);
+  etat.rejeu = null;
+  $('#rejeu').hidden = true;
+}
+
+// ---- Relief : points hauts, meilleurs sites, couverture d'un point -------------------------------
+const nomSommet = (s) => s.nom || (s.commune ? `Point haut · ${s.commune}` : `Point haut ${s.alt} m`);
+const couleurMarge = (m) => (m >= 10 ? 'var(--ok)' : m >= 0 ? 'var(--attention)' : 'var(--critique)');
+const hexMarge = (m) => (m >= 10 ? '#3ee6c4' : m >= 0 ? '#f4d35e' : '#ff5c6c');
+
+// ---- Accès aux points hauts (OSM : route, piste 4×4, sentier) ----------------------------
+const ACCES = {
+  voiture: { icone: '🚗', nom: 'en voiture' }, '4x4': { icone: '🚙', nom: 'en 4×4 (piste)' }, pied: { icone: '🥾', nom: 'à pied (sentier)' }, aucun: { icone: '⛰️', nom: 'hors chemin' },
+};
+const NIV_ACCES = { tous: 0, pied: 1, '4x4': 2, voiture: 3 };
+etat.filtreAcces = (() => { try { return localStorage.getItem('gaulix_acces') || 'tous'; } catch { return 'tous'; } })();
+// Numéros des sites recommandés sur la carte : ceux du plan affiché (filtré ou non par l'accès)
+function appliquerPlan() {
+  const rangs = new Map(((etat.classement && etat.classement.plan) || []).map((p) => [p.id, p.rang]));
+  for (const s of etat.sommets || []) s.rangPlan = rangs.get(s.id) || null;
+}
+const accesOk = (s) => etat.filtreAcces === 'tous' || (s.acces && s.acces.niveau >= NIV_ACCES[etat.filtreAcces]);
+const badgeAcces = (s) => (s.acces ? `<span class="acces-badge" title="Accès ${esc(ACCES[s.acces.type].nom)}">${ACCES[s.acces.type].icone}</span>` : '');
+// Site réaliste : support existant, zone protégée, électricité (OpenStreetMap)
+function texteRealisme(re) {
+  if (!re) return 'non évalué (recherche OpenStreetMap en cours ou indisponible)';
+  const parts = [];
+  if (re.protege) parts.push(`⛔ dans « ${esc(re.protege.nom)} » (${esc(re.protege.type)}) : autorisation difficile`);
+  if (re.support) parts.push(`🗼 ${esc(re.support.type)}${re.support.nom ? ' « ' + esc(re.support.nom) + ' »' : ''} à ${re.support.distance} m${re.support.operateur ? ' (' + esc(re.support.operateur) + ')' : ''} : support possible`);
+  parts.push(`⚡ ${re.electricite === 'secteur probable' ? 'secteur probable' : re.electricite === 'secteur à vérifier' ? 'secteur à vérifier' : 'solaire à prévoir'}${re.habitation ? ` (${re.habitation.nom ? esc(re.habitation.nom) + ' à ' : 'habitation à '}${re.habitation.distance < 1000 ? re.habitation.distance + ' m' : fmt(re.habitation.distance / 1000, 1, ' km')})` : ''}`);
+  return parts.join(' · ');
+}
+function texteAcces(a) {
+  if (!a) return 'non évalué (recherche OpenStreetMap en cours ou indisponible)';
+  const d = a.distances, m = (x) => (x < 1000 ? x + ' m' : fmt(x / 1000, 1, ' km'));
+  const parts = [];
+  if (d.voiture != null) parts.push(`route à ${m(d.voiture)}${a.nomVoie ? ' (' + esc(a.nomVoie) + ')' : ''}`);
+  if (d['4x4'] != null && d['4x4'] !== d.voiture) parts.push(`piste à ${m(d['4x4'])}`);
+  if (d.pied != null && d.pied !== d['4x4']) parts.push(`sentier à ${m(d.pied)}`);
+  if (a.prive != null) parts.push(`voie privée à ${m(a.prive)}`);
+  return `<b>${ACCES[a.type].icone} ${ACCES[a.type].nom}</b>${parts.length ? ' · ' + parts.join(' · ') : ' · aucune voie à moins de 400 m'}`;
+}
+
+etat.depEtude = (() => { try { return localStorage.getItem('gaulix_dep_etude') || null; } catch { return null; } })();
+let jetonRelief = 0;
+async function chargerRelief(recadrer) {
+  const jeton = ++jetonRelief;
+  clearTimeout(etat.minuterieRelief);
+  let e;
+  try { e = await api('/api/relief/etat'); } catch { return; }
+  if (jeton !== jetonRelief) return;
+  etat.relief = e;
+  if (recadrer && e.zone) carte.fitBounds([[e.zone[0], e.zone[1]], [e.zone[2], e.zone[3]]], { padding: [20, 20] });
+  if (e.mnt !== 'pret' || e.classement !== 'pret') etat.minuterieRelief = setTimeout(() => chargerRelief(), e.mnt === 'pret' ? 15000 : 5000);
+  else if (etat.classement && etat.classement.acces && etat.classement.acces.enCours) etat.minuterieRelief = setTimeout(() => chargerRelief(), 30000);
+  if (e.mnt === 'pret') {
+    const [sommets, classement] = await Promise.all([api('/api/relief/sommets'), api('/api/relief/classement?acces=' + etat.filtreAcces)]).catch(() => [[], null]);
+    if (jeton !== jetonRelief) return;
+    etat.sommets = sommets;
+    etat.classement = classement && !classement.attente ? classement : null;
+    appliquerPlan();
+    dessinerSommets();
+  }
+  rendreSites();
+}
+
+function iconeSommet(s) {
+  if (s.rangPlan) return L.divIcon({ className: 'sommet plan', html: `<span>${s.rangPlan}</span>`, iconSize: [22, 22], iconAnchor: [11, 11] });
+  const fort = s.rang && s.rang <= 15;
+  return L.divIcon({ className: 'sommet' + (fort ? ' fort' : '') + (s.source === 'mnt' ? ' mnt' : ''), html: '▲', iconSize: [12, 12], iconAnchor: [6, 8] });
+}
+function infoSommet(s) {
+  return `<b>${esc(nomSommet(s))}</b><br>${s.alt} m${s.dominance != null ? ` · domine de ${s.dominance} m` : ''}` +
+    (s.couverturePct != null ? `<br>Couverture seule : ${fmt(s.couverturePct, 1, ' %')} du département (${s.couvertureKm2} km²)` : '') +
+    (s.rangPlan ? `<br><b style="color:#f4c542">Site recommandé n° ${s.rangPlan}</b>` : s.rang && s.rang <= 15 ? `<br>Classement individuel : ${s.rang}ᵉ` : '') +
+    (s.acces ? `<br>Accès : ${ACCES[s.acces.type].icone} ${ACCES[s.acces.type].nom}` : '') +
+    `<br><small>${s.source === 'osm' ? 'Sommet OpenStreetMap' : 'Détecté dans le relief IGN'}</small>`;
+}
+function dessinerSommets() {
+  if (etat.coucheSommets) etat.coucheSommets.remove();
+  etat.coucheSommets = null;
+  if (!etat.couches.sommets || !etat.sommets.length) return;
+  const g = L.layerGroup();
+  const proche = carte.getZoom() >= 10;
+  // De près, seulement ce qui est à l'écran (des milliers de marqueurs ralentissent beaucoup les téléphones)
+  const vue = proche ? carte.getBounds().pad(0.4) : null;
+  for (const s of etat.sommets) {
+    if (vue && !s.rangPlan && !vue.contains([s.lat, s.lon])) continue;
+    if (etat.zone && !s.dansZone && !s.rangPlan) continue;
+    if (!accesOk(s) && !s.rangPlan) continue;
+    // À petite échelle : seulement les sites remarquables
+    if (!proche && !s.rangPlan && !(s.rang && s.rang <= 15) && !(s.nom && s.dominance >= 120)) continue;
+    L.marker([s.lat, s.lon], { icon: iconeSommet(s), pane: 'sommets', zIndexOffset: s.rangPlan ? 500 : 0 })
+      .bindTooltip(infoSommet(s), { className: 'info' })
+      .on('click', () => (etat.modeProfil ? choisirPointProfil({ lat: s.lat, lon: s.lon, nom: nomSommet(s), h: 6 }) : ficheSommet(s)))
+      .addTo(g);
+  }
+  g.addTo(carte);
+  etat.coucheSommets = g;
+}
+
+async function voirCouvertureSite(p, titre, hauteur, opts = {}) {
+  const hs = hauteur ?? ($('#relief-hs') ? $('#relief-hs').value : 6);
+  let r;
+  try { r = await api(`/api/relief/couverture?lat=${p.lat}&lon=${p.lon}&hs=${hs}${opts.preset ? '&preset=' + opts.preset : ''}`); } catch (e) { if (opts.erreurs) return { erreur: e.message }; alert(e.message); return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const e = r.emprise;
+  const g = L.layerGroup();
+  L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.75, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  L.circleMarker([p.lat, p.lon], { radius: 7, color: '#f4c542', weight: 3, fillOpacity: 0.2, pane: 'traces' })
+    .bindTooltip(`<b>${esc(titre || nomSommet(p))}</b><br>Couverture estimée : ${r.surfaceKm2} km² · ${fmt(r.pctZone, 1, ' %')} du département<br><small>antenne à ${hs} m · ≥ 10 dB de marge en turquoise, 0 à 10 dB en jaune, limite en orange</small>`, { className: 'info', permanent: false })
+    .addTo(g);
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  if (!titre) carte.flyTo([p.lat, p.lon], Math.min(carte.getZoom(), 10), { duration: 0.6 });
+  if (opts.cadrer) carte.fitBounds(L.latLng(p.lat, p.lon).toBounds(2 * 1000 * (r.rayonKm || 40)), { padding: [30, 30] });
+  const info = $('#couverture-info');
+  if (info) info.innerHTML = `<b>${esc(titre || nomSommet(p))}</b> : ${r.surfaceKm2} km² couverts, dont ${fmt(r.pctZone, 1, ' %')} du département.`;
+  return r;
+}
+
+// Fiche d'un point haut : coordonnées, couverture, actions
+async function ficheSommet(s) {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<div class="vide">Calcul de la couverture…</div>';
+  const r = await voirCouvertureSite(s);
+  $('#fiche-contenu').innerHTML = `
+    <h2>${esc(nomSommet(s))}</h2>
+    <div class="ident">${s.commune ? esc(s.commune) + ' · ' : ''}${s.source === 'osm' ? 'Sommet OpenStreetMap' : 'Détecté dans le relief IGN'}${s.rangPlan ? ` · <b style="color:#f4c542">site recommandé n° ${s.rangPlan}</b>` : ''}</div>
+    ${blocCoords(s.lat, s.lon, { alt: s.alt })}
+    <div class="acces-ligne">Accès : ${texteAcces(s.acces)}</div>
+    <div class="grille">
+      <div class="mesure"><span>Domine les environs de</span><b>${s.dominance != null ? s.dominance + ' m' : '–'}</b></div>
+      <div class="mesure"><span>Surface couverte</span><b>${r ? r.surfaceKm2 + ' km²' : '–'}</b></div>
+      <div class="mesure"><span>Part du département</span><b>${r ? fmt(r.pctZone, 1, ' %') : '–'}</b></div>
+      ${s.rang ? `<div class="mesure"><span>Classement individuel</span><b>${s.rang}ᵉ</b></div>` : ''}
+    </div>
+    <div class="actions-prop"><button id="sommet-couvrir">Couvrir ce point (4 points hauts)</button><button id="sommet-ajout-couv" class="principal">${etat.sitesCouv && etat.sitesCouv.length ? `＋ Ajouter à la couverture totale (${etat.sitesCouv.length + 1} sites)` : '＋ Ajouter un site (couverture totale)'}</button></div>
+    <p class="note">Couverture calculée avec une antenne à ${$('#relief-hs') ? $('#relief-hs').value : 6} m (réglable dans l'onglet Couverture).</p>`;
+  $('#sommet-couvrir').onclick = () => couvrirPoint(L.latLng(s.lat, s.lon));
+  $('#sommet-ajout-couv').onclick = () => {
+    const h = Number($('#relief-hs') ? $('#relief-hs').value : 6) || 6;
+    if (etat.sitesCouv && etat.sitesCouv.length) couvertureMulti([...etat.sitesCouv, { lat: s.lat, lon: s.lon, h, nom: nomSommet(s) }].slice(0, 10));
+    else { etat.sitesCouv = [{ lat: s.lat, lon: s.lon, h, nom: nomSommet(s) }]; basculerMode('couv-plus'); }
+  };
+}
+
+// Superpose aux zones calculées les liaisons réellement mesurées du nœud
+function ajouterLiaisonsMesurees(n, voisins) {
+  if (!etat.coucheCouverture) return;
+  for (const v of voisins || []) {
+    const o = etat.noeuds.get(v.num);
+    if (!o || o.lat == null) continue;
+    const snr = v.snrEntendu ?? v.snrEmis;
+    L.polyline([[n.lat, n.lon], [o.lat, o.lon]], { color: couleurSnr(snr), weight: 2, opacity: 0.9, pane: 'traces' }).addTo(etat.coucheCouverture);
+    L.circleMarker([o.lat, o.lon], { radius: 7, color: couleurSnr(snr), weight: 2, fillOpacity: 0.35, pane: 'traces' })
+      .bindTooltip(`<b>${esc(v.nom)}</b><br>Liaison mesurée · SNR ${fmt(snr, 1, ' dB')}${v.distanceKm != null ? ' · ' + fmt(v.distanceKm, 1, ' km') : ''}`, { className: 'info' })
+      .addTo(etat.coucheCouverture);
+  }
+}
+
+// Couverture depuis un point quelconque de la carte
+async function couvertureIci(latlng, hauteur) {
+  const h = hauteur ?? 6;
+  const p = { lat: +latlng.lat.toFixed(5), lon: +latlng.lng.toFixed(5) };
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<div class="vide">Calcul de la couverture depuis ce point…</div>';
+  let r;
+  // Point dans un autre département : son relief IGN se charge à la demande (quelques minutes la première fois)
+  for (let essai = 0; essai < 20; essai++) {
+    r = await voirCouvertureSite(p, 'Point choisi', h, { cadrer: true, erreurs: true, preset: etat.vueReseau === 'meshcore' ? 'MESHCORE_FR' : undefined });
+    if (!r || !r.erreur || !/chargement/.test(r.erreur)) break;
+    $('#fiche-contenu').innerHTML = `<div class="vide">${esc(r.erreur)}<br><small>Nouvel essai automatique dans 20 s (${essai + 1}/20)…</small></div>`;
+    await new Promise((ok) => setTimeout(ok, 20000));
+    if (!$('#fiche-contenu').textContent.includes('Nouvel essai')) return; // fiche fermée ou remplacée
+  }
+  if (!r || r.erreur) { $('#fiche-contenu').innerHTML = `<div class="vide">${esc(r && r.erreur ? r.erreur : 'Calcul impossible.')}</div>`; return; }
+  $('#fiche-contenu').innerHTML = `
+    <h2>Couverture depuis ce point</h2>
+    ${blocCoords(p.lat, p.lon, { alt: r.sol })}
+    <div class="grille">
+      <div class="mesure"><span>Surface couverte</span><b>${r.surfaceKm2} km²</b></div>
+      <div class="mesure"><span>Part du département${r.departement && r.departement.nom ? ' (' + esc(r.departement.nom) + ')' : ''}</span><b>${fmt(r.pctZone, 1, ' %')}</b></div>
+      <div class="mesure"><span>Antenne</span><b>${h} m</b></div>
+    </div>
+    <div class="parametres compact">
+      <label>Hauteur d'antenne (m) <input id="h-ici" type="number" min="0.5" max="80" step="0.5" value="${h}"></label>
+    </div>
+    <div class="actions-prop">
+      <button id="recalc-ici">Recalculer</button>
+      <button id="couvrir-ici">Trouver 4 points hauts pour couvrir ce point</button>
+      <button id="ajout-site-couv" class="principal">＋ Ajouter un site (couverture totale)</button>
+    </div>
+    <p class="note">Turquoise : liaison confortable (≥ 10 dB de marge) · jaune : probable (0 à 10 dB) · orange : en limite. Le point desservi est supposé à 2 m du sol. ${r.env != null ? `Pertes de végétation et bâti : ${r.env} dB.` : ''}</p>`;
+  $('#recalc-ici').onclick = () => couvertureIci(latlng, Number($('#h-ici').value) || 6);
+  $('#couvrir-ici').onclick = () => couvrirPoint(latlng);
+  $('#ajout-site-couv').onclick = () => { etat.sitesCouv = [{ lat: p.lat, lon: p.lon, h: Number($('#h-ici').value) || h, nom: 'Point choisi' }]; basculerMode('couv-plus'); };
+}
+
+// ---- Couverture totale de plusieurs sites -----------------------------------------------------
+async function couvertureMulti(sites) {
+  etat.sitesCouv = sites;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>Couverture de ${sites.length} site${sites.length > 1 ? 's' : ''}</h2><div class="alerte info-lecture"><span class="sablier"></span> Calcul de la couverture cumulée…</div>`;
+  const q = sites.map((x) => `${x.lat.toFixed(5)},${x.lon.toFixed(5)},${x.h}`).join(';');
+  let r;
+  try { r = await api(`/api/relief/couverture-multi?pts=${q}${etat.vueReseau === 'meshcore' ? '&preset=MESHCORE_FR' : ''}`); } catch (e) { $('#fiche-contenu').innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const e = r.emprise, g = L.layerGroup();
+  L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.75, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  sites.forEach((x, i) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'sommet plan', html: `<span>${i + 1}</span>`, iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`<b>${i + 1} · ${esc(x.nom || 'Site')}</b><br>antenne ${x.h} m · ${r.sites[i].km2} km² · apport propre ${r.sites[i].propreKm2} km²`, { className: 'info' }).addTo(g));
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  carte.fitBounds(L.latLngBounds(sites.map((x) => [x.lat, x.lon])).pad(0.6), { maxZoom: 11 });
+  $('#fiche-contenu').innerHTML = `<h2>Couverture de ${sites.length} site${sites.length > 1 ? 's' : ''}</h2>
+    <div class="grille">
+      <div class="mesure"><span>Surface couverte</span><b>${r.surfaceKm2} km²</b></div>
+      <div class="mesure"><span>Part du département</span><b>${fmt(r.pctZone, 1, ' %')}</b></div>
+      <div class="mesure"><span>Sites</span><b>${sites.length}</b></div>
+    </div>
+    <div class="liste-cibles">${sites.map((x, i) => `<div class="ligne-cible"><span class="cible-multi petit"><span>${i + 1}</span></span><span>${esc(x.nom || 'Site')} <small class="mono">${x.lat.toFixed(4)}, ${x.lon.toFixed(4)}</small><br><small>antenne <input class="mini-h" data-h="${i}" type="number" min="0.5" max="80" step="0.5" value="${x.h}"> m · ${r.sites[i].km2} km² seul · <b>${r.sites[i].propreKm2} km²</b> qu’il est seul à couvrir dans le département</small></span>${sites.length > 1 ? `<button class="mini" data-retirer-site="${i}" title="Retirer ce site">✕</button>` : ''}</div>`).join('')}</div>
+    <div class="actions-prop">${sites.length < 10 ? '<button id="ajout-site-multi" class="principal">＋ Ajouter un site</button>' : ''}<button id="recalc-multi">Recalculer</button><button id="gpx-couv-multi">Télécharger (GPX)</button></div>
+    <p class="note">Cliquez « Ajouter un site » puis un point de la carte (ou clic droit → « Ajouter à la couverture totale »). Un site qui couvre peu de surface à lui seul fait doublon avec les autres. Turquoise : ≥ 10 dB de marge · jaune : 0 à 10 dB · orange : en limite.</p>`;
+  const ba = $('#ajout-site-multi'); if (ba) ba.onclick = () => basculerMode('couv-plus');
+  $('#recalc-multi').onclick = () => { $('#fiche-contenu').querySelectorAll('[data-h]').forEach((el) => { sites[Number(el.dataset.h)].h = Number(el.value) || 6; }); couvertureMulti(sites); };
+  $('#fiche-contenu').querySelectorAll('[data-retirer-site]').forEach((b) => (b.onclick = () => couvertureMulti(sites.filter((_, i) => i !== Number(b.dataset.retirerSite)))));
+  $('#gpx-couv-multi').onclick = () => telechargerGpx('couverture-sites.gpx', sites.map((x, i) => ({ lat: x.lat, lon: x.lon, alt: r.sites[i].sol, nom: `${i + 1} - ${x.nom || 'Site'}`, desc: `Antenne ${x.h} m, ${r.sites[i].km2} km²` })));
+}
+function ajouterSiteCouverture(latlng) {
+  const lieu = nomLieu(latlng);
+  const h = Number($('#relief-hs') ? $('#relief-hs').value : 6) || 6;
+  couvertureMulti([...(etat.sitesCouv || []), { lat: lieu.lat, lon: lieu.lon, h, nom: lieu.nom }].slice(0, 10));
+}
+
+// ---- Couverture actuelle du réseau (relais et passerelles détectés) ----------------------------------
+async function couvertureReseau() {
+  const hn = Number(localStorage.getItem('gaulix_hn')) || 6;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<h2>Couverture actuelle du réseau</h2><div class="alerte info-lecture"><span class="sablier"></span> Calcul de la zone couverte par les relais et passerelles détectés…</div>';
+  let r;
+  try { r = await api(`/api/relief/couverture-reseau?hn=${hn}${etat.vueReseau === 'meshcore' ? '&reseau=meshcore' : ''}`); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Couverture actuelle du réseau</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const dep = etat.relief && etat.relief.departement ? etat.relief.departement.nom : 'le département';
+  if (r.vide) { $('#fiche-contenu').innerHTML = `<h2>Couverture actuelle du réseau</h2><div class="vide">Aucun relais ni passerelle ${etat.vueReseau === 'meshcore' ? 'MeshCore ' : ''}positionné et entendu depuis 24 h dans ${esc(dep)}.</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const e = r.emprise, g = L.layerGroup();
+  L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.75, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  carte.fitBounds(L.latLngBounds(r.noeuds.map((n) => [n.lat, n.lon])).pad(0.4), { maxZoom: 11 });
+  const tries = [...r.noeuds].sort((a, b) => b.propreKm2 - a.propreKm2);
+  $('#fiche-contenu').innerHTML = `<h2>Couverture actuelle du réseau</h2>
+    <div class="ident">${esc(dep)} · ${r.noeuds.length} relais et passerelles ${etat.vueReseau === 'meshcore' ? 'MeshCore ' : ''}détectés (positionnés, entendus depuis 24 h)</div>
+    <div class="grille">
+      <div class="mesure"><span>Part du département</span><b>${fmt(r.pctZone, 1, ' %')}</b></div>
+      <div class="mesure"><span>Dans le département</span><b>${r.surfaceZoneKm2} km²</b></div>
+      <div class="mesure"><span>Surface totale</span><b>${r.surfaceKm2} km²</b></div>
+    </div>
+    <div class="barre-couv"><i style="width:${r.pctZone}%" class="actuel"></i></div>
+    <div class="parametres compact"><label>Hauteur supposée des relais sans fiche (m) <input id="hn-reseau" type="number" min="1" max="60" step="1" value="${hn}"></label><button id="hn-recalc">Recalculer</button></div>
+    <h3>Apport de chaque relais</h3>
+    <p class="note">« Seul à couvrir » : surface du département que ce relais est le seul à desservir. Un relais à 0 km² fait doublon avec les autres ; un relais à forte valeur est un point critique (s’il tombe, cette zone n’est plus couverte).</p>
+    ${tries.map((n) => `<div class="ligne" data-ouvrir-noeud="${esc(String(n.num))}"><span class="point ${n.propreKm2 > 0 ? 'actif' : 'inactif'}"></span><span class="titre">${esc(n.nom || String(n.num))}<small>${n.km2} km² au total · antenne ${n.hauteur} m ${n.fiche ? '<span title="Valeurs de la fiche d’installation">📋</span>' : '(supposée)'}</small></span><span class="meta"><b>${n.propreKm2} km²</b> seul</span></div>`).join('')}
+    <div class="actions-prop"><button id="couv-vers-plan" class="principal">🗺️ Où ajouter des relais ? (plan)</button></div>
+    <p class="note">Turquoise : ≥ 10 dB de marge · jaune : 0 à 10 dB · orange : en limite. Hypothèse : antennes à ${hn} m, nœud desservi à 2 m du sol. ${r.env != null ? `Pertes de végétation et bâti : ${r.env} dB.` : ''}</p>`;
+  $('#hn-recalc').onclick = () => { try { localStorage.setItem('gaulix_hn', $('#hn-reseau').value); } catch { /* ignoré */ } couvertureReseau(); };
+  $('#couv-vers-plan').onclick = () => allerPlan();
+  $('#fiche-contenu').querySelectorAll('[data-ouvrir-noeud]').forEach((el) => (el.onclick = () => {
+    const n = r.noeuds.find((x) => String(x.num) === el.dataset.ouvrirNoeud);
+    if (n) carte.flyTo([n.lat, n.lon], 12, { duration: 0.6 });
+  }));
+}
+// ---- Couverture mesurée (positions réelles des émetteurs + réceptions des passerelles) ------------------
+async function couvertureMesuree(jours, noeud) {
+  jours = jours || Number(localStorage.getItem('gaulix_mes_jours')) || 7;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<h2>Couverture mesurée</h2><div class="alerte info-lecture"><span class="sablier"></span> Regroupement des mesures…</div>';
+  let r, cal = null;
+  try { r = await api(`/api/couverture-mesuree?jours=${jours}${noeud != null ? '&noeud=' + noeud : ''}`); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Couverture mesurée</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  try { cal = await api('/api/relief/calibration'); } catch { /* facultatif */ }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  // Seulement la zone choisie (département, + voisins, ou France) : les nœuds lointains reçus par des passerelles
+  // de passage étireraient la vue sur toute la France
+  const toutes = r.cellules;
+  const cellules = etat.zone ? toutes.filter((c) => dansZone(c)) : toutes;
+  const horsZone = toutes.length - cellules.length;
+  const directes = cellules.filter((c) => c.direct).length, viaRelais = cellules.length - directes;
+  const surface = Math.round(cellules.reduce((t, c) => t + c.dLat * 111.32 * c.dLon * 111.32 * Math.cos((c.lat * Math.PI) / 180), 0));
+  const g = L.layerGroup();
+  for (const c of cellules) {
+    const b = [[c.lat - c.dLat / 2, c.lon - c.dLon / 2], [c.lat + c.dLat / 2, c.lon + c.dLon / 2]];
+    const coul = c.direct ? couleurSnr(c.snrMax) : '#8fa3b8';
+    L.rectangle(b, { color: coul, weight: 0.6, fillColor: coul, fillOpacity: c.direct ? 0.5 : 0.25, pane: 'couverture' })
+      .bindTooltip(`<b>${c.direct ? 'Reçu en direct' : 'Reçu via des relais seulement'}</b> · ${c.n} mesure${c.n > 1 ? 's' : ''}<br>${c.passerelles.map((p) => `${esc(p.nom)}${p.snr != null ? ' : ' + fmt(p.snr, 1, ' dB') : ''}`).join('<br>')}${c.passerelles.length ? '<br>' : ''}<small>émetteur${c.emetteurs.length > 1 ? 's' : ''} : ${esc(c.emetteurs.join(', '))} · ${ilYa(c.dernier)}</small>`, { className: 'info', sticky: true }).addTo(g);
+  }
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  if (cellules.length) carte.fitBounds(L.latLngBounds(cellules.map((c) => [c.lat, c.lon])).pad(0.1), { maxZoom: 12 });
+  const nomN = noeud != null ? nomNoeud(noeud) : null;
+  $('#fiche-contenu').innerHTML = `<h2>Couverture mesurée${nomN ? ' · ' + esc(nomN) : ''}</h2>
+    <div class="ident">${r.mesures} mesures · ${r.emetteurs} émetteur${r.emetteurs > 1 ? 's' : ''} positionné${r.emetteurs > 1 ? 's' : ''} · ${jours} dernier${jours > 1 ? 's' : ''} jour${jours > 1 ? 's' : ''}</div>
+    <div class="grille">
+      <div class="mesure"><span>Zones reçues en direct</span><b>${directes}</b></div>
+      <div class="mesure"><span>Via relais seulement</span><b>${viaRelais}</b></div>
+      <div class="mesure"><span>Surface mesurée</span><b>≈ ${surface} km²</b></div>
+    </div>
+    ${horsZone ? `<p class="note">${horsZone} carré(s) hors de la zone affichée (${esc($('#sel-zone') ? $('#sel-zone').selectedOptions[0].textContent : 'zone')}) ne sont pas montrés : choisissez « France » dans le sélecteur de zone pour tout voir.</p>` : ''}
+    <div class="parametres compact"><label>Période <select id="mes-jours">${[1, 3, 7, 14, 30].map((j) => `<option value="${j}" ${j === jours ? 'selected' : ''}>${j} jour${j > 1 ? 's' : ''}</option>`).join('')}</select></label>${noeud != null ? '<button id="mes-tous">Tous les nœuds</button>' : ''}</div>
+    <p class="note">Chaque carré de 500 m est un endroit d’où un nœud a réellement été reçu. Couleur = meilleur SNR reçu en direct par une passerelle (vert excellent → rouge limite) ; gris = reçu seulement grâce à des relais. Les nœuds dont la position est volontairement floutée et les messages passés par internet sont écartés.</p>
+    ${cal && cal.liaisons != null ? `<p class="note">Le modèle de relief est recalé sur <b>${cal.liaisons}</b> liaisons mesurées (dont les relevés des nœuds mobiles) : pertes d’environnement retenues ${cal.perteEnvironnementDb != null ? cal.perteEnvironnementDb + ' dB' : 'par défaut'}${cal.ecartMedianDb != null ? `, écart médian modèle − mesure ${fmt(cal.ecartMedianDb, 1, ' dB')}` : ''}.</p>` : ''}
+    <details class="aide-cle"><summary>Faire un relevé de terrain</summary>
+      <ol class="note">
+        <li>Sur un module mobile (voiture, sac à dos) : position <b>toutes les 30 s</b>, « position intelligente » désactivée, précision de position <b>« précise »</b> sur le canal utilisé.</li>
+        <li>Parcourez la zone à étudier (routes, villages, fonds de vallée).</li>
+        <li>Ouvrez sa fiche, puis « Couverture mesurée de ce nœud » : chaque position reçue apparaît, avec la passerelle qui l’a entendue et le SNR.</li>
+        <li>Le modèle de relief se recale automatiquement avec ces mesures au prochain calcul (chaque nuit, ou « Recalculer » côté admin).</li>
+      </ol></details>`;
+  $('#mes-jours').onchange = () => { try { localStorage.setItem('gaulix_mes_jours', $('#mes-jours').value); } catch { /* ignoré */ } couvertureMesuree(Number($('#mes-jours').value), noeud); };
+  const mt = $('#mes-tous'); if (mt) mt.onclick = () => couvertureMesuree(jours, null);
+}
+// ---- Simulation « et si… » : retirer ou ajouter des relais --------------------------------------------
+etat.simu = { retirer: new Set(), ajouter: [] };
+async function simulation() {
+  const sm = etat.simu;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<h2>Simulation « et si… »</h2><div class="alerte info-lecture"><span class="sablier"></span> Calcul de la couverture et des liaisons entre les villes…</div>';
+  let r;
+  try { r = await postJson('/api/relief/simulation' + (etat.vueReseau === 'meshcore' ? '?reseau=meshcore' : ''), { retirer: [...sm.retirer], ajouter: sm.ajouter }); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Simulation « et si… »</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const e = r.emprise, g = L.layerGroup();
+  L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.8, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  for (const n of r.retires) L.marker([n.lat, n.lon], { icon: L.divIcon({ className: 'simu-retire', html: '✖', iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 900 }).bindTooltip(`Retiré : ${esc(n.nom)}`, { className: 'info' }).addTo(g);
+  r.ajoutes.forEach((a, i) => L.marker([a.lat, a.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>+${i + 1}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 950 }).bindTooltip(`Ajouté : ${esc(a.nom)} · antenne ${a.h} m`, { className: 'info' }).addTo(g));
+  for (const v of r.villes) L.circleMarker([v.lat, v.lon], { radius: 5, color: v.couverteApres ? '#e8eef5' : '#ff5c6c', weight: 2, fillColor: v.couverteApres ? '#3ee6c4' : '#ff5c6c', fillOpacity: 0.9, pane: 'traces' }).bindTooltip(`${esc(v.nom)} · ${v.population.toLocaleString('fr-FR')} hab.${v.couverteApres ? '' : ' · <b>non couverte</b>'}`, { className: 'info' }).addTo(g);
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  const delta = r.apres.pct - r.avant.pct;
+  const changees = r.paires.filter((p) => p.avant !== p.apres);
+  const libRelais = (x) => (x == null ? '<b style="color:var(--critique)">✖ impossible</b>' : `${x} relais`);
+  const villesPerdues = r.villes.filter((v) => v.couverteAvant && !v.couverteApres), villesGagnees = r.villes.filter((v) => !v.couverteAvant && v.couverteApres);
+  $('#fiche-contenu').innerHTML = `<h2>Simulation « et si… »</h2>
+    <div class="grille">
+      <div class="mesure"><span>Couverture avant</span><b>${fmt(r.avant.pct, 1, ' %')}</b></div>
+      <div class="mesure"><span>Après</span><b style="color:${delta < -0.05 ? 'var(--critique)' : delta > 0.05 ? 'var(--ok)' : 'inherit'}">${fmt(r.apres.pct, 1, ' %')}</b></div>
+      <div class="mesure"><span>Écart</span><b>${delta >= 0 ? '+' : ''}${fmt(delta, 1, ' pt')}</b></div>
+      <div class="mesure"><span>Zone perdue</span><b style="color:${r.perduKm2 ? 'var(--critique)' : 'inherit'}">${r.perduKm2} km²</b></div>
+      <div class="mesure"><span>Zone gagnée</span><b style="color:${r.gagneKm2 ? 'var(--ok)' : 'inherit'}">${r.gagneKm2} km²</b></div>
+      <div class="mesure"><span>Relais</span><b>${r.avant.relais} → ${r.apres.relais}</b></div>
+    </div>
+    ${villesPerdues.length ? `<div class="alerte critique">Villes qui ne seraient plus couvertes : <b>${villesPerdues.map((v) => esc(v.nom)).join(', ')}</b></div>` : ''}
+    ${villesGagnees.length ? `<div class="alerte info-lecture">Villes nouvellement couvertes : <b>${villesGagnees.map((v) => esc(v.nom)).join(', ')}</b></div>` : ''}
+    <h3>Liaisons entre les principales villes</h3>
+    ${changees.length ? `<table class="voisins"><thead><tr><th>Entre</th><th class="num">Avant</th><th class="num">Après</th></tr></thead><tbody>${changees.map((p) => `<tr><td>${esc(p.de)} ↔ ${esc(p.vers)}</td><td class="num">${libRelais(p.avant)}</td><td class="num">${libRelais(p.apres)}</td></tr>`).join('')}</tbody></table>` : `<p class="note">Aucun changement entre les ${r.villes.length} plus grandes villes (${r.paires.filter((p) => p.apres != null).length} liaisons possibles sur ${r.paires.length}).</p>`}
+    <h3>Modifier la simulation</h3>
+    <h4>Retirer des relais existants</h4>
+    <div class="liste-simu">${r.reseau.map((n) => `<label class="case"><input type="checkbox" data-retirer="${esc(String(n.num))}" ${sm.retirer.has(String(n.num)) ? 'checked' : ''}> ${esc(n.nom)}</label>`).join('') || '<div class="vide">Aucun relais détecté.</div>'}</div>
+    <h4>Ajouter des relais</h4>
+    ${sm.ajouter.map((a, i) => `<div class="ligne-cible"><span class="cible-multi petit"><span>+${i + 1}</span></span>${esc(a.nom)} <small class="mono">${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}</small> · antenne <input class="mini-h" data-h-ajout="${i}" type="number" min="0.5" max="60" step="0.5" value="${a.h}"> m<button class="mini" data-suppr-ajout="${i}">✕</button></div>`).join('') || '<p class="note">Aucun pour l’instant.</p>'}
+    <div class="actions-prop"><button id="simu-ajout">＋ Ajouter un relais sur la carte</button><button id="simu-lancer" class="principal">Recalculer</button><button id="simu-raz">Tout remettre à zéro</button></div>
+    <p class="note">Rouge : zone qui ne serait plus couverte · vert : zone gagnée · turquoise pâle : inchangée. « N relais » = nombre de relais traversés par un message entre deux nœuds situés dans ces villes (calculé d’après le relief, antennes des fiches Installation, sinon 6 m). Villes : les ${r.villes.length} communes les plus peuplées du département.</p>`;
+  $('#fiche-contenu').querySelectorAll('[data-retirer]').forEach((c) => (c.onchange = () => { if (c.checked) sm.retirer.add(c.dataset.retirer); else sm.retirer.delete(c.dataset.retirer); }));
+  $('#fiche-contenu').querySelectorAll('[data-h-ajout]').forEach((c) => (c.onchange = () => { sm.ajouter[Number(c.dataset.hAjout)].h = Number(c.value) || 6; }));
+  $('#fiche-contenu').querySelectorAll('[data-suppr-ajout]').forEach((b) => (b.onclick = () => { sm.ajouter.splice(Number(b.dataset.supprAjout), 1); simulation(); }));
+  $('#simu-ajout').onclick = () => basculerMode('simu-ajout');
+  $('#simu-lancer').onclick = () => simulation();
+  $('#simu-raz').onclick = () => { etat.simu = { retirer: new Set(), ajouter: [] }; simulation(); };
+}
+function ajouterRelaisSimulation(latlng) {
+  const lieu = nomLieu(latlng);
+  etat.simu.ajouter.push({ lat: lieu.lat, lon: lieu.lon, h: Number($('#relief-hs') ? $('#relief-hs').value : 6) || 6, nom: lieu.nom });
+  simulation();
+}
+// ---- Mode terrain : application installable, relevés hors connexion, fonds de carte gardés -------------
+const terrain = { liste: [], types: {}, gps: null, suivi: null, photo: null };
+const CLE_ATTENTE = 'terrain-attente';
+function lireAttente() { try { return JSON.parse(localStorage.getItem(CLE_ATTENTE) || '[]'); } catch { return []; } }
+function ecrireAttente(l) { try { localStorage.setItem(CLE_ATTENTE, JSON.stringify(l)); return true; } catch { return false; } }
+function majBandeauTerrain() {
+  const b = $('#bandeau-terrain'), n = lireAttente().length;
+  if (!b) return;
+  const hors = !navigator.onLine;
+  b.hidden = !hors && !n;
+  b.className = hors ? 'hors' : '';
+  b.innerHTML = `${hors ? '📴 Hors connexion : carte et fonds déjà vus' : '📤 Relevés à envoyer'}${n ? ` · <b>${n}</b> relevé${n > 1 ? 's' : ''} en attente` : ''}${!hors && n ? ' <button class="mini" id="terrain-envoyer">Envoyer</button>' : ''}`;
+  const be = $('#terrain-envoyer');
+  if (be) be.onclick = () => synchroniserReleves(true);
+}
+async function synchroniserReleves(manuel) {
+  if (terrain.envoi || !navigator.onLine || !etat.membre) { majBandeauTerrain(); return; }
+  terrain.envoi = true;
+  let l = lireAttente(), envoyes = 0;
+  try {
+    while (l.length) {
+      const r = await fetch('/api/releves', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(l[0]) });
+      if (r.status >= 500 || r.status === 401) break; // serveur injoignable ou session expirée : on réessaiera
+      if (!r.ok) { const e = await r.json().catch(() => ({})); console.warn('Relevé refusé :', e.erreur); }
+      l.shift(); ecrireAttente(l); envoyes++;
+    }
+  } catch { /* réseau coupé */ }
+  terrain.envoi = false;
+  majBandeauTerrain();
+  if (envoyes) { chargerReleves(); if (manuel || $('#terrain-retour')) { const z = $('#terrain-retour'); if (z) z.textContent = `✔ ${envoyes} relevé(s) envoyé(s).`; } }
+}
+async function chargerReleves() {
+  if (!etat.membre) return;
+  try { const r = await api('/api/releves'); terrain.liste = r.releves; terrain.types = r.types; } catch { /* hors connexion */ }
+  dessinerReleves();
+}
+const ICONE_RELEVE = { site: '📡', point_haut: '⛰️', test: '📶', probleme: '⚠️', installation: '✅', autre: '📝' };
+function dessinerReleves() {
+  if (etat.coucheReleves) etat.coucheReleves.remove();
+  etat.coucheReleves = null;
+  if (!etat.couches.releves || !etat.membre) return;
+  const g = L.layerGroup();
+  const tous = [...terrain.liste, ...lireAttente().map((r) => ({ ...r, attente: true }))];
+  for (const r of tous) {
+    const m = L.marker([r.lat, r.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-releve${r.attente ? ' attente' : ''}">${ICONE_RELEVE[r.type] || '📝'}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 400 });
+    m.bindPopup(() => `<div class="popup-releve"><b>${esc(terrain.types[r.type] || r.type)}</b>${r.attente ? ' <span class="pastille attention">pas encore envoyé</span>' : ''}<br><small>${new Date(r.heure).toLocaleString('fr-FR')}${r.auteur ? ' · ' + esc(r.auteur) : ''}${r.precision ? ' · GPS ±' + Math.round(r.precision) + ' m' : ''}${r.alt != null ? ' · ' + Math.round(r.alt) + ' m' : ''}</small>
+      ${r.noeud || r.snr != null || r.rssi != null ? `<div>📶 ${esc(r.noeud || '')}${r.snr != null ? ' · SNR ' + r.snr + ' dB' : ''}${r.rssi != null ? ' · RSSI ' + r.rssi + ' dBm' : ''}</div>` : ''}
+      ${r.note ? `<p>${esc(r.note).replace(/\n/g, '<br>')}</p>` : ''}
+      ${r.photo === true ? `<a href="/api/releves/${r.id}/photo" target="_blank"><img src="/api/releves/${r.id}/photo" alt="photo du relevé" loading="lazy"></a>` : typeof r.photo === 'string' ? `<img src="${r.photo}" alt="photo du relevé">` : ''}
+      <div class="boutons"><button class="mini" data-couv-releve="${r.lat},${r.lon}">Couverture depuis ce point</button>${!r.attente && (etat.admin || (etat.config.compte && r.auteur === (etat.config.compte.indicatif || etat.config.compte.identifiant))) ? `<button class="mini" data-suppr-releve="${r.id}">Supprimer</button>` : ''}</div></div>`, { maxWidth: 300 });
+    m.on('popupopen', (e) => {
+      const el = e.popup.getElement();
+      const bc = el.querySelector('[data-couv-releve]');
+      if (bc) bc.onclick = () => { carte.closePopup(); voirCouvertureSite({ lat: r.lat, lon: r.lon }, terrain.types[r.type] || 'Relevé', 6, { cadrer: true }); };
+      const bs = el.querySelector('[data-suppr-releve]');
+      if (bs) bs.onclick = async () => { if (!(await confirmer('Supprimer ce relevé ?'))) return; await api('/api/releves/' + r.id, { method: 'DELETE' }); carte.closePopup(); chargerReleves(); };
+    });
+    m.addTo(g);
+  }
+  g.addTo(carte);
+  etat.coucheReleves = g;
+}
+// Photo réduite à 1280 px, JPEG ~70 % (quelques centaines de ko au plus) : supportable en 4G faible et dans la file locale
+function compresserPhoto(fichier) {
+  return new Promise((ok, ko) => {
+    const img = new Image(), url = URL.createObjectURL(fichier);
+    img.onload = () => {
+      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      ok(c.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); ko(new Error('Photo illisible')); };
+    img.src = url;
+  });
+}
+function arreterGps() { if (terrain.suivi != null) navigator.geolocation.clearWatch(terrain.suivi); terrain.suivi = null; }
+function ficheTerrain() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const attente = lireAttente();
+  const relais = [...etat.noeuds.values()].filter((n) => n.infrastructure).sort((a, b) => (a.nomLong || a.id).localeCompare(b.nomLong || b.id));
+  const types = Object.keys(terrain.types).length ? terrain.types : { site: 'Site relais possible', point_haut: 'Point haut', test: 'Test de couverture', probleme: 'Problème / panne', installation: 'Installation réalisée', autre: 'Autre' };
+  const installable = !!terrain.invite;
+  $('#fiche-contenu').innerHTML = `<h2>📍 Mode terrain</h2>
+    ${!etat.membre ? '<div class="alerte attention">Connectez-vous (compte membre) pour enregistrer des relevés.</div>' : `
+    <form id="f-releve" class="form-edit">
+      <div class="gps-terrain" id="gps-terrain">📡 Recherche de la position GPS…</div>
+      <label>Type <select name="type">${Object.entries(types).map(([k, v]) => `<option value="${k}">${ICONE_RELEVE[k] || ''} ${esc(v)}</option>`).join('')}</select></label>
+      <label>Note <textarea name="note" rows="3" placeholder="Accès, propriétaire, alimentation, dégagement, ce que vous recevez…"></textarea></label>
+      <details><summary>Mesure radio (facultatif)</summary>
+        <label>Nœud entendu <input name="noeud" list="relais-terrain" placeholder="nom du relais"></label>
+        <datalist id="relais-terrain">${relais.map((n) => `<option value="${esc(n.nomLong || n.id)}">`).join('')}</datalist>
+        <div class="deux"><label>SNR (dB) <input name="snr" type="number" step="0.25" min="-40" max="30"></label><label>RSSI (dBm) <input name="rssi" type="number" step="1" min="-150" max="0"></label></div>
+      </details>
+      <label class="bouton-photo">📷 Photo <input name="photo" type="file" accept="image/*" capture="environment"></label>
+      <div id="apercu-photo"></div>
+      <div class="actions-prop"><button type="submit" class="principal">Enregistrer le relevé</button></div>
+      <p class="erreur" id="terrain-retour"></p>
+    </form>`}
+    ${attente.length ? `<p class="note">${attente.length} relevé(s) en attente d’envoi (envoyés automatiquement au retour du réseau).</p>` : ''}
+    <h3>Préparer une sortie sans réseau</h3>
+    <p class="note">Cadrez la carte sur le secteur de la sortie puis enregistrez ses fonds de carte : ils resteront affichés sans réseau (jusqu’au zoom 16, 3000 tuiles au plus). L’application elle-même s’ouvre hors connexion dès la deuxième visite.</p>
+    <div class="actions-prop"><button id="terrain-tuiles">🗺️ Garder les fonds de carte de cette vue</button>${installable ? '<button id="terrain-installer">📲 Installer l’application</button>' : ''}</div>
+    <p class="note" id="terrain-tuiles-retour"></p>
+    ${!installable ? '<p class="note">Pour l’avoir comme une application sur le téléphone : menu du navigateur › « Ajouter à l’écran d’accueil » (la carte doit être ouverte en HTTPS).</p>' : ''}
+    ${terrain.liste.length ? `<h3>Derniers relevés</h3>${terrain.liste.slice(-15).reverse().map((r) => `<div class="ligne cliquable" data-aller-releve="${r.lat},${r.lon}"><span>${ICONE_RELEVE[r.type] || '📝'}</span><span class="titre">${esc(terrain.types[r.type] || r.type)}<small>${esc((r.note || '').slice(0, 60))} · ${esc(r.auteur || '')} · ${ilYa(r.heure)}${r.photo ? ' · 📷' : ''}</small></span></div>`).join('')}` : ''}`;
+  document.querySelectorAll('[data-aller-releve]').forEach((el) => (el.onclick = () => { const [a, b] = el.dataset.allerReleve.split(',').map(Number); carte.setView([a, b], Math.max(carte.getZoom(), 14)); }));
+  $('#terrain-tuiles').onclick = prechargerTuiles;
+  const bi = $('#terrain-installer');
+  if (bi) bi.onclick = async () => { terrain.invite.prompt(); await terrain.invite.userChoice.catch(() => {}); terrain.invite = null; bi.remove(); };
+  const f = $('#f-releve');
+  if (!f) return;
+  // Position : suivi GPS tant que la fiche est ouverte (la précision s'affine en quelques secondes)
+  arreterGps();
+  const zg = $('#gps-terrain');
+  if (!navigator.geolocation) zg.textContent = '⚠️ Pas de GPS dans ce navigateur : le relevé prendra le centre de la carte.';
+  else terrain.suivi = navigator.geolocation.watchPosition((p) => {
+    terrain.gps = { lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, precision: p.coords.accuracy, heure: p.timestamp };
+    const z = $('#gps-terrain');
+    if (!z) return arreterGps();
+    z.className = 'gps-terrain ' + (p.coords.accuracy <= 20 ? 'bon' : p.coords.accuracy <= 100 ? 'moyen' : 'faible');
+    z.innerHTML = `📍 ${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)} · ±${Math.round(p.coords.accuracy)} m${p.coords.altitude != null ? ' · ' + Math.round(p.coords.altitude) + ' m' : ''}`;
+  }, (e) => { const z = $('#gps-terrain'); if (z) z.textContent = `⚠️ GPS indisponible (${e.message}) : le relevé prendra le centre de la carte.`; }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  terrain.photo = null;
+  f.photo.onchange = async () => {
+    const fi = f.photo.files[0];
+    if (!fi) return;
+    try { terrain.photo = await compresserPhoto(fi); $('#apercu-photo').innerHTML = `<img src="${terrain.photo}" alt="aperçu"><small>${Math.round(terrain.photo.length * 0.75 / 1024)} ko</small>`; } catch (e) { $('#terrain-retour').textContent = e.message; }
+  };
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    const c = carte.getCenter(), g = terrain.gps && Date.now() - terrain.gps.heure < 120000 ? terrain.gps : null;
+    const nombre = (v) => (v === '' || v == null ? null : Number(v));
+    const r = { id: (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).toLowerCase(), lat: g ? g.lat : c.lat, lon: g ? g.lon : c.lng, alt: g ? g.alt : null, precision: g ? g.precision : null, type: f.type.value, note: f.note.value.trim(), noeud: f.noeud.value.trim(), snr: nombre(f.snr.value), rssi: nombre(f.rssi.value), heure: Date.now(), photo: terrain.photo };
+    const l = lireAttente(); l.push(r);
+    if (!ecrireAttente(l)) { l.pop(); r.photo = null; l.push(r); if (!ecrireAttente(l)) { $('#terrain-retour').textContent = 'Mémoire du téléphone pleine : envoyez d’abord les relevés en attente.'; return; } $('#terrain-retour').textContent = 'Mémoire pleine : relevé gardé sans sa photo.'; }
+    else $('#terrain-retour').textContent = navigator.onLine ? 'Envoi…' : '✔ Relevé gardé sur le téléphone : il partira au retour du réseau.';
+    f.reset(); terrain.photo = null; $('#apercu-photo').innerHTML = '';
+    dessinerReleves(); majBandeauTerrain(); synchroniserReleves(true);
+  };
+}
+function tuilesVue(couche, zMax) {
+  const b = carte.getBounds(), urls = [];
+  const o = couche.options, sd = typeof o.subdomains === 'string' ? o.subdomains.split('') : o.subdomains || [];
+  const tx = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
+  const ty = (lat, z) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z); };
+  for (let z = Math.max(6, carte.getZoom() - 2); z <= zMax; z++) {
+    for (let x = tx(b.getWest(), z); x <= tx(b.getEast(), z); x++)
+      for (let y = ty(b.getNorth(), z); y <= ty(b.getSouth(), z); y++)
+        urls.push(L.Util.template(couche._url, L.extend({ r: '', s: sd.length ? sd[Math.abs(x + y) % sd.length] : '', x, y, z }, o)));
+  }
+  return urls;
+}
+async function prechargerTuiles() {
+  const z = $('#terrain-tuiles-retour');
+  const reg = navigator.serviceWorker && (await navigator.serviceWorker.ready.catch(() => null));
+  if (!reg || !reg.active) { z.textContent = 'Fonction indisponible : la carte doit être ouverte en HTTPS (ou en local) dans un navigateur récent.'; return; }
+  const couches = [];
+  carte.eachLayer((l) => { if (l instanceof L.TileLayer && l._url && /^https?:/.test(l._url)) couches.push(l); });
+  if (!couches.length) { z.textContent = 'Aucun fond de carte à enregistrer.'; return; }
+  let zMax = Math.min(16, Math.max(carte.getZoom() + 3, 12)), urls;
+  do { urls = couches.flatMap((c) => tuilesVue(c, Math.min(zMax, c.options.maxNativeZoom || 19))); zMax--; } while (urls.length > 3000 && zMax > carte.getZoom());
+  if (urls.length > 3000) { z.textContent = 'Zone trop grande : rapprochez-vous (zoomez) puis recommencez.'; return; }
+  z.textContent = `Enregistrement de ${urls.length} tuiles…`;
+  const canal = new MessageChannel();
+  canal.port1.onmessage = (e) => { const d = e.data; z.textContent = d.fini ? `✔ ${d.fait - d.erreurs} tuiles gardées (jusqu’au zoom ${zMax + 1})${d.erreurs ? `, ${d.erreurs} en échec` : ''}. Ce secteur s’affichera sans réseau.` : `Enregistrement… ${d.fait} / ${d.total}`; };
+  reg.active.postMessage({ type: 'prechargerTuiles', urls }, [canal.port2]);
+}
+function demarrerTerrain() {
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('Service worker :', e.message));
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); terrain.invite = e; });
+  window.addEventListener('online', () => { majBandeauTerrain(); synchroniserReleves(); });
+  window.addEventListener('offline', majBandeauTerrain);
+  document.querySelectorAll('.seul-membre').forEach((b) => (b.hidden = !etat.membre));
+  majBandeauTerrain();
+  chargerReleves();
+  synchroniserReleves();
+  setInterval(() => { if (lireAttente().length) synchroniserReleves(); }, 60000);
+  // La fiche se ferme : on coupe le GPS (batterie)
+  const fe = document.querySelector('#fiche .fermer, #fermer-fiche');
+  if (fe) fe.addEventListener('click', arreterGps);
+}
+
+// ---- Bulles voisines (cartes fédérées) -----------------------------------------------------------------
+async function chargerFederation() {
+  try { etat.federation = await api('/api/federation/voisins'); } catch { etat.federation = []; }
+  dessinerFederation();
+}
+function dessinerFederation() {
+  if (etat.coucheFederation) etat.coucheFederation.remove();
+  etat.coucheFederation = null;
+  if (!etat.couches.federation || !(etat.federation || []).length) return;
+  const g = L.layerGroup();
+  for (const b of etat.federation) {
+    const pos = new Map(b.relais.map((r) => [r.num, r]));
+    for (const l of b.liens) {
+      const a = pos.get(l.a), c = pos.get(l.b);
+      if (a && c) L.polyline([[a.lat, a.lon], [c.lat, c.lon]], { color: couleurSnr(l.snr), weight: 1.5, opacity: 0.55, dashArray: '3 6', pane: 'liens', interactive: false }).addTo(g);
+    }
+    for (const r of b.relais) {
+      L.marker([r.lat, r.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-federation ${r.passerelle ? 'gw' : ''}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), zIndexOffset: 300 })
+        .bindTooltip(`<b>${esc(r.nom)}</b> <small>bulle voisine</small><br>${esc(b.nom)}${b.departement ? ' (' + esc(b.departement.code) + ')' : ''}<br>${esc(r.role || '')}${r.passerelle ? ' · passerelle MQTT' : ''}${r.hauteur ? ' · antenne ' + r.hauteur + ' m' : ''}<br><small>vu ${ilYa(r.dernierVu)}${b.perime ? ' · données anciennes (bulle injoignable)' : ''}</small>`, { className: 'info' }).addTo(g);
+    }
+  }
+  g.addTo(carte);
+  etat.coucheFederation = g;
+}
+
+// ---- Partager : carte publique intégrable et exports ---------------------------------------------------
+async function rendreFederationAdmin() {
+  const z = $('#liste-federation');
+  if (!z) return;
+  let l = [];
+  try { l = await api('/api/federation/partenaires'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  z.innerHTML = l.map((p) => `<div class="ligne"><span class="point ${p.erreur ? (p.relais ? 'attention' : 'alerte') : 'actif'}"></span><span class="titre">${esc(p.nom || p.url)}<small>${esc(p.url)}${p.departement ? ' · ' + esc(p.departement.code + ' ' + (p.departement.nom || '')) : ''} · ${p.relais} relais, ${p.liens} liaisons${p.heure ? ' · ' + ilYa(p.heure) : ''}${p.erreur ? ' · <b style="color:var(--attention)">' + esc(p.erreur) + '</b>' : ''}</small></span><span class="meta"><button class="mini" data-retirer-fed="${esc(p.url)}">✕</button></span></div>`).join('') || '<div class="vide">Aucune bulle voisine déclarée.</div>';
+  z.querySelectorAll('[data-retirer-fed]').forEach((b) => (b.onclick = async () => { if (!(await confirmer('Retirer cette bulle voisine ?'))) return; await api('/api/federation/partenaires?url=' + encodeURIComponent(b.dataset.retirerFed), { method: 'DELETE' }); rendreFederationAdmin(); chargerFederation(); }));
+}
+function fichePartager() {
+  const base = location.origin;
+  const iframe = `<iframe src="${base}/publique" width="100%" height="520" style="border:0;border-radius:8px" title="Carte du réseau" loading="lazy"></iframe>`;
+  const ha = `rest:\n  - resource: ${base}/api/export/resume.json\n    scan_interval: 120\n    sensor:\n      - name: "Gaulix nœuds actifs"\n        value_template: "{{ value_json.noeudsActifs }}"\n      - name: "Gaulix couverture"\n        unit_of_measurement: "%"\n        value_template: "{{ value_json.couverturePct }}"\n      - name: "Gaulix alertes critiques"\n        value_template: "{{ value_json.alertesCritiques }}"`;
+  const lien = (url, lib, desc) => `<div class="ligne"><span class="titre"><a href="${url}" target="_blank" rel="noopener">${lib}</a><small>${desc}</small></span><span class="meta"><button class="mini" data-copier="${esc(url)}">Copier</button></span></div>`;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>Carte publique et exports</h2>
+    <h3>Carte publique allégée</h3>
+    <p class="note">Relais, passerelles, nœuds à position approchée et liaisons, mise à jour chaque minute. Aucun message ni position exacte de particulier. Onglets Meshtastic / MeshCore / Les deux et animation en direct des paquets. Options : <span class="mono">?reseau=meshtastic</span> (ou <span class="mono">meshcore</span>, <span class="mono">deux</span>), <span class="mono">?animations=0</span>, <span class="mono">?couverture=actuelle</span> (ou <span class="mono">point</span> : couverture du point cliqué, ou <span class="mono">sites</span> : où poser des relais, avec <span class="mono">&acces=4x4</span>, <span class="mono">pied</span> ou <span class="mono">tous</span>), <span class="mono">?fond=Plan IGN</span>, <span class="mono">?clients=0</span> (relais seuls), <span class="mono">?liens=0</span>, <span class="mono">?titre=…</span></p>
+    ${lien(base + '/publique', base + '/publique', 'à ouvrir ou à intégrer')}
+    <label class="bloc-code">Code à coller dans une page (gaulix.fr…)<textarea readonly rows="3">${esc(iframe)}</textarea></label>
+    <p class="note">La page doit être joignable depuis internet (par exemple via Tailscale Funnel ou un reverse proxy) pour être vue par les visiteurs d’un site.</p>
+    <h3>Exports</h3>
+    ${lien(base + '/api/export/relais.gpx', 'Relais et passerelles (GPX)', 'pour OsmAnd, un GPS de randonnée ou une tournée de maintenance')}
+    ${lien(base + '/api/export/noeuds.geojson', 'Nœuds (GeoJSON)', 'QGIS, uMap, sites web')}
+    ${lien(base + '/api/export/liens.geojson', 'Liaisons radio 24 h (GeoJSON)', 'QGIS, uMap ; ?heures=168 pour 7 jours')}
+    ${lien(base + '/api/export/resume.json', 'Résumé (JSON)', 'Home Assistant, scripts, tableaux de bord')}
+    ${lien(base + '/metrics', 'Métriques Prometheus', 'à ajouter comme cible dans Prometheus, puis tableaux Grafana')}
+    <h3>Home Assistant</h3>
+    <label class="bloc-code">Dans configuration.yaml<textarea readonly rows="11">${esc(ha)}</textarea></label>
+    ${etat.admin ? `<h3>Bulles voisines (fédération)</h3>
+    <p class="note">Déclarez les cartes live des départements voisins : leurs relais s’affichent (couche « Bulles voisines ») et comptent dans les calculs de couverture près des limites. Votre propre carte publie ses relais à l’adresse <span class="mono">${esc(base)}/api/federation</span> : donnez votre adresse aux autres bulles.</p>
+    <div id="liste-federation"><div class="vide">Chargement…</div></div>
+    <form id="f-federation" class="parametres compact"><label>Adresse de la carte voisine <input name="url" placeholder="https://carte-42.exemple.fr" required></label><label>Nom (facultatif) <input name="nom" placeholder="Loire"></label><button type="submit" class="principal">Ajouter</button></form>
+    <p class="erreur" id="federation-retour"></p>` : ''}
+    <p class="note">Ces exports suivent les mêmes règles de confidentialité que la carte publique. Pour les protéger, définissez <span class="mono">EXPORT_JETON</span> dans le fichier .env : il faut alors ajouter <span class="mono">?jeton=…</span> aux adresses (ou l’en-tête « Authorization: Bearer … »).</p>`;
+  if (etat.admin) {
+    rendreFederationAdmin();
+    $('#f-federation').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      $('#federation-retour').textContent = 'Connexion à la carte voisine…';
+      try { const r = await postJson('/api/federation/partenaires', { url: f.url.value.trim(), nom: f.nom.value.trim() }); $('#federation-retour').textContent = r.erreur ? `Ajoutée, mais injoignable pour l’instant : ${r.erreur}` : `✔ Ajoutée : ${r.relais} relais récupérés.`; f.reset(); rendreFederationAdmin(); chargerFederation(); } catch (err) { $('#federation-retour').textContent = err.message; }
+    };
+  }
+}
+function allerPlan() {
+  const b = document.querySelector('.onglets button[data-onglet="sites"]');
+  if (b) b.click();
+  setTimeout(() => { const bp = $('#bloc-plan'); if (bp) { bp.scrollIntoView({ behavior: 'smooth', block: 'start' }); bp.classList.add('surbrillance'); setTimeout(() => bp.classList.remove('surbrillance'), 1500); } }, 300);
+}
+
+// ---- Zone dessinée à la main : clic = un point, double-clic ou « Terminer » pour fermer ------------------
+etat.dessinZone = null;
+// Dessin de zones : plusieurs zones possibles, contour sans croisement (chaque nouveau côté est vérifié)
+function commencerZone() {
+  if (etat.dessinZone) arreterZone();
+  if (etat.modeCarte) basculerMode(null);
+  etat.dessinZone = { points: [], faites: [], couche: L.layerGroup().addTo(carte), message: '' };
+  carte.doubleClickZoom.disable();
+  document.body.classList.add('dessin-zone');
+  let bar = $('#barre-zone');
+  if (!bar) { document.body.insertAdjacentHTML('beforeend', '<div id="barre-zone" class="barre-zone" role="toolbar"></div>'); bar = $('#barre-zone'); }
+  majBarreZone();
+  carte.on('dblclick', finirZoneDblclic);
+}
+function finirZoneDblclic(e) { if (!etat.dessinZone) return; L.DomEvent.stop(e); terminerZone(); }
+// Le segment p1-p2 coupe-t-il p3-p4 (en coordonnées écran, sans compter les extrémités communes) ?
+function segmentsCoupes(p1, p2, p3, p4) {
+  const c = (a, b, q) => Math.sign((b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x));
+  return c(p1, p2, p3) * c(p1, p2, p4) < 0 && c(p3, p4, p1) * c(p3, p4, p2) < 0;
+}
+// Le côté (a → b) croise-t-il un côté déjà tracé ? sauf : côtés voisins de a (et de b si on referme)
+function coteCroise(pts, a, b, fermeture) {
+  const P = pts.map((p) => carte.latLngToContainerPoint(p)), A = carte.latLngToContainerPoint(a), B = carte.latLngToContainerPoint(b);
+  for (let i = 0; i + 1 < P.length; i++) {
+    if (i + 1 === P.length - 1) continue; // côté qui arrive au dernier point (voisin)
+    if (fermeture && i === 0) continue; // côté qui part du premier point (voisin à la fermeture)
+    if (segmentsCoupes(A, B, P[i], P[i + 1])) return true;
+  }
+  return false;
+}
+function ajouterPointZone(ll) {
+  const d = etat.dessinZone;
+  // Le double-clic ajoute deux points au même endroit : on ignore le doublon
+  const der = d.points[d.points.length - 1];
+  if (der && carte.latLngToContainerPoint(der).distanceTo(carte.latLngToContainerPoint(ll)) < 6) return;
+  if (der && coteCroise(d.points, der, ll, false)) { d.message = '✖ Ce côté croiserait le contour : choisissez un autre point'; majBarreZone(); return; }
+  d.message = '';
+  d.points.push(ll);
+  dessinerZoneEnCours();
+}
+function dessinerZoneEnCours() {
+  const d = etat.dessinZone;
+  d.couche.clearLayers();
+  for (const z of d.faites) L.polygon(z, { color: '#facc15', weight: 2.5, fillOpacity: 0.18, pane: 'traces', interactive: false }).addTo(d.couche);
+  if (d.points.length >= 2) L.polygon(d.points, { color: '#facc15', weight: 3, dashArray: '6 5', fillOpacity: 0.12, pane: 'traces', interactive: false }).addTo(d.couche);
+  d.points.forEach((p, k) => L.circleMarker(p, { radius: k === 0 ? 7 : 5, color: '#111', weight: 2, fillColor: '#facc15', fillOpacity: 1, pane: 'traces' })
+    .on('click', (ev) => { if (k === 0 && d.points.length >= 3) { L.DomEvent.stop(ev); terminerZone(); } }).addTo(d.couche));
+  majBarreZone();
+}
+// Ferme la zone en cours si elle est valable ; renvoie false (avec un message) sinon
+function fermerZoneEnCours() {
+  const d = etat.dessinZone;
+  if (d.points.length < 3) return d.points.length === 0;
+  if (coteCroise(d.points, d.points[d.points.length - 1], d.points[0], true)) { d.message = '✖ La fermeture croiserait le contour : ajoutez ou retirez un point (↶)'; majBarreZone(); return false; }
+  d.faites.push(d.points.map((p) => [+p.lat.toFixed(5), +p.lng.toFixed(5)]));
+  d.points = [];
+  d.message = '';
+  return true;
+}
+function majBarreZone() {
+  const bar = $('#barre-zone'), d = etat.dessinZone;
+  if (!bar || !d) return;
+  const n = d.points.length, nz = d.faites.length;
+  const pret = n >= 3 || (n === 0 && nz > 0);
+  bar.innerHTML = `<b>🖊 Zone${nz ? ` ${nz + 1}` : ''} à étudier</b><span>${d.message ? `<b class="alerte-zone">${esc(d.message)}</b>` : n < 3 ? `${nz ? `${nz} zone${nz > 1 ? 's' : ''} prête${nz > 1 ? 's' : ''} · ` : ''}Cliquez sur la carte pour poser les coins (${n}/3 au moins)` : `${n} points · double-clic, clic sur le 1er point ou « Terminer »`}</span>
+    <input id="zone-nom" placeholder="Nom (ex. Gorges de l’Allier)" maxlength="40" value="${esc(d.nom || '')}">
+    <button class="mini principal" id="zone-fin" ${pret ? '' : 'disabled'}>Terminer et étudier${nz + (n >= 3 ? 1 : 0) > 1 ? ` (${nz + (n >= 3 ? 1 : 0)} zones)` : ''}</button><button class="mini" id="zone-autre" ${n >= 3 && nz < 9 ? '' : 'disabled'} title="Fermer cette zone et en dessiner une autre, étudiées ensemble">➕ Autre zone</button><button class="mini" id="zone-annuler-point" ${n || nz ? '' : 'disabled'}>↶ Point</button><button class="mini" id="zone-abandon">Abandonner</button>`;
+  $('#zone-nom').oninput = (e) => { d.nom = e.target.value; };
+  $('#zone-fin').onclick = terminerZone;
+  $('#zone-autre').onclick = () => { if (fermerZoneEnCours()) dessinerZoneEnCours(); };
+  // ↶ : retire le dernier point ; sans point en cours, rouvre la dernière zone fermée
+  $('#zone-annuler-point').onclick = () => { d.message = ''; if (d.points.length) d.points.pop(); else if (d.faites.length) d.points = d.faites.pop().map(([la, lo]) => L.latLng(la, lo)); dessinerZoneEnCours(); };
+  $('#zone-abandon').onclick = arreterZone;
+}
+function arreterZone() {
+  const d = etat.dessinZone;
+  if (d) d.couche.remove();
+  etat.dessinZone = null;
+  carte.off('dblclick', finirZoneDblclic);
+  carte.doubleClickZoom.enable();
+  document.body.classList.remove('dessin-zone');
+  const bar = $('#barre-zone'); if (bar) bar.remove();
+}
+function terminerZone() {
+  const d = etat.dessinZone;
+  if (!d || !fermerZoneEnCours() || !d.faites.length) return;
+  const polys = d.faites;
+  const nom = (d.nom || '').trim() || `Zone${polys.length > 1 ? 's' : ''} du ${new Date().toLocaleDateString('fr-FR')}`;
+  arreterZone();
+  // Enregistrée dans ce navigateur pour la retrouver (10 au plus, la plus récente en tête)
+  const l = lireLs('gaulix_zones', []).filter((z) => z.nom !== nom);
+  l.unshift({ nom, polygones: polys });
+  ecrireLs('gaulix_zones', l.slice(0, 10));
+  const zm = $('#zone-memo'); if (zm) zm.innerHTML = '<option value="">Zones enregistrées…</option>' + l.slice(0, 10).map((z, i) => `<option value="${i}">${esc(z.nom)}</option>`).join('');
+  planZoneDessinee(polys, nom);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && etat.dessinZone) arreterZone(); });
+async function planZoneDessinee(polys, nom, opts = {}) {
+  // Ancien format : une seule zone (liste de points)
+  if (polys.length && typeof polys[0][0] === 'number') polys = [polys];
+  const objectif = Number(($('#plan-objectif') || {}).value) || 95, max = Number(($('#plan-max') || {}).value) || 10;
+  const acces = opts.acces || ($('#plan-acces') || {}).value || lireLs('gaulix_zone_acces', null) || 'tous', reseau = $('#plan-reseau') ? $('#plan-reseau').checked : true, realiste = $('#plan-realiste') ? $('#plan-realiste').checked : false;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = `<h2>🖊 ${esc(nom)}</h2><div class="alerte info-lecture"><span class="sablier"></span> Couverture de chaque point haut sur la zone… (quelques secondes à une minute)</div>`;
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  for (const poly of polys) L.polygon(poly, { color: '#facc15', weight: 2.5, fill: false, pane: 'traces', interactive: false }).addTo(g);
+  carte.fitBounds(L.latLngBounds(polys.flat()).pad(0.15), { maxZoom: 13 });
+  let r;
+  const hs = Number(($('#plan-hs') || {}).value) || 6;
+  try { r = await postJson('/api/relief/plan-zone', { polygones: polys, objectif, max, acces, reseau, realiste, hs }); } catch (e) { z.innerHTML = `<h2>🖊 ${esc(nom)}</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const e2 = r.emprise;
+  L.imageOverlay(r.image, [[e2.sud, e2.ouest], [e2.nord, e2.est]], { opacity: 0.75, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  r.sites.forEach((x) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${x.rang}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`<b>${x.rang} · ${esc(nomSommet(x))}</b><br>${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''}<br>+${x.gainKm2} km² · cumul ${fmt(x.totalPct, 1, ' %')}`, { className: 'info' }).addTo(g));
+  // Autres emplacements possibles de chaque étape : petits repères 1a, 1b…
+  r.sites.forEach((x) => (x.alternatives || []).forEach((o, j) => L.marker([o.lat, o.lon], { icon: L.divIcon({ className: 'sommet plan existant-relier', html: `<span>${x.rang}${String.fromCharCode(97 + j)}</span>`, iconSize: [26, 22], iconAnchor: [13, 11] }), pane: 'traces', zIndexOffset: 700 })
+    .bindTooltip(`<b>${x.rang}${String.fromCharCode(97 + j)} · ${esc(nomSommet(o))}</b> (à la place du site ${x.rang})<br>${o.alt} m${o.commune ? ' · ' + esc(o.commune) : ''}<br>+${o.gainKm2} km² au lieu de +${x.gainKm2} km²${o.acces ? '<br>' + ACCES[o.acces.type].icone + ' ' + ACCES[o.acces.type].nom : ''}`, { className: 'info' }).addTo(g)));
+  const nomAcces = { tous: 'tous les points hauts', voiture: 'accessibles en voiture', '4x4': 'accessibles en 4×4 ou voiture', pied: 'accessibles à pied, en 4×4 ou voiture' }[r.filtreAcces];
+  z.innerHTML = `<h2>🖊 ${esc(nom)}</h2>
+    <div class="ident">${r.zones > 1 ? r.zones + ' zones · ' : ''}${r.surfaceZoneKm2} km² · objectif ${r.objectifPct} % · au plus ${r.max} sites · ${esc(nomAcces)} · ${r.avecReseau ? `avec le réseau actuel (${r.reseau.length} relais à portée)` : 'sans le réseau actuel'}${r.parametres && r.parametres.hs != null ? ` · antenne des sites <b>${fmt(r.parametres.hs, 1, ' m')} au-dessus du sol</b>` : ''}</div>
+    <div class="parametres compact"><label>Accès des nouveaux relais <select id="zone-acces">${Object.entries({ voiture: '🚗 En voiture', '4x4': '🚙 En 4×4 ou voiture', pied: '🥾 À pied ou mieux', tous: 'Tous les points hauts' }).map(([k, v]) => `<option value="${k}" ${k === r.filtreAcces ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+    ${r.filtreAcces !== 'tous' && r.accesEtat && r.accesEtat.faits < r.accesEtat.total ? `<div class="alerte attention">Accès aux sites en cours d’évaluation (OpenStreetMap) : ${r.accesEtat.faits}/${r.accesEtat.total} points. Seuls les sites déjà évalués sont proposés.</div>` : ''}
+    ${r.horsReliefKm2 > 2 ? `<div class="alerte attention">${r.horsReliefKm2} km² de la zone sortent du relief chargé (département et ses abords) : ils ne sont pas étudiés.</div>` : ''}
+    <div class="barre-couv"><i style="width:${r.departPct}%" class="actuel"></i><i style="width:${Math.max(0, r.finalPct - r.departPct)}%" class="ajout"></i></div>
+    <div class="alerte ${r.atteint ? 'info-lecture' : 'attention'}">Réseau actuel : <b>${fmt(r.departPct, 1, ' %')}</b> de la zone. ${r.sites.length ? `Avec ${r.sites.length} site${r.sites.length > 1 ? 's' : ''} : <b>${fmt(r.finalPct, 1, ' %')}</b>${r.atteint ? ' ✔' : ' (objectif non atteint avec ces critères)'}.` : r.atteint ? 'Objectif déjà atteint.' : 'Aucun point haut candidat n’améliore la couverture avec ces critères.'}</div>
+    ${r.sites.map((x) => `<div class="proposition etape-relier nouveau">
+      <div class="entete-prop"><span class="lettre">${x.rang}</span><b>${esc(nomSommet(x))}</b><span class="marge">+${x.gainKm2} km² · ${fmt(x.totalPct, 1, ' %')}</span></div>
+      <div class="meta-longue">${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''}</div>
+      <div class="meta-longue">Accès : ${texteAcces(x.acces)}</div>
+      ${x.realisme ? `<div class="meta-longue">Site : ${texteRealisme(x.realisme)}</div>` : ''}
+      ${blocCoords(x.lat, x.lon, { alt: x.alt, couv: { nom: `${x.rang} · ${nomSommet(x)}`, h: (r.parametres && r.parametres.hs) || 6 } })}
+      ${x.alternatives && x.alternatives.length ? `<details class="alt-relier"><summary>Autres emplacements possibles (${x.alternatives.length})</summary>${x.alternatives.map((o, j) => `<div class="ligne-alt" data-lat="${o.lat}" data-lon="${o.lon}" title="Centrer la carte sur cet emplacement"><b class="repere-alt">${x.rang}${String.fromCharCode(97 + j)}</b> ${esc(nomSommet(o))} · ${o.alt} m${o.commune ? ' · ' + esc(o.commune) : ''} · +${o.gainKm2} km² ${o.acces ? ACCES[o.acces.type].icone : ''}${o.realisme && o.realisme.support ? ' 🗼' : ''}</div>`).join('')}</details>` : ''}
+    </div>`).join('')}
+    <div class="actions-prop">${r.sites.length ? '<button id="zone-gpx">Télécharger les sites (GPX)</button>' : ''}<button id="zone-refaire">🖊 Dessiner une autre zone</button></div>
+    <p class="note">Bleu : déjà couvert · turquoise : apporté par les sites proposés · rouge : non couvert. Sous chaque site, d’autres emplacements possibles (1a, 1b…) qui apportent une surface proche, si le site proposé n’est pas utilisable (le site retenu tient compte aussi du support et de l’électricité). ${r.candidats} points hauts candidats (dans la zone ou à moins de 10 km). Antenne supposée à ${(r.parametres && r.parametres.hs) || 6} m au site, ${(r.parametres && r.parametres.ht) || 2} m au sol. La zone est gardée dans ce navigateur (Couverture › Plan › Zones enregistrées).</p>`;
+  const gx = $('#zone-gpx'); if (gx) gx.onclick = () => telechargerGpx(`zone-${nom.replace(/[^\w-]+/g, '-')}.gpx`, r.sites.map((x) => ({ lat: x.lat, lon: x.lon, alt: x.alt, nom: `${x.rang} - ${nomSommet(x)}`, desc: `+${x.gainKm2} km², cumul ${x.totalPct} %` })));
+  $('#zone-refaire').onclick = () => commencerZone();
+  z.querySelectorAll('.ligne-alt').forEach((el) => (el.onclick = () => carte.flyTo([Number(el.dataset.lat), Number(el.dataset.lon)], 14)));
+  $('#zone-acces').onchange = (ev) => { ecrireLs('gaulix_zone_acces', ev.target.value); planZoneDessinee(polys, nom, { acces: ev.target.value }); };
+}
+
+// ---- Plan pour couvrir le département ------------------------------------------------------------
+async function planDepartement() {
+  const objectif = Number($('#plan-objectif').value) || 95, max = Number($('#plan-max').value) || 15;
+  const acces = $('#plan-acces').value, reseau = $('#plan-reseau').checked;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<h2>Plan de couverture</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche des sites…</div>';
+  let r;
+  try { r = await api(`/api/relief/plan?objectif=${objectif}&max=${max}&acces=${acces}&reseau=${reseau ? 1 : 0}&realiste=${$('#plan-realiste').checked ? 1 : 0}`); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Plan de couverture</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const e = r.emprise, g = L.layerGroup();
+  L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.7, pane: 'couverture', className: 'pixelise' }).addTo(g);
+  r.sites.forEach((x) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${x.rang}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`<b>${x.rang} · ${esc(nomSommet(x))}</b><br>${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''}<br>+${x.gainKm2} km² · cumul ${fmt(x.totalPct, 1, ' %')}<br>${x.acces ? ACCES[x.acces.type].icone + ' ' + ACCES[x.acces.type].nom : 'accès non évalué'}`, { className: 'info' }).addTo(g));
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  if (r.sites.length) carte.fitBounds(L.latLngBounds(r.sites.map((x) => [x.lat, x.lon])).pad(0.3), { maxZoom: 11 });
+  const nomAcces = { tous: 'tous les points hauts', voiture: 'accessibles en voiture', '4x4': 'accessibles en 4×4 ou voiture', pied: 'accessibles à pied, en 4×4 ou voiture' }[r.filtreAcces];
+  $('#fiche-contenu').innerHTML = `<h2>Plan pour couvrir le département</h2>
+    <div class="ident">Objectif ${r.objectifPct} % · au plus ${r.max} sites · ${esc(nomAcces)} · ${r.avecReseau ? `en complément du réseau actuel (${r.reseau.length} relais)` : 'sans tenir compte du réseau actuel'}${r.parametres && r.parametres.hs != null ? ` · antenne des sites ${fmt(r.parametres.hs, 1, ' m')} au-dessus du sol (fixée par le classement des points hauts ; réglable pour une zone dessinée)` : ''}</div>
+    <div class="barre-couv"><i style="width:${r.departPct}%" class="actuel"></i><i style="width:${Math.max(0, r.finalPct - r.departPct)}%" class="ajout"></i></div>
+    <div class="alerte ${r.atteint ? 'info-lecture' : 'attention'}">${r.atteint ? `✔ Objectif atteint avec <b>${r.sites.length} site${r.sites.length > 1 ? 's' : ''}</b> : ${fmt(r.departPct, 1, ' %')} → <b>${fmt(r.finalPct, 1, ' %')}</b> du département.` : `Objectif non atteint : ${fmt(r.departPct, 1, ' %')} → <b>${fmt(r.finalPct, 1, ' %')}</b> avec ${r.sites.length} site${r.sites.length > 1 ? 's' : ''}. ${r.sites.length >= r.max ? 'Augmentez le nombre de sites' : 'Les sites restants n’apportent presque rien'}${r.filtreAcces !== 'tous' ? ' ou élargissez l’accès' : ''}.`}</div>
+    ${r.filtreAcces !== 'tous' && r.accesEtat && r.accesEtat.faits < r.accesEtat.total ? `<div class="alerte attention">Accès aux sites en cours d’évaluation (OpenStreetMap) : ${r.accesEtat.faits}/${r.accesEtat.total} points. ${r.candidats ? 'Le plan ne porte que sur les sites déjà évalués.' : 'Aucun site évalué pour l’instant : choisissez « Tous les points hauts » ou réessayez dans quelques minutes.'}</div>` : ''}
+    ${r.sites.map((x) => `<div class="proposition etape-relier nouveau">
+      <div class="entete-prop"><span class="lettre">${x.rang}</span><b>${esc(nomSommet(x))}</b><span class="marge">+${x.gainKm2} km² · ${fmt(x.totalPct, 1, ' %')}</span></div>
+      <div class="meta-longue">${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''}</div>
+      <div class="meta-longue">Accès : ${texteAcces(x.acces)}</div>
+      <div class="meta-longue">Site : ${texteRealisme(x.realisme)}</div>
+      ${blocCoords(x.lat, x.lon, { alt: x.alt, couv: { nom: `${x.rang} · ${nomSommet(x)}`, h: (r.parametres && r.parametres.hs) || 6 } })}
+    </div>`).join('') || '<div class="vide">Aucun site ne répond à ces critères.</div>'}
+    ${r.realiste && r.realismeEtat && !r.realismeEtat.pret ? '<div class="alerte attention">Données OpenStreetMap des sites (supports, zones protégées, habitations) pas encore chargées : le plan n’a pas pu en tenir compte. Réessayez dans quelques minutes.</div>' : ''}
+    <div class="actions-prop"><button id="plan-gpx">Télécharger les sites (GPX)</button>${r.sites.length >= 2 && r.sites.length <= 10 ? '<button id="plan-couv">Couverture détaillée (marges)</button>' : ''}</div>
+    <p class="note">Bleu : déjà couvert par le réseau · turquoise : apporté par les nouveaux sites · rouge : reste non couvert. Chaque site est choisi pour couvrir le plus de surface encore non desservie. ${r.candidats} points hauts candidats.${r.parametres ? ` Antennes ${r.parametres.hs} m, ${esc(r.parametres.preset)}, marge ${r.parametres.margeSecurite} dB + ${r.parametres.env} dB de pertes d’environnement.` : ''}</p>`;
+  $('#plan-gpx').onclick = () => telechargerGpx('plan-couverture.gpx', r.sites.map((x) => ({ lat: x.lat, lon: x.lon, alt: x.alt, nom: `${x.rang} - ${nomSommet(x)}`, desc: `+${x.gainKm2} km², cumul ${x.totalPct} %${x.acces ? ', accès ' + ACCES[x.acces.type].nom : ''}` })));
+  const pc = $('#plan-couv'); if (pc) pc.onclick = () => couvertureMulti(r.sites.map((x) => ({ lat: x.lat, lon: x.lon, h: (r.parametres && r.parametres.hs) || 6, nom: nomSommet(x) })));
+}
+
+// ---- Sites routiers (webcams du Département et de la DIR Massif Central) ---------------------------------
+async function dessinerRoutiers() {
+  if (etat.coucheRoutiers) { etat.coucheRoutiers.remove(); etat.coucheRoutiers = null; }
+  if (!etat.couches.routiers) return;
+  if (!etat.routiers) { try { etat.routiers = (await api('/api/sites-routiers')).sites || []; } catch { etat.routiers = []; } }
+  const g = L.layerGroup();
+  for (const x of etat.routiers) {
+    L.marker([x.lat, x.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-routier ${x.gestionnaire.startsWith('DIR') ? 'dir' : ''}">📷</div>`, iconSize: [20, 20], iconAnchor: [10, 10] }), zIndexOffset: 350 })
+      .bindTooltip(`<b>${esc(x.nom)}</b><br>${esc(x.gestionnaire)} · ${esc(x.type)}${x.altitude ? ' · ' + x.altitude + ' m' : ''}<br><small>Cliquez : couverture d’un relais posé ici</small>`, { className: 'info' })
+      .on('click', () => voirCouvertureSite({ lat: x.lat, lon: x.lon }, x.nom, 6, { cadrer: true }))
+      .addTo(g);
+  }
+  g.addTo(carte);
+  etat.coucheRoutiers = g;
+}
+async function evaluerRoutiers() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  let r;
+  for (let k = 0; k < 120; k++) {
+    try { r = await api('/api/relief/sites-routiers?h=6'); } catch (e) { z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="vide">${esc(e.message)}</div>`; return; }
+    if (r.etat !== 'calcul') break;
+    z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="alerte info-lecture"><span class="sablier"></span> Couverture de chaque site… ${r.progression || 0} %</div>`;
+    await new Promise((ok) => setTimeout(ok, 3000));
+    if ($('#fiche').hidden) return;
+  }
+  if (r.etat === 'erreur') { z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="vide">${esc(r.erreur)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  const utiles = r.sites.filter((x) => x.nouveauKm2 > 0);
+  utiles.slice(0, 15).forEach((x, k) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${k + 1}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`<b>${k + 1} · ${esc(x.nom)}</b><br>${esc(x.gestionnaire)}<br>+${x.nouveauKm2} km² nouveaux · ${x.couvertureKm2} km² au total`, { className: 'info' }).addTo(g));
+  if (utiles.length) carte.fitBounds(L.latLngBounds(utiles.slice(0, 15).map((x) => [x.lat, x.lon])).pad(0.2), { maxZoom: 11 });
+  z.innerHTML = `<h2>🛣️ Sites routiers pour des relais</h2>
+    <div class="ident">${r.sites.length} sites dans le département ou ses abords · couverture actuelle ${fmt(r.actuelPct, 1, ' %')} · antenne supposée à ${r.h} m</div>
+    ${r.sites.map((x, k) => `<div class="proposition etape-relier ${x.nouveauKm2 > 0 ? 'nouveau' : ''}">
+      <div class="entete-prop">${x.nouveauKm2 > 0 && k < 15 ? `<span class="lettre">${k + 1}</span>` : ''}<b>${esc(x.nom)}</b><span class="marge">${x.nouveauKm2 > 0 ? '+' + x.nouveauKm2 + ' km² nouveaux' : 'déjà couvert'}</span></div>
+      <div class="meta-longue">${esc(x.gestionnaire)} · ${esc(x.type)} · ${x.altitude || x.altMnt} m${x.dansDepartement ? '' : ' · hors du département'}</div>
+      <div class="meta-longue">Un relais ici couvrirait ${x.couvertureKm2} km² ${x.nouveauKm2 > 0 ? `→ couverture totale <b>${fmt(x.apresPct, 1, ' %')}</b>` : ''} · relié par radio à ${x.liaisons}${x.liaisons >= 3 ? ' ou plus' : ''} relais${x.liaisons ? '' : ' (isolé)'}</div>
+      ${blocCoords(x.lat, x.lon, { alt: x.altitude || x.altMnt, couv: { nom: x.nom, h: r.h || 6 } })}
+      <div class="actions-prop"><button class="mini" data-couv-routier="${k}">Couverture de ce site</button></div>
+    </div>`).join('')}
+    <p class="note">Source : carte publique ${esc(r.source || 'inforoute43.fr')} (webcams du Département de la Haute-Loire et de la DIR Massif Central). Une installation sur ces sites demande l’accord du gestionnaire : ce classement peut appuyer la demande.</p>`;
+  z.querySelectorAll('[data-couv-routier]').forEach((b) => (b.onclick = () => { const x = r.sites[Number(b.dataset.couvRoutier)]; voirCouvertureSite({ lat: x.lat, lon: x.lon }, x.nom, r.h, { cadrer: true }); }));
+}
+
+// ---- Déplacer des relais existants ------------------------------------------------------------------------
+async function optimiserRelais(rayon, acces, recalculer) {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  let r;
+  for (let k = 0; k < 120; k++) {
+    try { r = await api(`/api/relief/optimisation?rayon=${rayon}&acces=${acces}${recalculer && k === 0 ? '&recalculer=1' : ''}`); } catch (e) { z.innerHTML = `<h2>🔀 Déplacer des relais</h2><div class="vide">${esc(e.message)}</div>`; return; }
+    if (r.etat !== 'calcul') break;
+    z.innerHTML = `<h2>🔀 Déplacer des relais</h2><div class="alerte info-lecture"><span class="sablier"></span> Étude des emplacements autour de chaque relais… ${r.progression || 0} %</div><p class="note">Une à trois minutes : la couverture de chaque point haut proche est calculée d’après le relief.</p>`;
+    await new Promise((ok) => setTimeout(ok, 3000));
+    if (!$('#fiche-contenu') || $('#fiche').hidden) return;
+  }
+  if (r.etat === 'erreur') { z.innerHTML = `<h2>🔀 Déplacer des relais</h2><div class="vide">${esc(r.erreur)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  r.propositions.forEach((p, k) => {
+    const coul = '#f59e0b';
+    L.polyline([[p.de.lat, p.de.lon], [p.vers.lat, p.vers.lon]], { color: coul, weight: 3, dashArray: '6 6', pane: 'traces' }).addTo(g);
+    L.marker([p.vers.lat, p.vers.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${k + 1}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+      .bindTooltip(`<b>${k + 1} · ${esc(p.nom)} → ${esc(nomSommet(p.vers))}</b><br>+${p.gainNetKm2} km² nets · ${p.distanceKm} km`, { className: 'info' }).addTo(g);
+  });
+  const pts = r.propositions.flatMap((p) => [[p.de.lat, p.de.lon], [p.vers.lat, p.vers.lon]]);
+  if (pts.length) carte.fitBounds(L.latLngBounds(pts).pad(0.2), { maxZoom: 11 });
+  const nomAcces = { tous: 'tous les points hauts', voiture: 'accessibles en voiture', '4x4': 'accessibles en 4×4 ou en voiture', pied: 'accessibles à pied ou mieux' }[r.filtreAcces];
+  z.innerHTML = `<h2>🔀 Déplacer des relais</h2>
+    <div class="ident">Couverture actuelle ${fmt(r.actuelPct, 1, ' %')} · ${r.relaisEtudies} relais étudiés · points hauts à moins de ${r.rayonKm} km, ${esc(nomAcces)}</div>
+    ${r.propositions.length ? r.propositions.map((p, k) => `<div class="proposition etape-relier nouveau">
+      <div class="entete-prop"><span class="lettre">${k + 1}</span><b>${esc(p.nom)}</b><span class="marge">+${p.gainNetKm2} km² nets</span></div>
+      <div class="meta-longue">Vers <b>${esc(nomSommet(p.vers))}</b>${p.vers.commune ? ' · ' + esc(p.vers.commune) : ''} · ${p.vers.alt} m (aujourd’hui ${p.de.alt} m) · à ${p.distanceKm} km</div>
+      <div class="meta-longue">Gagne ${p.nouveauKm2} km² jamais couverts, perd ${p.perduKm2} km² que lui seul couvre aujourd’hui → couverture totale <b>${fmt(p.apresPct, 1, ' %')}</b> · reste relié par radio à ${p.liaisons}${p.liaisons >= 3 ? ' ou plus' : ''} relais</div>
+      <div class="meta-longue">Accès : ${texteAcces(p.vers.acces)}</div>
+      <div class="meta-longue">Site : ${texteRealisme(p.vers.realisme)}</div>
+      ${blocCoords(p.vers.lat, p.vers.lon, { alt: p.vers.alt, couv: { nom: `${p.nom} → ${nomSommet(p.vers)}`, h: p.hauteur || 6 } })}
+      <div class="actions-prop"><button class="mini" data-voir-dep="${k}">Voir gagné / perdu sur la carte</button></div>
+    </div>`).join('') : '<div class="vide">Aucun déplacement intéressant (au moins 10 km² de gain net, contact radio conservé) : vos relais sont déjà bien placés dans ce rayon.</div>'}
+    <h3>Apport propre de chaque relais</h3>
+    <p class="note">Surface que lui seul couvre aujourd’hui. Un relais qui couvre peu seul est soit redondant (bon pour la fiabilité), soit mal placé.</p>
+    ${r.bilan.map((b) => `<div class="ligne"><span class="titre">${esc(b.nom)}<small>${b.propreKm2} km² couverts par lui seul · ${b.altitude} m · antenne ${b.hauteur} m · relié à ${b.liaisons}${b.liaisons >= 3 ? '+' : ''} relais${b.propositions ? ` · ${b.propositions} proposition(s)` : ''}</small></span></div>`).join('')}
+    <div class="actions-prop"><button id="dep-recalc">Recalculer</button></div>
+    <p class="note">Calcul d’après le relief IGN, la fiche d’installation de chaque relais (hauteur, antenne) et les pertes d’environnement mesurées (${r.parametres.env} dB). Les passerelles chez des particuliers et les nœuds non routeurs ne sont pas proposés au déplacement.</p>`;
+  $('#dep-recalc').onclick = () => optimiserRelais(rayon, acces, true);
+  z.querySelectorAll('[data-voir-dep]').forEach((b) => (b.onclick = async () => {
+    const p = r.propositions[Number(b.dataset.voirDep)];
+    b.disabled = true; b.textContent = 'Calcul…';
+    try {
+      const s = await postJson('/api/relief/simulation', { retirer: [p.num], ajouter: [{ lat: p.vers.lat, lon: p.vers.lon, h: p.hauteur, nom: p.nom + ' (déplacé)' }] });
+      const e = s.emprise;
+      if (etat.coucheSimDep) etat.coucheSimDep.remove();
+      etat.coucheSimDep = L.imageOverlay(s.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.7, pane: 'couverture', className: 'pixelise' }).addTo(g);
+      b.textContent = `Vert : gagné (${s.gagneKm2} km²) · rouge : perdu (${s.perduKm2} km²)`;
+      carte.fitBounds(L.latLngBounds([[p.de.lat, p.de.lon], [p.vers.lat, p.vers.lon]]).pad(1.5), { maxZoom: 11 });
+    } catch (err) { b.textContent = err.message; }
+  }));
+}
+
+// ---- Plan à budget -------------------------------------------------------------------------------------
+async function planBudget(o) {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = '<h2>💶 Plan à budget</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche des meilleurs emplacements…</div>';
+  let r;
+  try { r = await api(`/api/relief/budget?n=${encodeURIComponent(o.n)}&acces=${encodeURIComponent(o.acces)}&secteur=${encodeURIComponent(o.secteur)}&solaire=${encodeURIComponent(o.solaire)}&mat=${encodeURIComponent(o.mat)}`); } catch (e) { z.innerHTML = `<h2>💶 Plan à budget</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.coucheCouverture) etat.coucheCouverture.remove();
+  const g = L.layerGroup();
+  r.sites.forEach((x) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${x.rang}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`<b>${x.rang} · ${esc(nomSommet(x))}</b><br>+${x.gainKm2} km² · +${x.habitantsGagnes.toLocaleString('fr-FR')} hab.<br>${x.alimentation} · ≈ ${x.cout} €`, { className: 'info' }).addTo(g));
+  g.addTo(carte);
+  etat.coucheCouverture = g;
+  $('#btn-effacer').hidden = false;
+  if (r.sites.length) carte.fitBounds(L.latLngBounds(r.sites.map((x) => [x.lat, x.lon])).pad(0.3), { maxZoom: 11 });
+  const pop = r.population, pct = (v) => (pop.totale ? fmt((v / pop.totale) * 100, 1, ' %') : '–');
+  z.innerHTML = `<h2>💶 Plan à budget : ${r.sites.length} relais</h2>
+    <div class="grille">
+      <div class="mesure"><span>Surface couverte</span><b>${fmt(r.departPct, 1, ' %')} → ${fmt(r.finalPct, 1, ' %')}</b></div>
+      <div class="mesure"><span>Habitants (bourg couvert)</span><b>${pct(pop.depart)} → ${pct(pop.finale)}</b></div>
+      <div class="mesure"><span>Coût estimé</span><b>≈ ${r.coutTotal.toLocaleString('fr-FR')} €</b></div>
+    </div>
+    ${r.sites.length < Number(r.n) ? `<div class="alerte attention">Seulement ${r.sites.length} site(s) utile(s) avec ces critères : les suivants n’apporteraient presque rien${r.filtreAcces !== 'tous' ? ' (ou élargissez l’accès exigé)' : ''}.</div>` : ''}
+    ${r.sites.map((x) => `<div class="proposition etape-relier nouveau">
+      <div class="entete-prop"><span class="lettre">${x.rang}</span><b>${esc(nomSommet(x))}</b><span class="marge">≈ ${x.cout} € · cumul ${x.coutCumule} €</span></div>
+      <div class="meta-longue">+${x.gainKm2} km² (cumul ${fmt(x.totalPct, 1, ' %')}) · <b>+${x.habitantsGagnes.toLocaleString('fr-FR')} habitants</b>${x.nbCommunesGagnees ? ` dans ${x.nbCommunesGagnees} commune(s) : ${esc(x.communesGagnees.join(', '))}${x.nbCommunesGagnees > x.communesGagnees.length ? '…' : ''}` : ''}</div>
+      <div class="meta-longue">${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''} · alimentation ${x.alimentation}</div>
+      <div class="meta-longue">Accès : ${texteAcces(x.acces)}</div>
+      <div class="meta-longue">Site : ${texteRealisme(x.realisme)}</div>
+      ${blocCoords(x.lat, x.lon, { alt: x.alt, couv: { nom: `${x.rang} · ${nomSommet(x)}`, h: 6 } })}
+    </div>`).join('') || '<div class="vide">Aucun site ne répond à ces critères.</div>'}
+    <div class="actions-prop"><button id="budget-gpx">Télécharger les sites (GPX)</button>${r.sites.length >= 2 ? '<button id="budget-couv">Couverture détaillée</button>' : ''}</div>
+    <p class="note">Ordre de pose conseillé : chaque relais est celui qui apporte le plus de surface nouvelle${r.realiste ? ' (sites en zone protégée écartés, préférence aux châteaux d’eau, pylônes et au secteur proche)' : ''}. Habitants : population des communes dont le bourg passe en zone couverte (${pop.communes} communes, ${pop.totale.toLocaleString('fr-FR')} habitants). Coût : relais ${r.couts.secteur} € (secteur) ou ${r.couts.solaire} € (solaire), + ${r.couts.mat} € de mât s’il n’y a pas de support existant ; hors main-d’œuvre et convention avec le propriétaire.</p>`;
+  $('#budget-gpx').onclick = () => telechargerGpx('plan-budget.gpx', r.sites.map((x) => ({ lat: x.lat, lon: x.lon, alt: x.alt, nom: `${x.rang} - ${nomSommet(x)}`, desc: `+${x.gainKm2} km², +${x.habitantsGagnes} hab., ${x.alimentation}, ~${x.cout} €` })));
+  const bc = $('#budget-couv'); if (bc) bc.onclick = () => couvertureMulti(r.sites.map((x) => ({ lat: x.lat, lon: x.lon, h: (r.parametres && r.parametres.hs) || 6, nom: nomSommet(x) })));
+}
+
+// Département étudié (relief, points hauts, plan) : celui de la carte ou n'importe quel autre
+async function htmlChoixDepartement() {
+  if (!etat.listeDeps) { try { etat.listeDeps = await api('/api/departements'); } catch { etat.listeDeps = []; } }
+  const carteDep = etat.config.departement && etat.config.departement.code;
+  const actuel = etat.depEtude || carteDep;
+  return `<div class="choix-dep"><label>Département étudié <select id="dep-etude">${etat.listeDeps.map((d) => `<option value="${d.code}" ${d.code === actuel ? 'selected' : ''}>${d.code} · ${esc(d.nom)}${d.code === carteDep ? ' (carte)' : ''}</option>`).join('')}</select></label>${etat.depEtude ? '<button class="mini" id="dep-retour" title="Revenir au département de la carte">↩ département de la carte</button>' : ''}</div>`;
+}
+function brancherChoixDepartement() {
+  const sel = $('#dep-etude');
+  if (!sel) return;
+  const changer = (code) => {
+    const carteDep = etat.config.departement && etat.config.departement.code;
+    etat.depEtude = code === carteDep ? null : code;
+    try { if (etat.depEtude) localStorage.setItem('gaulix_dep_etude', etat.depEtude); else localStorage.removeItem('gaulix_dep_etude'); } catch { /* ignoré */ }
+    etat.sommets = []; etat.classement = null; etat.relief = null;
+    if (etat.coucheCouverture) { etat.coucheCouverture.remove(); etat.coucheCouverture = null; }
+    dessinerSommets();
+    $('#sites').innerHTML = '<div class="vide">Chargement du département…</div>';
+    chargerRelief(true);
+  };
+  sel.onchange = () => changer(sel.value);
+  const r = $('#dep-retour'); if (r) r.onclick = () => changer(etat.config.departement.code);
+}
+async function rendreSites() {
+  const z = $('#sites');
+  if (!z) return;
+  const e = etat.relief;
+  const choix = await htmlChoixDepartement();
+  if (!e) { z.innerHTML = choix + '<div class="vide">Modèle de relief indisponible.</div>'; brancherChoixDepartement(); return; }
+  const nomDep = e.departement ? `${e.departement.nom || ''} (${e.departement.code})` : '';
+  if (e.mnt !== 'pret') {
+    z.innerHTML = choix + `<div class="vide">${e.mnt === 'erreur' ? 'Erreur : ' + esc(e.erreur) : `Chargement du relief IGN ${esc(nomDep)}… ${e.progression || 0} %`}<br><small>Premier chargement d’un département : quelques minutes (relief IGN, points hauts OpenStreetMap, puis classement des sites). Ensuite il est gardé sur le disque.</small></div>`;
+    brancherChoixDepartement();
+    return;
+  }
+  const c = etat.classement;
+  const avecCoords = (s, sous) => `${sous || ''} · <span class="mono">${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</span>`;
+  const ligneSite = (s, droite, sous, badge, or) => `<div class="ligne site" data-site="${s.id}"><span class="rang-site${or ? ' or' : ''}">${badge ?? ''}</span><span class="titre">${esc(nomSommet(s))} ${badgeAcces(s)}<small>${s.alt} m${s.commune && s.nom ? ' · ' + esc(s.commune) : ''}</small></span><span class="meta">${droite}</span><span class="sous-ligne meta-longue">${avecCoords(s, sous)}</span></div>`;
+  const parId = new Map(etat.sommets.map((s) => [s.id, s]));
+  let h = choix + `<div class="bloc-plan bloc-actuel">
+      <h3>📡 Couverture actuelle du réseau</h3>
+      <p class="note">Zone desservie aujourd’hui par les relais et passerelles détectés${c && c.reseauActuel ? ` : <b>${fmt(c.reseauActuel.pct, 1, ' %')}</b> du département avec ${c.reseauActuel.relais.length} relais` : ''}.</p>
+      <div class="actions-prop"><button id="sites-couv-reseau" class="principal">Couverture calculée</button><button id="sites-couv-mesuree">📶 Couverture mesurée</button></div>
+    </div>
+    <div class="bloc-plan" id="bloc-plan">
+      <h3>🎯 Plan pour couvrir ${e.departement ? esc(e.departement.nom || 'le département') : 'le département'}</h3>
+      <div class="parametres compact">
+        <label>Objectif (%) <input id="plan-objectif" type="number" min="10" max="100" step="1" value="95"></label>
+        <label>Sites au plus <input id="plan-max" type="number" min="1" max="40" step="1" value="15"></label>
+        <label title="Hauteur de l’antenne des relais proposés, au-dessus du sol (zone dessinée)">Antenne (m au-dessus du sol) <input id="plan-hs" type="number" min="1" max="60" step="0.5" value="6"></label>
+        <label>Accès exigé <select id="plan-acces"><option value="voiture">🚗 En voiture</option><option value="4x4">🚙 En 4×4 ou voiture</option><option value="pied">🥾 À pied ou mieux</option><option value="tous">Tous les points hauts</option></select></label>
+      </div>
+      <label class="case"><input type="checkbox" id="plan-reseau" checked> En complément du réseau actuel</label>
+      <label class="case"><input type="checkbox" id="plan-realiste" checked> Sites réalistes : zones protégées écartées, châteaux d’eau et pylônes privilégiés, électricité</label>
+      <div class="actions-prop"><button id="plan-calculer" class="principal">Donner les emplacements</button></div>
+      <h4>🖊 Ou une zone dessinée à la main</h4>
+      <p class="note">Secteur d’intervention, vallée, massif, itinéraire de course… Mêmes critères que ci-dessus, appliqués à la seule zone dessinée.</p>
+      <div class="actions-prop"><button id="zone-dessiner">🖊 Dessiner une zone</button>
+        <select id="zone-memo" title="Zones déjà dessinées dans ce navigateur"><option value="">Zones enregistrées…</option>${lireLs('gaulix_zones', []).map((z, k) => `<option value="${k}">${esc(z.nom)}</option>`).join('')}</select>
+        <button id="zone-suppr" class="mini" title="Oublier la zone choisie">🗑</button></div>
+    </div>
+    <div class="bloc-plan" id="bloc-budget">
+      <h3>💶 Plan à budget</h3>
+      <p class="note">« J’ai de quoi poser N relais : où les mettre ? » Gain de surface et d’habitants à chaque relais, coût estimé.</p>
+      <div class="parametres compact">
+        <label>Relais à poser <input id="budget-n" type="number" min="1" max="15" step="1" value="3"></label>
+        <label>Accès exigé <select id="budget-acces"><option value="voiture">🚗 En voiture</option><option value="4x4">🚙 En 4×4 ou voiture</option><option value="pied">🥾 À pied ou mieux</option><option value="tous">Tous les points hauts</option></select></label>
+        <label>Relais secteur (€) <input id="budget-secteur" type="number" min="0" step="10" value="120"></label>
+        <label>Relais solaire (€) <input id="budget-solaire" type="number" min="0" step="10" value="220"></label>
+        <label>Mât + fixations (€) <input id="budget-mat" type="number" min="0" step="10" value="90"></label>
+      </div>
+      <div class="actions-prop"><button id="budget-calculer" class="principal">Où poser mes relais ?</button></div>
+    </div>
+    <div class="bloc-plan" id="bloc-routiers">
+      <h3>🛣️ Sites routiers (Département, DIR)</h3>
+      <p class="note">Webcams et stations routières : souvent un mât, l’électricité, parfois une liaison réseau. Classement selon la surface qu’un relais y couvrirait en plus du réseau actuel, de quoi préparer une demande au Département ou à la DIR Massif Central.</p>
+      <div class="actions-prop"><button id="routiers-evaluer" class="principal">Évaluer ces sites pour des relais</button></div>
+    </div>
+    <div class="bloc-plan" id="bloc-deplacer">
+      <h3>🔀 Déplacer des relais existants</h3>
+      <p class="note">Pour chaque relais (rôle routeur), la carte cherche les points hauts proches où il couvrirait plus de surface, sans perdre le contact radio avec le réseau.</p>
+      <div class="parametres compact">
+        <label>Chercher dans un rayon de <select id="dep-rayon"><option value="3">3 km</option><option value="6" selected>6 km</option><option value="10">10 km</option></select></label>
+        <label>Accès exigé <select id="dep-acces"><option value="voiture">🚗 En voiture</option><option value="4x4" selected>🚙 En 4×4 ou voiture</option><option value="pied">🥾 À pied ou mieux</option><option value="tous">Tous les points hauts</option></select></label>
+      </div>
+      <div class="actions-prop"><button id="dep-calculer" class="principal">Où déplacer mes relais ?</button></div>
+    </div>
+    <h3>🧭 Outils sur la carte</h3>
+    <div class="outils-couv">
+      <button data-outil="btn-couv-ici">📍 Couverture depuis un point<small>zone couverte par une antenne placée où vous cliquez (puis ＋ d’autres sites)</small></button>
+      <button data-outil="btn-couvrir">🎯 Couvrir un ou plusieurs points<small>les points hauts capables de desservir le ou les lieux cliqués</small></button>
+      <button data-outil="btn-relier">🔗 Relier deux lieux<small>faut-il des relais entre A et B, et où ?</small></button>
+      <button data-outil="btn-profil">⛰️ Profil entre deux points<small>relief et dégagement de la liaison</small></button>
+      <button data-outil="btn-simulation">🧪 Simulation « et si… »<small>retirer ou ajouter des relais : couverture et liaisons entre les villes</small></button>
+    </div>
+    <h3>Réglages des calculs</h3>
+    <div class="parametres compact">
+      <label>Antenne des sites (m) <input id="relief-hs" type="number" min="1" max="60" step="1" value="${c ? c.parametres.hs : 6}"></label>
+      <label>Antenne à couvrir (m) <input id="relief-ht" type="number" min="0.5" max="20" step="0.5" value="${c ? c.parametres.ht : 2}"></label>
+      <label>Accès aux sites <select id="filtre-acces">
+        <option value="tous">Tous les points hauts</option>
+        <option value="voiture">🚗 En voiture</option>
+        <option value="4x4">🚙 En 4×4 ou voiture</option>
+        <option value="pied">🥾 À pied, en 4×4 ou voiture</option>
+      </select></label>
+    </div>
+    ${c && c.acces ? `<p class="note">${c.acces.enCours || c.acces.faits < c.acces.total ? `Recherche des voies d’accès (OpenStreetMap) : ${c.acces.faits}/${c.acces.total} points${c.acces.erreur ? ' · ' + esc(c.acces.erreur) + ', nouvel essai plus tard' : '…'}` : `Accès évalués pour ${c.acces.faits} points : voie à moins de 150 m.`}${etat.filtreAcces !== 'tous' && c.candidatsAcces != null ? ` <b>${c.candidatsAcces}</b> site(s) retenu(s) avec ce filtre.` : ''}</p>` : ''}`;
+  if (!c) {
+    h += `<div class="vide">${e.classement === 'erreur' ? 'Erreur : ' + esc(e.erreur) : 'Classement des sites en cours…'}</div>`;
+  } else {
+    const dernier = c.plan.length ? c.plan[c.plan.length - 1].totalPct : c.reseauActuel.pct;
+    h += `<h3>Couverture du département</h3>
+      <div class="barre-couv"><i style="width:${c.reseauActuel.pct}%" class="actuel"></i><i style="width:${Math.max(0, dernier - c.reseauActuel.pct)}%" class="ajout"></i></div>
+      <p class="note">Réseau actuel (${c.reseauActuel.relais.length} relais et passerelles positionnés) : <b>${fmt(c.reseauActuel.pct, 1, ' %')}</b> de ${c.surfaceDepartementKm2} km². Avec les ${c.plan.length} sites ci-dessous : <b>${fmt(dernier, 1, ' %')}</b>.</p>
+      <h3>Meilleurs sites à ajouter <span class="pastille or">${c.plan.length}</span></h3>
+      <p class="note">Ordre de priorité : chaque site est celui qui couvre le plus de surface encore non desservie.</p>
+      ${c.plan.map((p) => ligneSite(parId.get(p.id) || p, `+${p.gainKm2} km²`, `cumul ${fmt(p.totalPct, 1, ' %')}`, p.rang, true)).join('')}
+      <h3>Plus fortes couvertures individuelles</h3>
+      ${c.meilleursIndividuels.slice(0, 10).map((p, i) => ligneSite(parId.get(p.id) || p, fmt(p.pct, 1, ' %'), `${p.km2} km²`, i + 1, false)).join('')}
+      <p class="note">Modèle : relief IGN RGE ALTI au pas de 250 m, terre 4/3, diffraction lame de couteau, ${esc(c.parametres.preset)}, ${c.parametres.ptx} dBm, antennes 2,15 dBi, marge ${c.parametres.margeSecurite} dB + pertes d'environnement ${c.parametres.env} dB${c.calibration && c.calibration.perteEnvironnementDb != null ? ` (calibrées sur ${c.calibration.liaisons} liaisons mesurées)` : ' (valeur par défaut)'}, rayon ${c.parametres.rayonKm} km. ${c.candidats} sites évalués en ${c.dureeSecondes} s · ${ilYa(c.date)}.</p>`;
+  }
+  if (c) h += `<div class="actions-prop"><button id="gpx-sites">Télécharger les sites recommandés (GPX)</button><button id="gpx-sommets">Tous les points hauts (GPX)</button></div>`;
+  h += `<div id="couverture-info" class="note"></div>`;
+  z.innerHTML = h;
+  brancherChoixDepartement();
+  const bcr = $('#sites-couv-reseau'); if (bcr) bcr.onclick = couvertureReseau;
+  const bcm = $('#sites-couv-mesuree'); if (bcm) bcm.onclick = () => couvertureMesuree();
+  z.querySelectorAll('[data-outil]').forEach((b) => (b.onclick = () => { const t = $('#' + b.dataset.outil); if (t) t.click(); }));
+  const br = $('#routiers-evaluer');
+  if (br) br.onclick = () => evaluerRoutiers();
+  const bd = $('#dep-calculer');
+  if (bd) bd.onclick = () => optimiserRelais(Number($('#dep-rayon').value), $('#dep-acces').value);
+  const bb = $('#budget-calculer');
+  if (bb) {
+    try { const v = localStorage.getItem('gaulix_budget'); if (v) { const o = JSON.parse(v); for (const k of ['n', 'acces', 'secteur', 'solaire', 'mat']) if (o[k] != null) $('#budget-' + k).value = o[k]; } } catch { /* ignoré */ }
+    bb.onclick = () => {
+      const o = Object.fromEntries(['n', 'acces', 'secteur', 'solaire', 'mat'].map((k) => [k, $('#budget-' + k).value]));
+      try { localStorage.setItem('gaulix_budget', JSON.stringify(o)); } catch { /* ignoré */ }
+      planBudget(o);
+    };
+  }
+  { const bz = $('#zone-dessiner'); if (bz) bz.onclick = () => commencerZone(); }
+  { const zm = $('#zone-memo'); if (zm) zm.onchange = () => { const z = lireLs('gaulix_zones', [])[Number(zm.value)]; if (z) planZoneDessinee(z.polygones || z.polygone, z.nom); }; }
+  { const zs = $('#zone-suppr'); if (zs) zs.onclick = async () => { const zm = $('#zone-memo'); const l = lireLs('gaulix_zones', []); const k = Number(zm.value); if (zm.value === '' || !l[k]) return; if (!(await confirmer(`Oublier la zone « ${l[k].nom} » ?`))) return; l.splice(k, 1); ecrireLs('gaulix_zones', l); zm.innerHTML = '<option value="">Zones enregistrées…</option>' + l.map((z, i) => `<option value="${i}">${esc(z.nom)}</option>`).join(''); }; }
+  const pc = $('#plan-calculer');
+  if (pc) {
+    try { const v = localStorage.getItem('gaulix_plan'); if (v) { const o = JSON.parse(v); $('#plan-objectif').value = o.objectif; $('#plan-max').value = o.max; $('#plan-acces').value = o.acces; $('#plan-reseau').checked = o.reseau; if (o.hs && $('#plan-hs')) $('#plan-hs').value = o.hs; } } catch { /* ignoré */ }
+    if ($('#plan-hs')) $('#plan-hs').onchange = () => { try { localStorage.setItem('gaulix_plan', JSON.stringify({ objectif: $('#plan-objectif').value, max: $('#plan-max').value, acces: $('#plan-acces').value, reseau: $('#plan-reseau').checked, hs: $('#plan-hs').value })); } catch { /* ignoré */ } };
+    pc.onclick = () => {
+      try { localStorage.setItem('gaulix_plan', JSON.stringify({ objectif: $('#plan-objectif').value, max: $('#plan-max').value, acces: $('#plan-acces').value, reseau: $('#plan-reseau').checked, hs: ($('#plan-hs') || {}).value })); } catch { /* ignoré */ }
+      planDepartement();
+    };
+  }
+  const fa = $('#filtre-acces');
+  if (fa) {
+    fa.value = etat.filtreAcces;
+    fa.onchange = async () => {
+      etat.filtreAcces = fa.value;
+      try { localStorage.setItem('gaulix_acces', fa.value); } catch { /* indisponible */ }
+      try { const c2 = await api('/api/relief/classement?acces=' + fa.value); if (!c2.attente) { etat.classement = c2; appliquerPlan(); } } catch { /* ignore */ }
+      dessinerSommets();
+      rendreSites();
+    };
+  }
+  const g1 = $('#gpx-sites'), g2 = $('#gpx-sommets');
+  if (g1) g1.onclick = () => telechargerGpx(`sites-recommandes-${(e.departement && e.departement.code) || ''}.gpx`, c.plan.map((p) => {
+    const s = parId.get(p.id) || p;
+    return { lat: s.lat, lon: s.lon, alt: s.alt, nom: `${p.rang} - ${nomSommet(s)}`, desc: `+${p.gainKm2} km², cumul ${p.totalPct} %` };
+  }));
+  if (g2) g2.onclick = () => telechargerGpx(`points-hauts-${(e.departement && e.departement.code) || ''}.gpx`, etat.sommets.filter((s) => s.dansZone && accesOk(s)).map((s) => ({ lat: s.lat, lon: s.lon, alt: s.alt, nom: nomSommet(s), desc: [s.couverturePct != null ? `Couverture ${s.couverturePct} %` : '', s.acces ? 'Accès ' + ACCES[s.acces.type].nom : ''].filter(Boolean).join(' · ') })));
+  z.querySelectorAll('[data-site]').forEach((el) => (el.onclick = () => {
+    const s = parId.get(Number(el.dataset.site));
+    if (s) ficheSommet(s);
+  }));
+}
+
+// ---- Relier deux lieux : faut-il des relais, et où ? -----------------------------------------
+function nomLieu(latlng) {
+  // Un nœud ou un point haut à moins de 400 m donne son nom au point cliqué
+  let meilleur = null, dmin = 400;
+  for (const n of etat.noeuds.values()) if (n.lat != null) { const d = carte.distance(latlng, [n.lat, n.lon]); if (d < dmin) { dmin = d; meilleur = { nom: n.nomLong || n.nomCourt || n.id, lat: n.lat, lon: n.lon, noeud: true }; } }
+  for (const s of etat.sommets || []) { const d = carte.distance(latlng, [s.lat, s.lon]); if (d < dmin) { dmin = d; meilleur = { nom: nomSommet(s), lat: s.lat, lon: s.lon }; } }
+  return meilleur || { nom: `Point ${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`, lat: latlng.lat, lon: latlng.lng };
+}
+function choisirPointRelier(latlng) {
+  const p = nomLieu(latlng);
+  if (!etat.relierA) {
+    etat.relierA = p;
+    if (etat.repereRelier) etat.repereRelier.remove();
+    etat.repereRelier = L.circleMarker([p.lat, p.lon], { radius: 8, color: '#2dd4bf', weight: 3, fillOpacity: 0.3, pane: 'traces' }).bindTooltip('Départ : ' + p.nom, { permanent: true, direction: 'top', className: 'info' }).addTo(carte);
+    basculerMode('relier');
+    return;
+  }
+  const a = etat.relierA;
+  etat.relierA = null;
+  basculerMode(null);
+  relierPoints(a, p);
+}
+async function relierPoints(a, b, opts = {}) {
+  const hs = $('#relief-hs') ? $('#relief-hs').value : 6;
+  const hA = opts.hA ?? 2, hB = opts.hB ?? 2;
+  const acces = opts.acces || etat.filtreAcces || 'tous';
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>Relier deux lieux</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche du chemin radio entre <b>${esc(a.nom)}</b> et <b>${esc(b.nom)}</b> (relais existants et points hauts)…</div>`;
+  const q = new URLSearchParams({ aLat: a.lat.toFixed(5), aLon: a.lon.toFixed(5), bLat: b.lat.toFixed(5), bLon: b.lon.toFixed(5), aNom: a.nom, bNom: b.nom, hs, hA, hB, acces, ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_FR' } : {}) });
+  let r;
+  try { r = await api('/api/relief/relier?' + q); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Relier deux lieux</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  const ICONES = { depart: '🅰', arrivee: '🅱', existant: '📡', nouveau: '🆕' };
+  const pts = [[r.a.lat, r.a.lon], [r.b.lat, r.b.lon]];
+  if (r.possible) {
+    r.bonds.forEach((l, k) => {
+      const x = r.chemin[k], y = r.chemin[k + 1];
+      L.polyline([[x.lat, x.lon], [y.lat, y.lon]], { color: hexMarge(l.marge), weight: 4, opacity: 0.9, pane: 'traces' })
+        .bindTooltip(`Bond ${k + 1} : ${fmt(l.distance / 1000, 1, ' km')} · marge ${l.marge >= 0 ? '+' : ''}${fmt(l.marge, 1, ' dB')}`, { className: 'info', sticky: true }).addTo(g);
+    });
+    r.chemin.forEach((c, k) => {
+      pts.push([c.lat, c.lon]);
+      const nouveau = c.type === 'nouveau';
+      const lettre = k === 0 ? 'A' : k === r.chemin.length - 1 ? 'B' : k;
+      if (nouveau) {
+        // Emplacement du relais à installer : zone de recherche (~400 m), épingle bien visible et étiquette permanente
+        L.circle([c.lat, c.lon], { radius: 400, color: '#ff6bd6', weight: 2, dashArray: '5 5', fillColor: '#ff6bd6', fillOpacity: 0.12, pane: 'couverture', interactive: false, className: 'zone-relais' }).addTo(g);
+        // Autres emplacements possibles pour ce relais : petits repères creux reliés au site principal
+        const alt = (r.alternatives || []).find((x) => x.etape === k);
+        (alt ? alt.options : []).forEach((o, j) => {
+          L.polyline([[c.lat, c.lon], [o.lat, o.lon]], { color: '#ff6bd6', weight: 1.2, opacity: 0.6, dashArray: '2 6', pane: 'traces', interactive: false }).addTo(g);
+          L.marker([o.lat, o.lon], { icon: L.divIcon({ className: 'relais-alt', html: `<span>${lettre}${String.fromCharCode(97 + j)}</span>`, iconSize: [20, 20], iconAnchor: [10, 10] }), pane: 'traces', zIndexOffset: 700 })
+            .bindTooltip(`<b>Variante ${lettre}${String.fromCharCode(97 + j)} pour le relais ${lettre}</b><br>${esc(o.nom || nomSommet(o))} · ${o.alt} m${o.commune ? ' · ' + esc(o.commune) : ''}<br>marge mini ${fmt(o.margeMin, 1, ' dB')}${o.acces ? ' · ' + ACCES[o.acces.type].nom : ''}`, { className: 'info' }).addTo(g);
+        });
+        L.marker([c.lat, c.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${lettre}</b></div><i class="pulsation"></i>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
+          .bindTooltip(`<b>Relais ${lettre} à installer</b> · ${esc(c.nom || nomSommet(c))}<br>${c.alt} m · antenne ${c.hauteur} m${c.acces ? ' · ' + texteAcces(c.acces) : ''}`, { className: 'info etiquette-relais', permanent: true, direction: 'top', offset: [0, -46] })
+          .on('click', () => { const el = document.querySelector(`.etape-relier[data-etape="${k}"]`); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('surbrillance'); setTimeout(() => el.classList.remove('surbrillance'), 1500); } })
+          .addTo(g);
+        return;
+      }
+      L.marker([c.lat, c.lon], { icon: L.divIcon({ className: 'sommet plan existant-relier', html: `<span>${lettre}</span>`, iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 800 })
+        .bindTooltip(`<b>${esc(c.nom || nomSommet(c))}</b><br>${{ depart: 'Départ', arrivee: 'Arrivée', existant: 'Relais existant', nouveau: 'Relais à installer' }[c.type]} · ${c.alt} m`, { className: 'info' }).addTo(g);
+    });
+  } else {
+    L.polyline(pts, { color: '#ff5c6c', weight: 2, dashArray: '6 6', pane: 'traces' }).addTo(g);
+  }
+  carte.fitBounds(L.latLngBounds(pts), { padding: [80, 80], maxZoom: 12 });
+  const ligneEtape = (c, k) => {
+    const l = k > 0 ? r.bonds[k - 1] : null;
+    const titre = { depart: 'Départ', arrivee: 'Arrivée', existant: 'Relais existant', nouveau: 'Nouveau relais à installer' }[c.type];
+    const alt = (r.alternatives || []).find((x) => x.etape === k);
+    return `${l ? `<div class="bond-relier" style="border-color:${couleurMarge(l.marge)}">↓ ${fmt(l.distance / 1000, 1, ' km')} · marge <b style="color:${couleurMarge(l.marge)}">${l.marge >= 0 ? '+' : ''}${fmt(l.marge, 1, ' dB')}</b> · ${l.obstacle ? `obstacle à ${fmt(l.obstacle.distanceKm, 1, ' km')}` : 'visibilité directe'}</div>` : ''}
+      <div class="proposition etape-relier ${c.type}" data-etape="${k}" data-lat="${c.lat}" data-lon="${c.lon}">
+        <div class="entete-prop"><span class="lettre">${k === 0 ? 'A' : k === r.chemin.length - 1 ? 'B' : k}</span><b>${esc(c.nom || nomSommet(c))}</b><span class="marge">${titre}</span></div>
+        <div class="meta-longue">${c.alt} m${c.commune ? ' · ' + esc(c.commune) : ''} · antenne ${c.hauteur} m${c.type === 'nouveau' ? ` · Accès : ${texteAcces(c.acces)}` : ''}</div>
+        ${c.type === 'nouveau' ? blocCoords(c.lat, c.lon, { alt: c.alt, couv: { nom: c.nom || nomSommet(c), h: c.hauteur || 6 } }) : ''}
+        ${alt && alt.options.length ? `<details class="alt-relier"><summary>Autres emplacements possibles (${alt.options.length})</summary>${alt.options.map((o, j) => `<div class="ligne-alt" data-lat="${o.lat}" data-lon="${o.lon}"><b class="repere-alt">${k}${String.fromCharCode(97 + j)}</b> ${esc(o.nom || nomSommet(o))} · ${o.alt} m${o.commune ? ' · ' + esc(o.commune) : ''} · marge mini ${fmt(o.margeMin, 1, ' dB')} ${o.acces ? ACCES[o.acces.type].icone : ''}</div>`).join('')}</details>` : ''}
+      </div>`;
+  };
+  $('#fiche-contenu').innerHTML = `<h2>Relier ${esc(a.nom)} → ${esc(b.nom)}</h2>
+    <div class="ident">${fmt(r.distanceKm, 1, ' km')} à vol d’oiseau · ${esc(r.parametres.preset)} · antennes : relais ${r.parametres.hs} m, extrémités ${hA} / ${hB} m${r.filtreAcces !== 'tous' ? ` · sites ${esc(ACCES[r.filtreAcces] ? ACCES[r.filtreAcces].nom : r.filtreAcces)}` : ''}</div>
+    ${!r.possible ? `<div class="alerte attention">✖ ${esc(r.raison)}</div><p class="note">Essayez des antennes plus hautes aux extrémités, ou choisissez un accès moins exigeant ci-dessous.</p>`
+      : r.nouveaux === 0 && r.chemin.length === 2 ? `<div class="alerte info-lecture">✔ <b>Liaison directe possible</b> sans relais (marge ${r.direct.marge >= 0 ? '+' : ''}${fmt(r.direct.marge, 1, ' dB')}).</div>`
+      : `<div class="alerte ${r.nouveaux ? 'attention' : 'info-lecture'}">${r.nouveaux ? `⚠ Il faut <b>${r.nouveaux} nouveau${r.nouveaux > 1 ? 'x' : ''} relais</b>` : '✔ Possible avec les relais existants'}${r.chemin.some((c) => c.type === 'existant') ? `, en passant par ${r.chemin.filter((c) => c.type === 'existant').map((c) => esc(c.nom)).join(', ')}` : ''}.</div>
+         <p class="note">Liaison directe impossible : marge ${r.direct ? fmt(r.direct.marge, 1, ' dB') : '–'}${r.direct && r.direct.obstacle ? `, relief à ${fmt(r.direct.obstacle.distanceKm, 1, ' km')} (${r.direct.obstacle.hauteur} m au-dessus de la visée)` : ''}.</p>`}
+    <div class="parametres compact">
+      <label>Antenne au départ (m) <input id="relier-ha" type="number" min="0.5" max="60" step="0.5" value="${hA}"></label>
+      <label>Antenne à l’arrivée (m) <input id="relier-hb" type="number" min="0.5" max="60" step="0.5" value="${hB}"></label>
+      <label>Accès des nouveaux relais <select id="relier-acces">${Object.entries({ voiture: '🚗 En voiture', '4x4': '🚙 En 4×4 ou voiture', pied: '🥾 À pied ou mieux', tous: 'Tous les points hauts' }).map(([k, v]) => `<option value="${k}" ${k === acces ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+      <button id="relier-recalc">Recalculer</button>
+    </div>
+    ${r.possible ? r.chemin.map(ligneEtape).join('') : ''}
+    ${r.possible && r.nouveaux ? '<div class="actions-prop"><button id="gpx-relier">Télécharger les points (GPX)</button></div>' : ''}
+    <p class="note">Chaque bond doit garder au moins 0 dB de marge après ${r.parametres.margeSecurite} dB de marge de sécurité et ${r.parametres.env} dB de pertes de végétation et bâti (calibrées sur vos liaisons mesurées). Le chemin privilégie les relais existants, puis le moins de nouveaux sites possible, puis les bonds les plus confortables.${r.evalues ? ` ${r.evalues} sites évalués${r.dureeMs ? ' en ' + fmt(r.dureeMs / 1000, 1, ' s') : ''}.` : ''}</p>`;
+  const relancerRelier = () => relierPoints(a, b, { hA: Number($('#relier-ha').value) || 2, hB: Number($('#relier-hb').value) || 2, acces: $('#relier-acces').value });
+  $('#relier-recalc').onclick = relancerRelier;
+  $('#relier-acces').onchange = relancerRelier;
+  $('#fiche-contenu').querySelectorAll('.ligne-alt').forEach((el) => (el.onclick = () => carte.flyTo([Number(el.dataset.lat), Number(el.dataset.lon)], 14)));
+  // Clic sur une étape « relais à installer » : la carte se centre sur l'emplacement
+  $('#fiche-contenu').querySelectorAll('.etape-relier.nouveau .entete-prop').forEach((el) => { el.style.cursor = 'pointer'; el.title = 'Centrer la carte sur cet emplacement'; el.onclick = () => { const d = el.closest('.etape-relier').dataset; carte.flyTo([Number(d.lat), Number(d.lon)], 14); }; });
+  const gx = $('#gpx-relier');
+  if (gx) gx.onclick = () => telechargerGpx('relier.gpx', r.chemin.map((c, k) => ({ lat: c.lat, lon: c.lon, alt: c.alt, nom: `${k === 0 ? 'A' : k === r.chemin.length - 1 ? 'B' : k} - ${c.nom || nomSommet(c)}`, desc: c.type === 'nouveau' ? 'Relais à installer' : c.type === 'existant' ? 'Relais existant' : '' })));
+}
+
+async function couvrirPoint(latlng) {
+  const hs = $('#relief-hs') ? $('#relief-hs').value : 6, ht = $('#relief-ht') ? $('#relief-ht').value : 2;
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  L.marker(latlng, { icon: L.divIcon({ className: 'cible-couvrir', html: '✚', iconSize: [24, 24], iconAnchor: [12, 12] }), pane: 'traces' }).addTo(g);
+  const fiche = $('#fiche');
+  fiche.hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<div class="vide">Recherche des points hauts capables de couvrir ce point…</div>';
+  let r;
+  try { r = await api(`/api/relief/couvrir?lat=${latlng.lat.toFixed(5)}&lon=${latlng.lng.toFixed(5)}&hs=${hs}&ht=${ht}&acces=${etat.filtreAcces}${etat.vueReseau === 'meshcore' ? '&reseau=meshcore&preset=MESHCORE_FR' : ''}`); } catch (e) { $('#fiche-contenu').innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const pts = [latlng];
+  r.propositions.forEach((p, i) => {
+    pts.push([p.lat, p.lon]);
+    L.polyline([latlng, [p.lat, p.lon]], { color: hexMarge(p.marge), weight: 3, opacity: 0.9, dashArray: p.marge >= 0 ? null : '6 6', pane: 'traces' }).addTo(g);
+    if (p.raccord) L.polyline([[p.lat, p.lon], [p.raccord.lat, p.raccord.lon]], { color: hexMarge(p.raccord.marge), weight: 1.5, opacity: 0.7, dashArray: '2 6', pane: 'traces' }).addTo(g);
+    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'sommet propose', html: `<span>${String.fromCharCode(65 + i)}</span>`, iconSize: [24, 24], iconAnchor: [12, 12] }), pane: 'traces' })
+      .bindTooltip(`<b>${String.fromCharCode(65 + i)} · ${esc(nomSommet(p))}</b><br>${p.alt} m · ${fmt(p.distanceKm, 1, ' km')} · marge ${fmt(p.marge, 1, ' dB')}`, { className: 'info' })
+      .addTo(g);
+  });
+  carte.fitBounds(L.latLngBounds(pts), { padding: [90, 90], maxZoom: 12 });
+  const c = r.cible;
+  const carteProp = (p, i) => {
+    const lettre = String.fromCharCode(65 + i);
+    const obst = p.obstacle ? `obstacle à ${fmt(p.obstacle.distanceKm, 1, ' km')} (${p.obstacle.hauteur} m au-dessus de la visée), diffraction ${fmt(p.diffraction, 1, ' dB')}` : 'visibilité directe';
+    return `<div class="proposition" style="border-left-color:${couleurMarge(p.marge)}">
+      <div class="entete-prop"><span class="lettre">${lettre}</span><b>${esc(nomSommet(p))}</b><span class="marge" style="color:${couleurMarge(p.marge)}">${p.marge >= 0 ? '+' : ''}${fmt(p.marge, 1, ' dB')}</span></div>
+      <div class="meta-longue">${p.alt} m${p.nom && p.commune ? ' · ' + esc(p.commune) : ''} · à ${fmt(p.distanceKm, 1, ' km')} · ${obst}</div>
+      <div class="meta-longue">Accès : ${texteAcces(p.acces)}</div>
+      <div class="meta-longue">${p.raccord ? `Raccord au réseau : <b>${esc(p.raccord.nom)}</b> à ${fmt(p.raccord.distanceKm, 1, ' km')}, marge <span style="color:${couleurMarge(p.raccord.marge)}">${fmt(p.raccord.marge, 1, ' dB')}</span>` : '<span style="color:var(--critique)">Aucun relais existant joignable depuis ce site</span>'}${p.couverturePct != null ? ` · couvre seul ${fmt(p.couverturePct, 1, ' %')} du département` : ''}</div>
+      ${blocCoords(p.lat, p.lon)}
+      <div class="actions-prop"><button data-couv="${i}">Voir la couverture</button><button data-prof="${i}">⛰ Profil</button></div>
+    </div>`;
+  };
+  $('#fiche-contenu').innerHTML = `
+    <h2>Couvrir ce point</h2>
+    ${blocCoords(c.lat, c.lon, { alt: c.alt })}
+    <div class="meta-longue">antenne à ${r.parametres.ht} m · sites à ${r.parametres.hs} m · ${esc(r.parametres.preset)}</div>
+    <div class="actions-prop"><button id="ajout-cible" class="principal">＋ Ajouter un autre point à couvrir</button></div>
+    <p class="note">Ajoutez 1 à 4 autres points : la carte cherche alors <b>un seul site relais</b> qui les couvre tous.</p>
+    ${r.propositions.length ? r.propositions.map(carteProp).join('') + '<div class="actions-prop"><button id="gpx-couvrir">Télécharger les 5 points (GPX)</button></div>' : '<div class="vide">Aucun point haut à portée.</div>'}
+    <p class="note">Classement : marge de liaison vers le point, puis qualité du raccord à un relais existant, puis couverture générale du site. ${r.evalues} points hauts évalués. La marge inclut ${r.parametres.margeSecurite} dB de sécurité et ${r.parametres.env} dB de pertes d'environnement : au-dessus de 0 dB la liaison est probable, au-dessus de 10 dB elle est confortable.</p>`;
+  $('#ajout-cible').onclick = () => { etat.ciblesMulti = [{ lat: c.lat, lon: c.lon }]; basculerMode('couvrir-plus'); };
+  const bg = $('#gpx-couvrir');
+  if (bg) bg.onclick = () => telechargerGpx('couvrir-point.gpx', [
+    { lat: c.lat, lon: c.lon, alt: c.alt, nom: 'Point à couvrir' },
+    ...r.propositions.map((p, i) => ({ lat: p.lat, lon: p.lon, alt: p.alt, nom: `${String.fromCharCode(65 + i)} - ${nomSommet(p)}`, desc: `Marge ${p.marge} dB, ${p.distanceKm} km` })),
+  ]);
+  $('#fiche-contenu').querySelectorAll('[data-couv]').forEach((b) => (b.onclick = () => { const p = r.propositions[Number(b.dataset.couv)]; voirCouvertureSite(p, nomSommet(p)); }));
+  $('#fiche-contenu').querySelectorAll('[data-prof]').forEach((b) => (b.onclick = () => {
+    const p = r.propositions[Number(b.dataset.prof)];
+    ouvrirProfilCoords({ lat: p.lat, lon: p.lon, nom: nomSommet(p), h: Number(hs) }, { lat: c.lat, lon: c.lon, nom: 'Point à couvrir', h: Number(ht) });
+  }));
+}
+
+// ---- Un seul site relais pour couvrir plusieurs points (2 à 5) ---------------------------------
+function ajouterCible(latlng) {
+  etat.ciblesMulti = [...(etat.ciblesMulti || []), { lat: latlng.lat, lon: latlng.lng }].slice(0, 5);
+  couvrirPoints(etat.ciblesMulti);
+}
+async function couvrirPoints(cibles) {
+  const hs = $('#relief-hs') ? $('#relief-hs').value : 6, ht = $('#relief-ht') ? $('#relief-ht').value : 2;
+  if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+  const g = L.layerGroup().addTo(carte);
+  etat.coucheCouvrir = g;
+  $('#btn-effacer').hidden = false;
+  const marqueCible = (c, i) => L.marker([c.lat, c.lon], { icon: L.divIcon({ className: 'cible-multi', html: `<span>${i + 1}</span>`, iconSize: [24, 24], iconAnchor: [12, 12] }), pane: 'traces', zIndexOffset: 900 })
+    .bindTooltip(`Point ${i + 1} à couvrir`, { className: 'info' }).addTo(g);
+  cibles.forEach(marqueCible);
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `<h2>Couvrir ${cibles.length} points</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche d’un site relais qui couvre les ${cibles.length} points…</div>`;
+  const q = new URLSearchParams({ pts: cibles.map((c) => `${c.lat.toFixed(5)},${c.lon.toFixed(5)}`).join(';'), hs, ht, acces: etat.filtreAcces || 'tous', ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_FR' } : {}) });
+  let r;
+  try { r = await api('/api/relief/couvrir-points?' + q); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Couvrir ${cibles.length} points</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const pts = cibles.map((c) => [c.lat, c.lon]);
+  const tracer = (site, lettre, principal) => {
+    pts.push([site.lat, site.lon]);
+    site.liaisons.forEach((l, k) => {
+      if (!l) return;
+      L.polyline([[site.lat, site.lon], [r.cibles[k].lat, r.cibles[k].lon]], { color: hexMarge(l.marge), weight: principal ? 3.5 : 1.5, opacity: principal ? 0.95 : 0.5, dashArray: l.marge >= 0 ? null : '6 6', pane: 'traces' })
+        .bindTooltip(`${lettre} → point ${k + 1} : ${fmt(l.distanceKm, 1, ' km')} · marge ${l.marge >= 0 ? '+' : ''}${fmt(l.marge, 1, ' dB')}`, { className: 'info', sticky: true }).addTo(g);
+    });
+    if (principal && site.raccord) L.polyline([[site.lat, site.lon], [site.raccord.lat, site.raccord.lon]], { color: hexMarge(site.raccord.marge), weight: 1.5, opacity: 0.7, dashArray: '2 6', pane: 'traces' }).addTo(g);
+    L.marker([site.lat, site.lon], { icon: principal ? L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${lettre}</b></div><i class="pulsation"></i>`, iconSize: [34, 44], iconAnchor: [17, 42] }) : L.divIcon({ className: 'sommet propose', html: `<span>${lettre}</span>`, iconSize: [24, 24], iconAnchor: [12, 12] }), pane: 'traces', zIndexOffset: principal ? 950 : 700 })
+      .bindTooltip(`<b>${lettre} · ${esc(nomSommet(site))}</b><br>${site.alt} m · couvre ${site.couverts}/${r.cibles.length} points · marge mini ${fmt(site.margeMin, 1, ' dB')}`, { className: 'info' + (principal ? ' etiquette-relais' : ''), permanent: principal, direction: 'top', offset: principal ? [0, -46] : [0, -12] }).addTo(g);
+  };
+  if (r.complet) r.propositions.forEach((p, i) => tracer(p, String.fromCharCode(65 + i), i === 0));
+  else if (r.paire) r.paire.sites.forEach((p, i) => tracer(p, String(i + 1), true));
+  else if (r.propositions[0]) tracer(r.propositions[0], 'A', true);
+  carte.fitBounds(L.latLngBounds(pts), { padding: [90, 90], maxZoom: 12 });
+
+  const ligneLiaisons = (site) => site.liaisons.map((l, k) => `<span class="pastille-point" style="border-color:${l ? couleurMarge(l.marge) : 'var(--critique)'}">${k + 1} : ${l ? `${l.marge >= 0 ? '+' : ''}${fmt(l.marge, 1, ' dB')} · ${fmt(l.distanceKm, 1, ' km')}` : 'hors portée'}</span>`).join('');
+  const carteSite = (p, lettre, titre) => `<div class="proposition" style="border-left-color:${couleurMarge(p.margeMin)}">
+      <div class="entete-prop"><span class="lettre">${lettre}</span><b>${esc(nomSommet(p))}</b><span class="marge" style="color:${couleurMarge(p.margeMin)}">${titre || `${p.couverts}/${r.cibles.length} points`}</span></div>
+      <div class="meta-longue">${p.alt} m${p.commune ? ' · ' + esc(p.commune) : ''} · marge du point le plus difficile : <b style="color:${couleurMarge(p.margeMin)}">${p.margeMin >= 0 ? '+' : ''}${fmt(p.margeMin, 1, ' dB')}</b></div>
+      <div class="points-couverts">${ligneLiaisons(p)}</div>
+      <div class="meta-longue">Accès : ${texteAcces(p.acces)}</div>
+      <div class="meta-longue">${p.raccord ? `Raccord au réseau : <b>${esc(p.raccord.nom)}</b> à ${fmt(p.raccord.distanceKm, 1, ' km')}, marge <span style="color:${couleurMarge(p.raccord.marge)}">${fmt(p.raccord.marge, 1, ' dB')}</span>` : '<span style="color:var(--critique)">Aucun relais existant joignable depuis ce site</span>'}</div>
+      ${blocCoords(p.lat, p.lon, { alt: p.alt, couv: { nom: nomSommet(p), h: 6 } })}
+    </div>`;
+  const listeCibles = r.cibles.map((c, i) => `<div class="ligne-cible"><span class="cible-multi petit"><span>${i + 1}</span></span><span class="mono">${c.lat.toFixed(5)}, ${c.lon.toFixed(5)}</span>${c.alt != null ? ` · ${c.alt} m` : ''}${cibles.length > 2 ? `<button class="mini" data-retirer="${i}" title="Retirer ce point">✕</button>` : ''}</div>`).join('');
+  $('#fiche-contenu').innerHTML = `<h2>Couvrir ${r.cibles.length} points avec un seul site</h2>
+    <div class="liste-cibles">${listeCibles}</div>
+    <div class="actions-prop">${cibles.length < 5 ? '<button id="ajout-cible-multi">＋ Ajouter un point</button>' : ''}<button id="gpx-multi">Télécharger (GPX)</button></div>
+    <div class="meta-longue">antenne ${r.parametres.ht} m aux points · site à ${r.parametres.hs} m · ${esc(r.parametres.preset)}${r.filtreAcces !== 'tous' ? ` · sites ${esc(ACCES[r.filtreAcces] ? ACCES[r.filtreAcces].nom : r.filtreAcces)}` : ''}</div>
+    ${r.complet ? `<div class="alerte info-lecture">✔ <b>${esc(nomSommet(r.propositions[0]))}</b> couvre les ${r.cibles.length} points à lui seul.</div>${r.propositions.map((p, i) => carteSite(p, String.fromCharCode(65 + i), i === 0 ? 'Meilleur site' : null)).join('')}`
+      : r.paire ? `<div class="alerte attention">Aucun site unique ne couvre les ${r.cibles.length} points. Meilleure solution : <b>2 sites</b> qui se partagent les points${r.paire.liaison ? ` (liaison entre eux : marge ${fmt(r.paire.liaison.marge, 1, ' dB')})` : ''}.</div>${r.paire.sites.map((p, i) => carteSite(p, String(i + 1), `Site ${i + 1} sur 2`)).join('')}${r.propositions.length ? `<details class="alt-relier"><summary>Meilleurs sites uniques (couverture partielle)</summary>${r.propositions.map((p, i) => carteSite(p, String.fromCharCode(65 + i))).join('')}</details>` : ''}`
+      : r.propositions.length ? `<div class="alerte attention">Aucun site, ni seul ni à deux, ne couvre tous les points. Meilleure couverture partielle :</div>${r.propositions.map((p, i) => carteSite(p, String.fromCharCode(65 + i))).join('')}`
+      : '<div class="vide">Aucun point haut ne couvre ces points.</div>'}
+    <p class="note">Classement : nombre de points couverts, puis marge du point le plus difficile (au-dessus de 0 dB la liaison est probable, au-dessus de 10 dB confortable). ${r.evalues} points hauts évalués, rayon ${r.parametres.rayonKm} km. Marge de sécurité ${r.parametres.margeSecurite} dB et pertes d’environnement ${r.parametres.env} dB incluses.</p>`;
+  const ba = $('#ajout-cible-multi');
+  if (ba) ba.onclick = () => basculerMode('couvrir-plus');
+  $('#fiche-contenu').querySelectorAll('[data-retirer]').forEach((b) => (b.onclick = () => { etat.ciblesMulti = cibles.filter((_, i) => i !== Number(b.dataset.retirer)); couvrirPoints(etat.ciblesMulti); }));
+  $('#gpx-multi').onclick = () => {
+    const sites = r.complet ? r.propositions.slice(0, 1) : r.paire ? r.paire.sites : r.propositions.slice(0, 1);
+    telechargerGpx('couvrir-points.gpx', [...r.cibles.map((c, i) => ({ lat: c.lat, lon: c.lon, alt: c.alt, nom: `Point ${i + 1}` })), ...sites.map((p, i) => ({ lat: p.lat, lon: p.lon, alt: p.alt, nom: `Relais ${i + 1} - ${nomSommet(p)}`, desc: `Marge mini ${p.margeMin} dB` }))]);
+  };
+}
+
+async function ouvrirProfilCoords(a, b, preset) {
+  const dlg = $('#dlg-profil');
+  const f = $('#form-profil');
+  f.dataset.coords = JSON.stringify({ aLat: a.lat, aLon: a.lon, aNom: a.nom, bLat: b.lat, bLon: b.lon, bNom: b.nom });
+  f.ha.value = a.h;
+  f.hb.value = b.h;
+  if (etat.radio && etat.radio.preset) f.preset.value = etat.radio.preset;
+  if (preset) f.preset.value = preset;
+  if (!dlg.open) dlg.showModal();
+  await calculerProfil();
+}
+
+// Modes de clic sur la carte : « couvrir » (4 points hauts) ou « ici » (couverture depuis le point)
+// Consigne affichée en haut de la carte tant qu'un mode attend un clic
+const CONSIGNES = {
+  couvrir: 'Cliquez le lieu à couvrir', 'couvrir-plus': () => `Cliquez le point ${(etat.ciblesMulti || []).length + 1} à couvrir`,
+  ici: 'Cliquez l’emplacement de l’antenne', 'couv-plus': () => `Cliquez le site ${(etat.sitesCouv || []).length + 1} à ajouter à la couverture`,
+  relier: () => (etat.relierA ? 'Cliquez le point d’arrivée' : 'Cliquez le point de départ'),
+  'simu-ajout': 'Cliquez l’emplacement du relais à ajouter dans la simulation',
+};
+function majConsigne(texte) {
+  const c = $('#consigne-mode');
+  if (!c) return;
+  c.hidden = !texte;
+  if (texte) c.querySelector('span').textContent = texte;
+}
+function basculerMode(mode) {
+  etat.modeCarte = mode;
+  const mr = $('#menu-radio'); if (mr) mr.open = false;
+  const cs = mode && CONSIGNES[mode];
+  majConsigne(cs ? (typeof cs === 'function' ? cs() : cs) : (etat.modeProfil ? (etat.modeProfil.a ? 'Profil : cliquez le point B' : 'Profil : cliquez le point A') : null));
+  $('#btn-couvrir').classList.toggle('actif', mode === 'couvrir');
+  $('#btn-couvrir').classList.toggle('actif', mode === 'couvrir' || mode === 'couvrir-plus');
+  $('#btn-couvrir').textContent = '🎯 Couvrir un ou plusieurs points';
+  $('#btn-couv-ici').classList.toggle('actif', mode === 'ici');
+  $('#btn-couv-ici').classList.toggle('actif', mode === 'ici' || mode === 'couv-plus');
+  $('#btn-couv-ici').textContent = '📍 Couverture depuis un point';
+  $('#btn-relier').classList.toggle('actif', mode === 'relier');
+  $('#btn-relier').textContent = '🔗 Relier deux lieux';
+  if (mode !== 'relier') { etat.relierA = null; if (etat.repereRelier) { etat.repereRelier.remove(); etat.repereRelier = null; } }
+  document.body.classList.toggle('mode-viseur', !!mode);
+}
+
+// ---- Modules Meshtastic Wi-Fi (admin) ---------------------------------------------------------
+const heureCourte = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+let signatureModules = '';
+const REDIFFUSION_FR = {
+  ALL: 'ALL · relaie tout (conseillé pour un relais)', ALL_SKIP_DECODING: 'ALL_SKIP_DECODING · relaie tout sans déchiffrer', LOCAL_ONLY: 'LOCAL_ONLY · seulement ses canaux',
+  KNOWN_ONLY: 'KNOWN_ONLY · seulement les nœuds connus', NONE: 'NONE · ne relaie rien', CORE_PORTNUMS_ONLY: 'CORE_PORTNUMS_ONLY · types de base seulement',
+};
+let ouvertAgents = false;
+async function rendreModules(force) {
+  const zone = $('#modules-radio');
+  if (!etat.admin || !zone) return;
+  if (!force && zone.contains(document.activeElement)) return; // saisie en cours
+  let r;
+  try { r = await api('/api/radio/modules'); } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const e = r.etat;
+  const sig = JSON.stringify([r, e.connecte, e.evince, e.nomLocal]);
+  if (!force && sig === signatureModules) return;
+  signatureModules = sig;
+  const prefixe = (r.actif && !r.actif.hote.startsWith('agent-') ? r.actif.hote : '192.168.0.1').split('.').slice(0, 3).join('.');
+  const agentsEnLigne = new Map(((r.agents && r.agents.liste) || []).map((a) => [a.hote, a]));
+  const ecs = (r.ecoutes || []).filter((x) => !(x.navigateur && moduleNav.hote && x.hote === moduleNav.hote));
+  const enEcoute = (m) => ecs.some((x) => x.hote === m.hote && x.port === m.port);
+  const btnEcoute = (m) => `<button data-ec-on="${esc(m.hote)}" data-port="${m.port}" title="Le relier en plus du module principal, pour l'écoute seulement">👂 En écoute</button>`;
+  const ligneEcoute = (x) => {
+    const estAg = x.hote.startsWith('agent-');
+    const sous = x.navigateur ? `${esc(x.source || 'navigateur')} d'une page de la carte` : estAg ? 'agent' : x.hote.startsWith('/dev/') ? `USB du serveur ${esc(x.hote)}` : `${esc(x.hote)}${x.port !== 4403 ? ':' + x.port : ''}`;
+    const statut = x.connecte ? `en écoute · ${x.paquets} paquets${x.noeud != null ? '' : ' · configuration…'}` : `connexion…${x.erreur ? ' (' + esc(x.erreur) + ')' : ''}`;
+    const boutons = `${!x.navigateur ? `<button data-ec-princ="${esc(x.hote)}" data-port="${x.port}" title="En faire le module principal (envois, administration) ; l'actuel passe en écoute">⭐ Principal</button>` : ''}<button data-ec-off="${esc(x.hote)}" data-port="${x.port}">Arrêter l'écoute</button>`;
+    return `<div class="ligne module ecoute"><span class="point ${x.connecte ? 'actif' : 'alerte'}"></span><span class="titre">${esc(x.nom || 'Module')} <span class="badge">👂 écoute</span><small>${sous}</small></span><span class="meta"></span>
+      <span class="sous-ligne meta-longue">${statut}</span><span class="sous-ligne boutons-module">${boutons}</span></div>`;
+  };
+  const ligne = (m) => {
+    let statut, cls, boutons;
+    const estAgent = m.hote.startsWith('agent-'), ag = agentsEnLigne.get(m.hote);
+    const sousTitre = estAgent ? `agent · ${ag ? esc(ag.source) + ' · ' + esc(ag.ip) : 'hors ligne'}` : m.hote.startsWith('/dev/') ? `USB du serveur ${esc(m.hote)}` : `${esc(m.hote)}${m.port !== 4403 ? ':' + m.port : ''}`;
+    if (m.actif && e.connecte) { statut = `connecté · ${e.paquets} paquets${e.nomLocal ? '' : ' · configuration…'}`; cls = 'actif'; boutons = `${e.noeudLocal != null ? `<button data-mod-edit="${e.noeudLocal}" class="principal">✏️ Réglages</button>` : ''}<button data-mod-off="0">Déconnecter</button><button data-mod-off="30" title="Laisser le module à l'appli du téléphone pendant 30 min">Libérer 30 min</button>`; }
+    else if (m.actif && e.arret && e.repriseAuto) { statut = `libéré · reprise à ${heureCourte(e.repriseAuto)}`; cls = 'recent'; boutons = `<button data-mod-on="${esc(m.hote)}" data-port="${m.port}">Reprendre maintenant</button>`; }
+    else if (m.actif && e.evince) { statut = `pris par un autre client · nouvel essai à ${heureCourte(e.reprise)}`; cls = 'recent'; boutons = `<button data-mod-on="${esc(m.hote)}" data-port="${m.port}">Forcer la connexion</button><button data-mod-off="0">Déconnecter</button>`; }
+    else if (m.actif && !e.arret) { statut = `connexion…${e.erreur ? ' (' + esc(e.erreur) + ')' : ''}`; cls = 'alerte'; boutons = `<button data-mod-off="0">Annuler</button>`; }
+    else if (estAgent && !ag) { statut = 'agent hors ligne : lancez l’agent sur le PC du module'; cls = 'inactif'; boutons = `<button data-mod-on="${esc(m.hote)}" data-port="${m.port}" title="La connexion se fera dès que l’agent sera lancé">Choisir</button>${btnEcoute(m)}<button data-mod-del="${esc(m.hote)}" data-port="${m.port}" title="Retirer de la liste">✕</button>`; }
+    else { statut = 'non connecté'; cls = 'inactif'; boutons = `<button data-mod-on="${esc(m.hote)}" data-port="${m.port}" title="En faire le module principal">Connecter</button>${btnEcoute(m)}<button data-mod-del="${esc(m.hote)}" data-port="${m.port}" title="Retirer de la liste">✕</button>`; }
+    return `<div class="ligne module"><span class="point ${cls}"></span><span class="titre">${esc(m.nom || 'Module inconnu')}${estAgent ? ' <span class="badge">agent</span>' : ''}<small>${sousTitre}</small></span><span class="meta"></span>
+      <span class="sous-ligne meta-longue">${statut}</span><span class="sous-ligne boutons-module">${boutons}</span></div>`;
+  };
+  const connus = r.modules.filter((m) => !(moduleNav.hote && m.hote === moduleNav.hote) && !enEcoute(m));
+  zone.innerHTML = blocUsbNavigateur() + (connus.length ? connus.map(ligne).join('') : '<div class="vide">Aucun module enregistré.</div>')
+    + (ecs.length ? `<h4 class="titre-ecoute">Modules en écoute (${ecs.length})</h4>${ecs.map(ligneEcoute).join('')}<p class="note">Un module en écoute sert de passerelle supplémentaire : ce qu’il entend (SNR, voisins, parcours des messages) s’ajoute à la carte. Les envois et l’administration passent par le module principal.</p>` : '') + `
+    <form id="form-module" class="parametres compact">
+      <label>Adresse IP <input name="hote" placeholder="192.168.1.50" required></label>
+      <label>Nom (facultatif) <input name="nom" placeholder="Maison"></label>
+      <button type="submit">Ajouter</button>
+    </form>
+    <div class="actions-prop"><button id="btn-scanner">Rechercher sur ${esc(prefixe)}.x</button></div>
+    <p class="note">Un module ne peut servir qu'un client à la fois : se connecter ici déconnecte l'appli du téléphone, et « Libérer » lui rend la main. Seuls les modules joignables depuis le NAS (même réseau ou VPN) peuvent être connectés.</p>
+    <div id="retour-modules" class="note"></div>
+    <details id="bloc-agents" ${ouvertAgents ? 'open' : ''}><summary>Module par agent : USB sur un PC, ou module d’un autre réseau</summary>
+      <p class="note">L’agent est un petit programme lancé sur le PC où le module est branché en USB (ou sur un appareil du réseau où se trouve un module Wi-Fi, ex. Le Monteil). Il se connecte au NAS par Tailscale et relaie le module : la carte l’utilise comme les autres.</p>
+      <ol class="note etapes-agent">
+        <li>Téléchargez l’agent : <a href="/agent/agent-gaulix-windows.exe" download>Windows</a> · <a href="/agent/agent-gaulix-linux-amd64" download>Linux</a> · <a href="/agent/agent-gaulix-raspberrypi-arm64" download>Raspberry Pi 64 bits</a> · <a href="/agent/agent-gaulix-raspberrypi-armv7" download>Raspberry Pi 32 bits</a></li>
+        <li>Lancez-le et répondez aux questions : adresse du serveur <b class="mono">${esc(location.hostname)}:${(r.agents && r.agents.port) || 4404}</b> (ou son adresse Tailscale), le code ci-dessous, un nom (ex. Voiture), le port USB (COM5…) ou l’adresse du module Wi-Fi.</li>
+        <li>Le module apparaît ici avec le badge « agent » : cliquez sur Connecter.</li>
+      </ol>
+      <p class="note"><b>Plusieurs modules</b> (ex. USB, Le Monteil, QRA) : relancez l’agent avec <span class="mono">-configurer</span> puis <b>a</b> pour ajouter une connexion. Chacune apparaît ici sous son nom quand son module est présent (port USB branché, ou PC sur le réseau du module Wi-Fi).</p>
+      <div class="code-agent">Code secret : <b class="mono" id="code-agent">••••-••••-••••</b> <button type="button" id="voir-code">Afficher</button> <button type="button" id="nouveau-code" title="Les agents déjà configurés devront recevoir le nouveau code">Nouveau code</button></div>
+      <p class="note">Fermez l’appli Meshtastic du PC pendant ce temps (un port USB ne sert qu’un programme). Pour administrer vos nœuds avec ce module, sa clé publique doit figurer dans leurs clés d’administration.</p>
+    </details>`;
+  $('#bloc-agents').ontoggle = (ev) => { ouvertAgents = ev.target.open; };
+  $('#voir-code').onclick = async () => { try { const c = await api('/api/radio/agents'); $('#code-agent').textContent = c.code; } catch (err) { retour(err.message); } };
+  $('#nouveau-code').onclick = async () => {
+    if (!(await confirmer('Créer un nouveau code ? Les agents déjà configurés devront être reconfigurés avec ce code.'))) return;
+    try { const c = await postJson('/api/radio/agents/code', {}); $('#code-agent').textContent = c.code; } catch (err) { retour(err.message); }
+  };
+  const retour = (t) => { const z = $('#retour-modules'); if (z) z.textContent = t; };
+  const action = async (url, corps, methode = 'POST') => {
+    try { await api(url, { method: methode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corps) }); }
+    catch (err) { retour(err.message); return; }
+    setTimeout(() => rendreModules(true), 600);
+    setTimeout(() => { rendreModules(true); chargerEtat().catch(() => {}); }, 4000);
+  };
+  zone.querySelectorAll('[data-mod-on]').forEach((b) => (b.onclick = () => { b.disabled = true; action('/api/radio/connecter', { hote: b.dataset.modOn, port: Number(b.dataset.port) }); }));
+  brancherBoutonsUsb(zone);
+  zone.querySelectorAll('[data-mod-edit]').forEach((b) => (b.onclick = () => editeurReglages(Number(b.dataset.modEdit))));
+  zone.querySelectorAll('[data-mod-off]').forEach((b) => (b.onclick = () => { b.disabled = true; action('/api/radio/deconnecter', { minutes: Number(b.dataset.modOff) }); }));
+  zone.querySelectorAll('[data-mod-del]').forEach((b) => (b.onclick = () => action('/api/radio/modules', { hote: b.dataset.modDel, port: Number(b.dataset.port) }, 'DELETE')));
+  zone.querySelectorAll('[data-ec-on]').forEach((b) => (b.onclick = () => { b.disabled = true; action('/api/ecoutes', { protocole: 'meshtastic', hote: b.dataset.ecOn, port: Number(b.dataset.port) }); }));
+  zone.querySelectorAll('[data-ec-off]').forEach((b) => (b.onclick = () => { b.disabled = true; action('/api/ecoutes', { protocole: 'meshtastic', hote: b.dataset.ecOff, port: Number(b.dataset.port) }, 'DELETE'); }));
+  zone.querySelectorAll('[data-ec-princ]').forEach((b) => (b.onclick = () => { b.disabled = true; action('/api/ecoutes/principal', { protocole: 'meshtastic', hote: b.dataset.ecPrinc, port: Number(b.dataset.port), echanger: true }); }));
+  $('#form-module').onsubmit = (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    action('/api/radio/modules', { hote: f.hote.value.trim(), nom: f.nom.value.trim() || null, port: 4403 });
+  };
+  $('#btn-scanner').onclick = async () => {
+    const b = $('#btn-scanner');
+    b.disabled = true; b.textContent = 'Recherche en cours (≈ 5 s)…';
+    try {
+      const res = await api('/api/radio/scanner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixe }) });
+      signatureModules = '';
+      await rendreModules(true);
+      retour(res.trouves.length ? `${res.trouves.length} module(s) trouvé(s) : ${res.trouves.join(', ')}` : 'Aucun module Meshtastic trouvé sur ce réseau.');
+    } catch (err) { retour(err.message); b.disabled = false; }
+  };
+}
+
+// ---- Recherche d'un lieu (nœuds, points hauts, lieux et adresses) ------------------------------
+let marqueurRecherche = null;
+function placerLieu(l) {
+  if (marqueurRecherche) marqueurRecherche.remove();
+  const ll = L.latLng(l.lat, l.lon);
+  carte.flyTo(ll, Math.max(carte.getZoom(), l.zoom || 15), { duration: 0.8 });
+  const div = document.createElement('div');
+  div.className = 'popup-lieu';
+  div.innerHTML = `<b>${esc(l.nom)}</b>${l.detail ? `<div class="meta-longue">${esc(l.detail)}</div>` : ''}
+    ${blocCoords(l.lat, l.lon, { alt: l.alt })}
+    <div class="menu-contexte"><button data-a="ici">Couverture depuis ici</button><button data-a="couvrir">Couvrir ce point (4 points hauts)</button>${etat.sitesCouv && etat.sitesCouv.length && etat.sitesCouv.length < 10 ? `<button data-a="couv-plus">Ajouter à la couverture totale (${etat.sitesCouv.length + 1} sites)</button>` : ''}${etat.ciblesMulti && etat.ciblesMulti.length && etat.ciblesMulti.length < 5 ? `<button data-a="couvrir-plus">Ajouter aux points à couvrir (${etat.ciblesMulti.length + 1})</button>` : ''}${l.num != null ? '<button data-a="fiche">Fiche du nœud</button>' : ''}</div>`;
+  div.onclick = (ev) => {
+    const a = ev.target.closest('button[data-a]');
+    if (!a) return;
+    carte.closePopup();
+    if (a.dataset.a === 'ici') couvertureIci(ll, Number($('#relief-hs') ? $('#relief-hs').value : 6) || 6);
+    else if (a.dataset.a === 'couvrir') couvrirPoint(ll);
+    else ouvrirFiche(l.num);
+  };
+  marqueurRecherche = L.marker(ll, { icon: L.divIcon({ className: 'repere-lieu', html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] }), pane: 'traces', zIndexOffset: 1000 })
+    .addTo(carte)
+    .bindPopup(div, { className: 'popup-contexte', maxWidth: 340, minWidth: 280 })
+    .openPopup();
+}
+function brancherRecherche() {
+  const champ = $('#recherche-lieu'), liste = $('#resultats-lieu');
+  let minuterie = null, resultats = [], index = -1, demande = 0;
+  const fermer = () => { liste.hidden = true; index = -1; };
+  const afficher = () => {
+    liste.innerHTML = resultats.length
+      ? resultats.map((r, i) => `<li data-i="${i}" class="${i === index ? 'actif' : ''}"><span class="type-lieu">${esc(r.type)}</span><b>${esc(r.nom)}</b>${r.detail ? `<small>${esc(r.detail)}</small>` : ''}</li>`).join('')
+      : '<li class="vide">Aucun résultat</li>';
+    liste.hidden = false;
+  };
+  const choisir = (i) => { const r = resultats[i]; if (!r) return; fermer(); if (r.go) { champ.value = ''; try { r.go(); } catch (e) { annonce('⚠ ' + e.message, 'erreur'); } return; } champ.value = r.nom; placerLieu(r); };
+  async function chercher(q) {
+    const n = ++demande;
+    const t = q.toLowerCase();
+    // Résultats locaux immédiats : nœuds et points hauts
+    const locaux = [];
+    for (const nd of etat.noeuds.values()) {
+      if (nd.lat == null) continue;
+      if ([nd.nomLong, nd.nomCourt, nd.id].some((x) => x && x.toLowerCase().includes(t))) locaux.push({ type: 'Nœud', nom: nd.nomLong || nd.nomCourt || nd.id, detail: nd.roleFr, lat: nd.lat, lon: nd.lon, alt: nd.alt, num: nd.num, zoom: 13 });
+    }
+    for (const sm of etat.sommets) if (sm.nom && sm.nom.toLowerCase().includes(t)) locaux.push({ type: 'Sommet', nom: sm.nom, detail: `${sm.alt} m${sm.commune ? ' · ' + sm.commune : ''}`, lat: sm.lat, lon: sm.lon, alt: sm.alt, zoom: 14 });
+    // Réglages et fonctions de la carte (même catalogue que ⚙️🔎)
+    const fonctions = [];
+    try { for (const e of indexReglages()) { if (sansAccent(`${e.t} ${e.m}`).includes(sansAccent(q))) fonctions.push({ type: 'Fonction', nom: e.t, detail: e.ch, go: e.go }); if (fonctions.length >= 3) break; } } catch { /* catalogue indisponible */ }
+    locaux.unshift(...fonctions);
+    resultats = locaux.slice(0, 6); index = -1; afficher();
+    try {
+      const c = carte.getCenter();
+      const r = await api(`/api/recherche?q=${encodeURIComponent(q)}&lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}`);
+      if (n !== demande) return;
+      resultats = [...locaux.slice(0, 4), ...r].slice(0, 10);
+      afficher();
+    } catch { /* recherche externe indisponible */ }
+  }
+  champ.oninput = () => {
+    clearTimeout(minuterie);
+    const q = champ.value.trim();
+    if (q.length < 2) { fermer(); return; }
+    // Coordonnées saisies directement : « 45.0473, 3.8852 »
+    const m = q.match(/^\s*(-?\d+(?:[.,]\d+)?)\s*[,; ]\s*(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) {
+      const lat = Number(m[1].replace(',', '.')), lon = Number(m[2].replace(',', '.'));
+      if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) { resultats = [{ type: 'GPS', nom: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon, zoom: 15 }]; index = 0; afficher(); return; }
+    }
+    minuterie = setTimeout(() => chercher(q), 300);
+  };
+  champ.onkeydown = (e) => {
+    if (liste.hidden) return;
+    if (e.key === 'ArrowDown') { index = Math.min(resultats.length - 1, index + 1); afficher(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { index = Math.max(0, index - 1); afficher(); e.preventDefault(); }
+    else if (e.key === 'Enter') { choisir(index < 0 ? 0 : index); e.preventDefault(); }
+    else if (e.key === 'Escape') fermer();
+  };
+  liste.onmousedown = (e) => { const li = e.target.closest('li[data-i]'); if (li) { e.preventDefault(); choisir(Number(li.dataset.i)); } };
+  champ.onblur = () => setTimeout(fermer, 150);
+  champ.onfocus = () => { if (resultats.length && champ.value.trim().length >= 2) afficher(); };
+}
+
+// ---- Profil entre deux points quelconques (nœuds, sommets ou lieux cliqués) ---------------------
+function choisirPointProfil(p) {
+  const m = etat.modeProfil;
+  if (!m) return;
+  if (!m.a) {
+    m.a = p;
+    majConsigne('Profil : cliquez le point B');
+    etat.repereProfil = L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'repere-lieu', html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] }), pane: 'traces' })
+      .addTo(carte).bindTooltip(`A · ${esc(p.nom)}`, { className: 'info', permanent: true, direction: 'top' });
+    return;
+  }
+  const a = m.a;
+  etat.modeProfil = null;
+  majConsigne(null);
+  $('#btn-profil').classList.remove('actif');
+  document.body.classList.remove('mode-viseur');
+  if (etat.repereProfil) { etat.repereProfil.remove(); etat.repereProfil = null; }
+  if (Math.abs(a.lat - p.lat) < 1e-5 && Math.abs(a.lon - p.lon) < 1e-5) return;
+  // Deux nœuds : profil classique (avec le SNR mesuré) ; sinon profil entre coordonnées
+  if (a.num != null && p.num != null) ouvrirProfil(a.num, p.num);
+  else ouvrirProfilCoords(a, p);
+}
+
+// ---- Trames, détail d'une trame, comparaison des signaux (façon MQTT Explorer) ------------------
+const FILTRES_TRAMES = [
+  ['emis', 'En tant qu’expéditeur'], ['emis_direct', 'Messages directs envoyés'], ['diffusion', 'Diffusions'],
+  ['recu', 'En tant que destinataire'], ['conversation', 'Expéditeur et destinataire'], ['passerelle', 'En tant que passerelle'], ['tous', 'Tous'],
+];
+const lienNoeud = (num) => num === 0xffffffff ? '<span class="mono">!ffffffff</span> <small>tout le monde</small>'
+  : `<a href="#" data-noeud="${num}"><span class="mono">${idHex(num)}</span> ${esc(nomCourt(num))} <small>${esc(nomNoeud(num) !== idHex(num) ? nomNoeud(num) : '')}</small></a>`;
+const distanceNoeuds = (a, b) => { const x = etat.noeuds.get(a), y = etat.noeuds.get(b); return x && y && x.lat != null && y.lat != null ? distanceKm(x, y) : null; };
+function lignesRx(t) {
+  if (!t.receptions.length) return '<span class="vide">–</span>';
+  return t.receptions.map((r) => {
+    const dist = distanceNoeuds(t.de, r.passerelle);
+    return `<div class="rx">${r.sauts === 0 ? '<b class="rx-direct">En direct</b>' : r.sauts != null ? `${r.sauts} saut${r.sauts > 1 ? 's' : ''}` : '?'}${dist != null ? ` · ${fmt(dist, 2)} km` : ''}${r.snr != null ? ` · <span style="color:${couleurSnr(r.snr)}">${fmt(r.snr, 2)}</span>` : ''}${r.rssi != null ? ` · ${r.rssi}` : ''}</div>`;
+  }).join('');
+}
+function jsonJoli(o) { return esc(JSON.stringify(o, null, 2)); }
+const etatTrames = { num: null, filtre: 'emis', page: 1, port: '' };
+async function ouvrirTrames(num, filtre) {
+  if (num != null) { etatTrames.num = num; etatTrames.page = 1; etatTrames.port = ''; }
+  if (filtre) { etatTrames.filtre = filtre; etatTrames.page = 1; }
+  const dlg = $('#dlg-trames'), z = $('#trames-contenu');
+  if (!dlg.open) dlg.showModal();
+  z.innerHTML = '<div class="vide">Chargement…</div>';
+  const e = etatTrames;
+  let r;
+  try { r = await api(`/api/noeuds/${e.num}/trames?filtre=${e.filtre}&page=${e.page}&taille=20${e.port ? '&port=' + e.port : ''}`); } catch (x) { z.innerHTML = `<div class="vide">${esc(x.message)}</div>`; return; }
+  const pagesListe = [];
+  for (let p = 1; p <= r.pages; p++) if (p === 1 || p === r.pages || Math.abs(p - r.page) <= 2) pagesListe.push(p); else if (pagesListe[pagesListe.length - 1] !== '…') pagesListe.push('…');
+  z.innerHTML = `
+    <h2>Liste des trames <small class="compteur-trames">${r.total} trame${r.total > 1 ? 's' : ''} enregistrée${r.total > 1 ? 's' : ''} (${etat.config.retentionJours} jours)</small></h2>
+    <div class="ident">${esc(nomNoeud(e.num))} · ${esc(nomCourt(e.num))} · ${idHex(e.num)}</div>
+    <div class="filtres-trames">${FILTRES_TRAMES.map(([k, l]) => `<button data-ft="${k}" class="${k === e.filtre ? 'actif' : ''}">${l}</button>`).join('')}</div>
+    <div class="filtres-trames ports"><button data-fp="" class="${!e.port ? 'actif' : ''}">Tous les types</button>${r.parPort.map((x) => `<button data-fp="${x.port}" class="${x.port === e.port ? 'actif' : ''}"><i style="background:${portInfo(x.port).couleur}"></i>${esc(portInfo(x.port).nom)} <small>${x.nb}</small></button>`).join('')}</div>
+    <div class="table-defile"><table class="trames">
+      <thead><tr><th>ID</th><th>Expéditeur</th><th>Destinataire</th><th>Passerelle</th><th>Date</th><th>RX <small>sauts · km · SNR · RSSI</small></th><th>MQTT</th><th>Type</th></tr></thead>
+      <tbody>${r.trames.map((t) => `<tr>
+        <td><a href="#" data-trame="${t.rowid}" class="mono">${t.idPaquet}</a></td>
+        <td>${lienNoeud(t.de)}</td>
+        <td>${lienNoeud(t.vers)}</td>
+        <td>${t.receptions.map((x) => `<div class="rx">${lienNoeud(x.passerelle)}</div>`).join('') || '–'}</td>
+        <td class="nowrap">${new Date(t.heure).toLocaleDateString('fr-FR')}<br>${heure(t.heure)}</td>
+        <td class="nowrap">${lignesRx(t)}</td>
+        <td>${t.receptions.map((x) => `<div class="rx mono petit">${esc(x.sujet || '')}</div>`).join('') || esc(t.canal || '')}</td>
+        <td><b><i class="pt" style="background:${portInfo(t.port).couleur}"></i>${esc(t.nomPort || t.port)}</b>${t.pki ? ' <span class="badge">PKI</span>' : ''}${t.signe ? ' <span class="badge" title="Signature de l’expéditeur vérifiée (firmware 2.8)">✍ signé</span>' : ''}
+          <div class="petit">${esc(t.texte ? '💬 ' + t.texte : t.resume || '')}${t.reprises ? ' · <span class="pastille">reprise après redémarrage</span>' : ''}</div>
+          ${t.contenu ? `<details><summary>JSON</summary><pre class="json">${jsonJoli(t.contenu)}</pre></details>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="8" class="vide">Aucune trame pour ce filtre.</td></tr>'}</tbody>
+    </table></div>
+    <div class="pagination">${pagesListe.map((p) => p === '…' ? '<span>…</span>' : `<button data-pg="${p}" class="${p === r.page ? 'actif' : ''}">${p}</button>`).join('')}</div>`;
+  z.querySelectorAll('[data-ft]').forEach((b) => (b.onclick = () => ouvrirTrames(null, b.dataset.ft)));
+  z.querySelectorAll('[data-fp]').forEach((b) => (b.onclick = () => { etatTrames.port = b.dataset.fp; etatTrames.page = 1; ouvrirTrames(); }));
+  z.querySelectorAll('[data-pg]').forEach((b) => (b.onclick = () => { etatTrames.page = Number(b.dataset.pg); ouvrirTrames(); }));
+  brancherLiensTrames(z);
+}
+function brancherLiensTrames(z) {
+  z.querySelectorAll('[data-trame]').forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); ouvrirTrame(Number(a.dataset.trame)); }));
+  z.querySelectorAll('[data-noeud]').forEach((a) => (a.onclick = (ev) => {
+    ev.preventDefault();
+    const num = Number(a.dataset.noeud);
+    document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+    const n = etat.noeuds.get(num);
+    if (n && n.lat != null) carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 11), { duration: 0.6 });
+    ouvrirFiche(num);
+  }));
+  z.querySelectorAll('[data-signal]').forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); const [de, gw] = a.dataset.signal.split(':').map(Number); ouvrirSignal(de, gw); }));
+}
+async function ouvrirTrame(rowid) {
+  const dlg = $('#dlg-trame'), z = $('#trame-contenu');
+  if (!dlg.open) dlg.showModal();
+  z.innerHTML = '<div class="vide">Chargement…</div>';
+  let t;
+  try { t = await api('/api/trames/' + rowid); } catch (x) { z.innerHTML = `<div class="vide">${esc(x.message)}</div>`; return; }
+  const lig = (k, v) => `<div class="mesure"><span>${k}</span><b>${v ?? '–'}</b></div>`;
+  z.innerHTML = `
+    <h2>Trame ${t.idPaquet} <small>${esc(t.nomPort || t.port)}</small></h2>
+    <div class="grille">
+      ${lig('Expéditeur', lienNoeud(t.de))}${lig('Destinataire', lienNoeud(t.vers))}${lig('Date', new Date(t.heure).toLocaleString('fr-FR'))}
+      ${lig('Canal', esc(t.canal || '–'))}${lig('Sauts au départ', t.hopDepart || '–')}${t.signe ? lig('Signature', '✍ vérifiée par la passerelle (firmware 2.8)') : ''}${lig('Chiffrement', t.pki ? 'PKI (message direct)' : t.dechiffre ? 'clé de canal, déchiffrée' : 'non déchiffrée')}
+      ${lig('Taille', t.taille != null ? t.taille + ' octets' : '–')}${lig('Réceptions', t.receptions.length)}${lig('Via MQTT', t.viaMqtt ? 'oui' : 'non')}
+    </div>
+    ${t.texte ? `<div class="encadre-texte">💬 ${esc(t.texte)}</div>` : `<p>${esc(t.resume || '')}</p>`}
+    <h4>Reçue par</h4>
+    <table class="voisins"><thead><tr><th>Passerelle</th><th>Heure</th><th class="num">Sauts</th><th>Dernier relais</th><th class="num">km</th><th class="num">SNR</th><th class="num">RSSI</th><th>Source</th><th></th></tr></thead><tbody>
+    ${t.receptions.map((r) => `<tr><td>${lienNoeud(r.passerelle)}</td><td>${heure(r.heure)}</td><td class="num">${r.sauts === 0 ? 'direct' : r.sauts ?? '?'}</td><td>${r.relais != null ? lienNoeud(r.relais) : '–'}</td>
+      <td class="num">${fmt(distanceNoeuds(t.de, r.passerelle), 1)}</td><td class="num" style="color:${couleurSnr(r.snr)}">${fmt(r.snr, 2)}</td><td class="num">${r.rssi ?? '–'}</td><td class="mono petit">${esc(r.sujet || '')}</td>
+      <td><a href="#" data-signal="${t.de}:${r.passerelle}" title="Comparer les signaux">📈</a></td></tr>`).join('')}
+    </tbody></table>
+    ${t.contenu ? `<h4>Contenu décodé</h4><pre class="json">${jsonJoli(t.contenu)}</pre>` : ''}`;
+  brancherLiensTrames(z);
+}
+async function ouvrirSignal(de, gw) {
+  const dlg = $('#dlg-signal'), z = $('#signal-contenu');
+  if (!dlg.open) dlg.showModal();
+  z.innerHTML = '<div class="vide">Chargement…</div>';
+  let r, autres = [];
+  try { [r, autres] = await Promise.all([api(`/api/signal?de=${de}&passerelle=${gw}`), api(`/api/noeuds/${de}/entendu-par`)]); } catch (x) { z.innerHTML = `<div class="vide">${esc(x.message)}</div>`; return; }
+  const pts = r.points;
+  const dist = distanceNoeuds(de, gw);
+  const stat = (k) => { const v = pts.map((p) => p[k]).filter((x) => x != null); return v.length ? { min: Math.min(...v), max: Math.max(...v), moy: v.reduce((a, b) => a + b, 0) / v.length } : null; };
+  const sS = stat('snr'), sR = stat('rssi');
+  z.innerHTML = `
+    <h2>Comparer les signaux</h2>
+    <div class="ident">${esc(nomNoeud(de))} → entendu par ${esc(nomNoeud(gw))}${dist != null ? ` · ${fmt(dist, 1)} km` : ''}</div>
+    <label class="choix-gw">Passerelle <select id="choix-gw">${autres.map((a) => `<option value="${a.passerelle}" ${a.passerelle === gw ? 'selected' : ''}>${esc(nomNoeud(a.passerelle))} (${a.nb})</option>`).join('')}</select></label>
+    ${pts.length < 2 ? '<div class="vide">Pas assez de mesures pour un graphique.</div>' : graphiqueSignal(pts)}
+    <div class="grille">
+      <div class="mesure"><span>Mesures</span><b>${pts.length}</b></div>
+      <div class="mesure"><span>SNR moyen</span><b>${sS ? fmt(sS.moy, 1, ' dB') : '–'}</b></div>
+      <div class="mesure"><span>SNR min / max</span><b>${sS ? `${fmt(sS.min, 1)} / ${fmt(sS.max, 1)}` : '–'}</b></div>
+      <div class="mesure"><span>RSSI moyen</span><b>${sR ? fmt(sR.moy, 0, ' dBm') : '–'}</b></div>
+      <div class="mesure"><span>RSSI min / max</span><b>${sR ? `${sR.min} / ${sR.max}` : '–'}</b></div>
+      <div class="mesure"><span>Reçu en direct</span><b>${pts.length ? Math.round((pts.filter((p) => p.sauts === 0).length / pts.length) * 100) + ' %' : '–'}</b></div>
+    </div>
+    <p class="note">Points pleins : reçus en direct ; points creux : après un ou plusieurs relais (le SNR est alors celui du dernier saut). Ligne pointillée rouge : limite de réception du preset LONG_MODERATE (−17,5 dB).</p>`;
+  $('#choix-gw').onchange = (e) => ouvrirSignal(de, Number(e.target.value));
+}
+function graphiqueSignal(pts) {
+  const W = 660, H = 240, m = { g: 40, d: 44, h: 12, b: 26 };
+  const t0 = pts[0].heure, t1 = pts[pts.length - 1].heure || t0 + 1;
+  const snrs = pts.map((p) => p.snr).filter((v) => v != null), rssis = pts.map((p) => p.rssi).filter((v) => v != null);
+  const sMin = Math.min(-20, ...snrs) - 1, sMax = Math.max(12, ...snrs) + 1;
+  const rMin = Math.min(-130, ...rssis) - 2, rMax = Math.max(-40, ...rssis) + 2;
+  const x = (t) => m.g + ((t - t0) / (t1 - t0 || 1)) * (W - m.g - m.d);
+  const yS = (v) => H - m.b - ((v - sMin) / (sMax - sMin)) * (H - m.h - m.b);
+  const yR = (v) => H - m.b - ((v - rMin) / (rMax - rMin)) * (H - m.h - m.b);
+  const lignesS = pts.filter((p) => p.snr != null);
+  const lignesR = pts.filter((p) => p.rssi != null);
+  const chemin = (l, f, k) => l.map((p, i) => `${i ? 'L' : 'M'}${x(p.heure).toFixed(1)},${f(p[k]).toFixed(1)}`).join(' ');
+  const gradS = []; for (let v = Math.ceil(sMin / 5) * 5; v <= sMax; v += 5) gradS.push(`<line x1="${m.g}" x2="${W - m.d}" y1="${yS(v)}" y2="${yS(v)}" class="grille-svg"/><text x="${m.g - 4}" y="${yS(v) + 3}" text-anchor="end" class="t-snr">${v}</text>`);
+  const gradR = []; for (let v = Math.ceil(rMin / 10) * 10; v <= rMax; v += 10) gradR.push(`<text x="${W - m.d + 4}" y="${yR(v) + 3}" class="t-rssi">${v}</text>`);
+  const jours = []; const d0 = new Date(t0); d0.setHours(0, 0, 0, 0);
+  for (let d = d0.getTime() + 86400000; d < t1; d += 86400000) jours.push(`<line x1="${x(d)}" x2="${x(d)}" y1="${m.h}" y2="${H - m.b}" class="grille-svg"/><text x="${x(d)}" y="${H - 8}" text-anchor="middle">${new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</text>`);
+  return `<svg class="profil signal" viewBox="0 0 ${W} ${H}">
+    ${gradS.join('')}${gradR.join('')}${jours.join('')}
+    <line x1="${m.g}" x2="${W - m.d}" y1="${yS(-17.5)}" y2="${yS(-17.5)}" stroke="#ff5c6c" stroke-dasharray="4 4" stroke-width="1"/>
+    <path d="${chemin(lignesR, yR, 'rssi')}" class="c-rssi"/>
+    <path d="${chemin(lignesS, yS, 'snr')}" class="c-snr"/>
+    ${lignesS.map((p) => `<circle cx="${x(p.heure).toFixed(1)}" cy="${yS(p.snr).toFixed(1)}" r="2.6" class="${p.sauts === 0 ? 'p-direct' : 'p-relais'}"><title>${new Date(p.heure).toLocaleString('fr-FR')} · SNR ${p.snr} dB · RSSI ${p.rssi ?? '?'} dBm · ${p.sauts === 0 ? 'direct' : (p.sauts ?? '?') + ' saut(s)'}</title></circle>`).join('')}
+    <text x="${m.g}" y="${m.h - 2}" class="t-snr">SNR (dB)</text><text x="${W - m.d}" y="${m.h - 2}" class="t-rssi" text-anchor="end">RSSI (dBm)</text>
+  </svg>`;
+}
+async function chargerEntenduPar(n) {
+  const z = $('#entendu-par');
+  if (!z) return;
+  let l;
+  try { l = await api(`/api/noeuds/${n.num}/entendu-par`); } catch { z.innerHTML = '<div class="vide">Indisponible.</div>'; return; }
+  z.innerHTML = l.length ? `<table class="voisins"><thead><tr><th>Passerelle</th><th class="num">km</th><th class="num">Dernier SNR</th><th class="num">Trames</th><th>Dernière</th><th></th></tr></thead><tbody>
+    ${l.map((g) => `<tr><td>${lienNoeud(g.passerelle)}</td><td class="num">${fmt(distanceNoeuds(n.num, g.passerelle), 1)}</td><td class="num" style="color:${couleurSnr(g.dernierSnr)}">${fmt(g.dernierSnr, 2)}</td><td class="num">${g.nb}</td><td class="nowrap">${ilYa(g.dernier)}</td>
+      <td class="nowrap"><a href="#" data-trame="${g.derniereTrame}" title="Voir la trame">🔎</a> <a href="#" data-signal="${n.num}:${g.passerelle}" title="Comparer les signaux">📈</a></td></tr>`).join('')}</tbody></table>`
+    : '<div class="vide">Aucune passerelle ne l’a entendu sur la période.</div>';
+  brancherLiensTrames(z);
+}
+
+// ---- Gestion des nœuds par LoRa (admin) ------------------------------------------------------
+const gestion = { selection: new Set(), info: null, suivi: null, filtre: '', marqueurPos: null };
+const STATUTS_TACHE = { en_attente: 'en attente', en_cours: 'en cours…', ok: 'réussi', echec: 'échec', annule: 'arrêté' };
+const ROLES_FR_ADMIN = { CLIENT: 'Client', CLIENT_MUTE: 'Client muet', CLIENT_HIDDEN: 'Client caché', CLIENT_BASE: 'Client de base', ROUTER: 'Routeur', ROUTER_LATE: 'Routeur tardif', ROUTER_CLIENT: 'Routeur-client', REPEATER: 'Répéteur', TRACKER: 'Traceur', SENSOR: 'Capteur', TAK: 'TAK', TAK_TRACKER: 'TAK traceur', LOST_AND_FOUND: 'Objet perdu' };
+
+// Nœud programmable par l'utilisateur connecté : tous pour l'admin, ceux de son secteur pour un gestionnaire
+function gerable(id) {
+  if (etat.admin) return true;
+  if (!etat.gestion) return false;
+  const k = /^[0-9a-f]{64}$/i.test(String(id)) ? String(id).toUpperCase() : String(Number(id) >>> 0);
+  return (etat.secteur || []).includes(k);
+}
+// ---- Firmware des modules Wi-Fi : version et mise à jour par le Wi-Fi ---------------------------------
+async function ficheFirmware() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = '<h2>⬆️ Firmware des modules Wi-Fi</h2><div class="vide">Chargement…</div>';
+  let r;
+  try { r = await api('/api/firmware/modules'); } catch (e) { z.innerHTML = `<h2>⬆️ Firmware des modules Wi-Fi</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const v = (x) => (x ? x.tag.replace(/^v/, '') : null);
+  const versions = [r.stable ? [v(r.stable), `${v(r.stable)} · stable`] : null, r.test && r.test.tag !== (r.stable || {}).tag ? [v(r.test), `${v(r.test)} · test (bêta)`] : null].filter(Boolean);
+  const agentOk = (m) => /^1\.([5-9]|\d\d)|^[2-9]\./.test(m.versionAgent || '');
+  const ligne = (m) => `<div class="carte-cle" data-hote="${esc(m.hote)}"><div class="ligne-cle"><b>${esc(m.nom || m.hote)}</b> <small class="mono">${esc(m.agent ? 'par agent · ' + (m.source || '') : m.hote)}</small>${m.actif ? ' <span class="badge actif">module de la carte</span>' : ''}${m.agent && !agentOk(m) ? ` <span class="badge attente">agent ${esc(m.versionAgent || '?')} : téléchargez l’agent 1.5 pour la mise à jour</span>` : ''}</div>${m.agent && m.actif ? '<div class="note">Module actif de la carte : choisissez d’abord un autre module (Réseau › Modules) pour que l’agent puisse relayer la mise à jour.</div>' : ''}<div class="etat-module note">version non vérifiée</div><div class="actions-prop"><button class="mini" data-verifier>Vérifier la version</button></div></div>`;
+  z.innerHTML = `<h2>⬆️ Firmware des modules Wi-Fi</h2>
+    <p class="note">Dernière version stable : <b>${esc(v(r.stable) || '?')}</b>${r.test && r.test.tag !== (r.stable || {}).tag ? ` · test : ${esc(v(r.test))}` : ''}. La mise à jour passe par le Wi-Fi (ESP32, firmware 2.7.18 ou plus) : le module doit être joignable en IP depuis le NAS (même réseau, ou réseau relié par VPN). Pendant 2 à 4 minutes, le module ne fonctionne plus ; ses réglages sont conservés.</p>
+    <div class="alerte attention">« Vérifier » ouvre une courte connexion au module : un autre client connecté à lui en Wi-Fi (appli, MeshMonitor) est déconnecté un instant.</div>
+    ${r.modules.map(ligne).join('') || '<div class="vide">Aucun module enregistré en IP (Réseau › Modules).</div>'}
+    <h3>Autre module</h3>
+    <form id="f-fw-ip" class="parametres compact"><label>Adresse IP <input name="hote" placeholder="192.168.0.42" required></label><button type="submit">Ajouter à la liste</button></form>
+    <p class="erreur" id="fw-retour"></p>`;
+  const brancher = (el) => {
+    el.querySelector('[data-verifier]').onclick = async (ev) => {
+      const b = ev.target, e = el.querySelector('.etat-module'), hote = el.dataset.hote;
+      b.disabled = true; e.textContent = 'Connexion au module…';
+      try {
+        const i = await api('/api/firmware/info?hote=' + encodeURIComponent(hote));
+        const aJour = r.stable && String(i.firmware || '').startsWith(v(r.stable));
+        e.innerHTML = `${esc(i.nom || '')} · ${esc(i.hwModel || '?')} · firmware <b>${esc(i.firmware || '?')}</b> ${aJour ? '<span class="badge actif">à jour</span>' : r.stable ? '<span class="badge attente">mise à jour disponible</span>' : ''}`;
+        const act = el.querySelector('.actions-prop');
+        act.innerHTML = `<select data-version>${versions.map(([val, lib]) => `<option value="${esc(val)}" ${!aJour && val === v(r.stable) ? 'selected' : ''}>${esc(lib)}</option>`).join('')}</select><button class="mini principal" data-maj>Mettre à jour</button>`;
+        act.querySelector('[data-maj]').onclick = async () => {
+          const ver = act.querySelector('[data-version]').value;
+          if (!(await confirmer(`Mettre à jour ${i.nom || hote} en ${ver} par le Wi-Fi ? Le module sera indisponible 2 à 4 minutes.`))) return;
+          try { const t = await postJson('/api/firmware/ota', { hote, version: ver }); $('#fw-retour').textContent = `Mise à jour lancée (opération ${t.id}) : suivez-la dans Programmer › Opérations récentes.`; suivreTaches(); } catch (x) { $('#fw-retour').textContent = x.message; }
+        };
+      } catch (x) { e.textContent = x.message; b.disabled = false; }
+    };
+  };
+  z.querySelectorAll('[data-hote]').forEach(brancher);
+  $('#f-fw-ip').onsubmit = (ev) => {
+    ev.preventDefault();
+    const hote = ev.target.hote.value.trim();
+    if (!hote) return;
+    const d = document.createElement('div'); d.innerHTML = ligne({ hote, nom: null });
+    const el = d.firstElementChild;
+    const vide = z.querySelector(':scope > .vide'); if (vide) vide.remove();
+    z.querySelector('h3').before(el); brancher(el); ev.target.reset();
+  };
+}
+
+// ---- Clés d'administration : relais par relais ------------------------------------------------------
+async function ficheCles() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = '<h2>🔑 Clés d’administration</h2><div class="vide">Chargement…</div>';
+  let r;
+  try { r = await api('/api/admin-noeuds/cles'); } catch (e) { z.innerHTML = `<h2>🔑 Clés d’administration</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const seulement = etat.clesFiltre !== false;
+  const aTraiter = (n) => n.aFaire.length || n.aFaireNote;
+  const liste = r.noeuds.filter((n) => !seulement || aTraiter(n)).sort((a, b) => (aTraiter(b) ? 1 : 0) - (aTraiter(a) ? 1 : 0) || a.nom.localeCompare(b.nom));
+  const puce = (m) => m.autorise === true ? `<span class="badge actif" title="${m.dansCles ? 'clé présente dans ses clés d’administration' : 'a accepté une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('fr-FR') : ''}">✔ ${esc(m.nom)}</span>`
+    : m.autorise === false ? `<span class="badge refus" title="${m.dansCles === false ? 'clé absente de ses clés d’administration' : 'a refusé une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('fr-FR') : ''}">⛔ ${esc(m.nom)}</span>`
+    : `<span class="badge attente" title="jamais essayé depuis ce module">? ${esc(m.nom)}</span>`;
+  const texteVisite = r.noeuds.filter(aTraiter).map((n) => `• ${n.nom}${n.site ? ' (' + n.site + ')' : ''} : ${[...n.aFaire, n.aFaireNote].filter(Boolean).join(' ; ')}`).join('\n');
+  z.innerHTML = `<h2>🔑 Clés d’administration</h2>
+    <p class="note">Un relais n’accepte les ordres que des modules dont la clé publique figure dans ses <b>clés d’administration</b> (3 emplacements). ✔ autorisé · ⛔ refusé · ? jamais essayé. « Lire les clés » interroge le relais par LoRa pour connaître exactement ses clés.</p>
+    <p class="note">Modules de la carte : ${r.modules.map((m) => `<b>${esc(m.nom)}</b>`).join(', ') || 'aucun encore (connectez un module)'}.</p>
+    <div class="actions-prop"><label class="case"><input type="checkbox" id="cles-filtre" ${seulement ? 'checked' : ''}> Seulement les relais avec quelque chose à faire</label>${texteVisite ? '<button class="mini" id="cles-copier">📋 Copier la liste pour la prochaine visite</button>' : ''}</div>
+    ${liste.map((n) => `<div class="carte-cle" data-num="${n.num}">
+      <div class="ligne-cle"><b>${esc(n.nom)}</b> <small>${esc(n.id)}${n.site ? ' · ' + esc(n.site) : ''}${n.dernierVu ? ' · vu ' + ilYa(n.dernierVu) : ''}</small></div>
+      <div class="puces-cle">${n.modules.map(puce).join(' ')}</div>
+      <div class="note">${n.securite ? `${n.securite.nbCles} clé(s) enregistrée(s), ${n.securite.libres} emplacement(s) libre(s)${n.securite.inconnues ? `, dont ${n.securite.inconnues} d’un autre appareil (téléphone, autre carte…)` : ''}${n.securite.gere ? ' · <b>mode géré</b> (réglages verrouillés hors administration)' : ''} · lu ${ilYa(n.securite.lu)}` : 'clés jamais lues'} <button class="mini" data-lire-cles="${n.num}">Lire les clés</button></div>
+      ${n.aFaire.length ? `<ul class="a-faire">${n.aFaire.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+      <label class="note-site">À faire sur place <textarea rows="2" data-note="${n.num}" placeholder="ex. changer le connecteur N, poser un filtre 868…">${esc(n.aFaireNote)}</textarea></label>
+    </div>`).join('') || '<div class="vide">Rien à signaler : tous les relais connus acceptent au moins un module de la carte.</div>'}
+    <p class="erreur" id="cles-retour"></p>`;
+  $('#cles-filtre').onchange = (e) => { etat.clesFiltre = e.target.checked; ficheCles(); };
+  const bcp = $('#cles-copier');
+  if (bcp) bcp.onclick = async () => { try { await navigator.clipboard.writeText('À faire sur place :\n' + texteVisite); bcp.textContent = '✔ Copié'; } catch { $('#cles-retour').textContent = texteVisite; } };
+  z.querySelectorAll('[data-lire-cles]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Lecture lancée…';
+    try { await postJson('/api/admin-noeuds/taches', { type: 'lire', cibles: [Number(b.dataset.lireCles)], params: { sections: ['securite'] } }); $('#cles-retour').textContent = 'Lecture lancée : suivez-la dans Programmer, puis rouvrez cette vue.'; } catch (e) { $('#cles-retour').textContent = e.message; b.disabled = false; b.textContent = 'Lire les clés'; }
+  }));
+  z.querySelectorAll('[data-note]').forEach((t) => (t.onchange = async () => {
+    try { await postJson(`/api/noeuds/${t.dataset.note}/a-faire`, { texte: t.value }); $('#cles-retour').textContent = '✔ Note enregistrée (elle figure aussi dans la fiche d’installation).'; } catch (e) { $('#cles-retour').textContent = e.message; }
+  }));
+}
+// ---- Version de firmware : vrai si v ≥ min (« 2.7.26.54e0d8d » ≥ « 2.7.11 ») ----------------------------
+function fwAuMoins(v, min) {
+  const t = (x) => { const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(x || '')); return m ? [+m[1], +m[2], +m[3]] : null; };
+  const a = t(v), b = t(min);
+  if (!a || !b) return false;
+  for (let k = 0; k < 3; k++) if (a[k] !== b[k]) return a[k] > b[k];
+  return true;
+}
+const SIGNATURES_FR = {
+  PACKET_SIGNATURE_POLICY_COMPATIBLE: 'Compatible (accepte les nœuds 2.7)',
+  PACKET_SIGNATURE_POLICY_BALANCED: 'Équilibrée',
+  PACKET_SIGNATURE_POLICY_STRICT: 'Stricte (signés seulement)',
+};
+const dureeCourte = (s) => (s == null ? '–' : s === 0 ? 'défaut' : s % 3600 === 0 ? `${s / 3600} h` : s % 60 === 0 ? `${s / 60} min` : `${s} s`);
+
+// ---- Favoris entre relais : « sauts gratuits » (firmware 2.7.11+) -------------------------------------------
+// ---- Équipes : canal chiffré par équipe, posé ou retiré à distance (administrateur) -------------------------
+// Numéros de nœuds saisis : !a1b2c3d4, a1b2c3d4 ou numéro décimal, séparés par des virgules ou espaces
+function lireNumsSaisis(t) {
+  return String(t || '').split(/[\s,;]+/).filter(Boolean).map((x) => {
+    const h = x.replace(/^!/, '');
+    if (/^[0-9a-f]{8}$/i.test(h)) return parseInt(h, 16) >>> 0;
+    if (/^\d+$/.test(x)) return Number(x) >>> 0;
+    return null;
+  });
+}
+function telechargerTexte(nomFichier, texte) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([texte], { type: 'text/plain' }));
+  a.download = nomFichier;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+async function ficheEquipes(ouverte) {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.dataset.tache = '';
+  if (!z.querySelector('.equipes')) z.innerHTML = '<div class="vide">Chargement des équipes…</div>';
+  let r;
+  try { r = await api('/api/equipes'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const sel = [...gestion.selection];
+  const etatMembre = (m) => m.etat === 'retrait' ? (m.dernier && m.dernier.statut === 'echec' ? ['echec', '⚠ retrait non confirmé'] : ['attente', '⏳ retrait en cours'])
+    : m.aJour ? ['ok', `✔ à jour${m.index != null ? ' · canal ' + m.index : ''}`]
+    : m.dernier && m.dernier.statut === 'echec' ? ['echec', '⚠ échec'] : ['attente', '⏳ en attente'];
+  const cli = (e) => `# Depuis le module de la carte (USB : --port /dev/ttyUSB0, Wi-Fi : --host IP), vers le nœud !a1b2c3d4
+# Clé : fichier ${e.nom}.cle exporté ci-dessus (contenu base64), à garder hors de l’historique du shell
+meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --ch-index 1 \\
+  --ch-set name ${e.nom} --ch-set psk base64:$(cat ${e.nom}.cle) \\
+  --ch-set uplink_enabled false --ch-set downlink_enabled false${e.positions ? ' \\\n  --ch-set module_settings.position_precision 32' : ''}
+# Retrait (les canaux suivants remontent d’un cran) :
+meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --ch-index 1 --ch-del
+# Verrouiller le nœud de l’intervenant (seule l’administration à distance peut le modifier) :
+meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --set security.is_managed true`;
+  z.innerHTML = `<div class="equipes"><h2>👥 Équipes</h2>
+    <p class="note">Chaque équipe a son <b>canal chiffré</b> (AES-256, clé générée par la carte). Le module de la carte le <b>pose ou le retire à distance</b> sur les nœuds des intervenants, avec relecture de contrôle. Il faut que la clé du module soit dans leurs <b>clés d’administration</b> (Programmer › 🔑 Clés d’administration). Les canaux d’équipe ne remontent pas sur MQTT : les messages restent entre les nœuds de l’équipe.</p>
+    ${!r.module.connecte ? '<div class="alerte attention">Module radio non connecté : les équipes se créent, mais il faut relier le module (Réseau › Modules) pour poser ou retirer les canaux.</div>' : ''}
+    ${r.sourceCle === 'fichier' ? '<div class="note">🔐 Les clés des équipes sont chiffrées avec la clé maîtresse <code>cle-equipes.bin</code> du dossier de données. Pour qu’une sauvegarde restaurée ailleurs garde les équipes, définissez <code>CLE_EQUIPES</code> dans le <code>.env</code> <b>avant</b> de créer la première équipe.</div>' : ''}
+    ${sel.length ? `<div class="alerte info-lecture">${sel.length} nœud(s) coché(s) dans Programmer : ${esc(sel.slice(0, 6).map(nomNoeud).join(', '))}${sel.length > 6 ? '…' : ''}</div>` : ''}
+    ${r.equipes.map((e) => `<details class="proposition equipe" data-eq="${esc(e.id)}" ${ouverte === e.id || r.equipes.length === 1 ? 'open' : ''}>
+      <summary class="entete-prop"><b>${esc(e.nom)}</b><span class="marge">${e.aJour}/${e.nbMembres} à jour · clé ${e.empreinte ? esc(e.empreinte) : '<span style="color:var(--critique)">illisible</span>'} · v${e.version}</span></summary>
+      ${e.description ? `<div class="meta-longue">${esc(e.description)}</div>` : ''}
+      ${!e.cleLisible ? '<div class="alerte attention">La clé de cette équipe ne se déchiffre plus (clé maîtresse ou CLE_EQUIPES changée) : créez une nouvelle clé.</div>' : ''}
+      <div class="liste-membres">${e.membres.length ? e.membres.map((m) => { const [c, t] = etatMembre(m); return `<div class="membre-eq ${c}">
+        <span class="nom">${esc(nomNoeud(m.num))} <small>${idHex(m.num)}</small></span><span class="etat">${t}</span>
+        ${m.dernier && m.dernier.statut === 'echec' && m.dernier.detail ? `<small class="detail">${esc(m.dernier.detail)}</small>` : ''}
+        ${m.etat === 'membre' ? `<button class="mini" data-retirer="${m.num}" title="Retirer le canal de ce nœud">Retirer</button>` : ''}
+        <small class="detail ${m.sansNouvelle ? 'sans-nouvelle' : ''}">${m.position ? `📍 position ${m.position.heure ? ilYa(m.position.heure) : 'connue'} <a href="#" data-voir-pos="${m.position.lat},${m.position.lon}">voir</a>` : '📍 position inconnue'}${m.sansNouvelle ? ' · ⚠ sans nouvelle' : ''}</small></div>`; }).join('') : '<div class="vide">Aucun nœud dans cette équipe.</div>'}</div>
+      <div class="champ-ajout"><input type="text" data-saisie placeholder="!a1b2c3d4, !e5f6a7b8…" aria-label="Nœuds à ajouter"><button class="principal" data-ajouter>➕ Ajouter${sel.length ? ` (+ ${sel.length} coché${sel.length > 1 ? 's' : ''})` : ''}</button></div>
+      <label>Suivi des positions <select data-suivi>${[[0, 'à la demande'], [5, 'toutes les 5 min'], [10, 'toutes les 10 min'], [15, 'toutes les 15 min'], [30, 'toutes les 30 min'], [60, 'toutes les heures']].map(([v, t]) => `<option value="${v}" ${e.suiviMin === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="case"><input type="checkbox" data-positions ${e.positions ? 'checked' : ''}> Positions des membres sur le canal d’équipe (s’applique aux prochains envois)</label>
+      <div class="actions-prop">
+        ${e.nbMembres ? `<button data-positions-eq title="Chaque nœud de l’équipe renvoie sa position (espacées de 3 s)">📍 Demander les positions</button>` : ''}
+        <button data-reappliquer title="Renvoyer le canal aux nœuds pas à jour, et le retrait à ceux qui ne l’ont pas confirmé">↻ Renvoyer aux nœuds pas à jour</button>
+        <button data-cle title="La seule vraie révocation d’un nœud perdu ou volé">🔑 Nouvelle clé</button>
+        <button data-export title="Fichier .cle pour la ligne de commande, lien de canal pour l’appli (inscrit dans l’historique)">⬇ Exporter la clé</button>
+        <button data-supprimer class="danger">🗑 Supprimer l’équipe</button>
+      </div>
+      <div class="export-eq" hidden></div>
+      <details class="cli-eq"><summary>Équivalent en ligne de commande (meshtastic CLI)</summary><pre>${esc(cli(e))}</pre></details>
+      <p class="erreur" data-retour></p>
+    </details>`).join('') || '<div class="vide">Aucune équipe pour l’instant.</div>'}
+    <h3>Nouvelle équipe</h3>
+    <div class="parametres compact">
+      <label>Nom du canal <input id="eq-nom" maxlength="11" placeholder="Equipe1" title="11 caractères au plus, sans accent ni espace"></label>
+      <label>Description <input id="eq-desc" maxlength="120" placeholder="Équipe cynophile, secteur nord…"></label>
+    </div>
+    <label class="case"><input type="checkbox" id="eq-pos"> Partager les positions des membres sur ce canal</label>
+    <details><summary>Importer une clé existante (sinon une clé AES-256 est générée)</summary><input id="eq-cle" type="password" autocomplete="off" placeholder="clé base64 (16 ou 32 octets)"></details>
+    <div class="actions-prop"><button id="eq-creer" class="principal">Créer l’équipe</button></div>
+    <p class="erreur" id="eq-retour"></p>
+    <p class="note">Retirer un nœud n’efface le canal que s’il est joignable. Pour un nœud <b>perdu ou volé</b>, retirez-le puis faites <b>🔑 Nouvelle clé</b> : les autres membres la reçoivent, l’ancien nœud ne comprend plus rien. Les envois se suivent dans Programmer › Opérations récentes ; un nœud absent est repris toutes les 10 min pendant 2 h.</p></div>`;
+  const apres = (id, x, msg) => { ficheEquipes(id).then(() => { const b = z.querySelector(`[data-eq="${id}"] [data-retour]`); if (b) b.textContent = msg || `${x && x.taches ? x.taches.length + ' opération(s) lancée(s) : suivi dans Programmer › Opérations récentes.' : ''}`; }); if (x && x.taches && x.taches.length) suivreTaches(); };
+  $('#eq-creer').onclick = async () => {
+    try {
+      const x = await postJson('/api/equipes', { nom: $('#eq-nom').value, description: $('#eq-desc').value, positions: $('#eq-pos').checked, cle: $('#eq-cle').value || undefined });
+      ficheEquipes(x.id);
+    } catch (e) { $('#eq-retour').textContent = e.message; }
+  };
+  z.querySelectorAll('[data-eq]').forEach((bloc) => {
+    const id = bloc.dataset.eq, nom = bloc.querySelector('summary b').textContent;
+    const retour = (t) => { bloc.querySelector('[data-retour]').textContent = t; };
+    bloc.querySelector('[data-ajouter]').onclick = async () => {
+      const saisis = lireNumsSaisis(bloc.querySelector('[data-saisie]').value);
+      if (saisis.includes(null)) return retour('Identifiant de nœud non reconnu : !a1b2c3d4 ou numéro décimal');
+      const nums = [...new Set([...saisis, ...sel])];
+      if (!nums.length) return retour('Saisissez des identifiants ou cochez des nœuds dans Programmer');
+      try { apres(id, await postJson(`/api/equipes/${id}/membres`, { ajouter: nums })); } catch (e) { retour(e.message); }
+    };
+    bloc.querySelectorAll('[data-retirer]').forEach((b) => (b.onclick = async () => {
+      if (!(await confirmer(`Retirer le canal « ${nom} » de ${nomNoeud(Number(b.dataset.retirer))} ?`))) return;
+      try { apres(id, await postJson(`/api/equipes/${id}/membres`, { retirer: [Number(b.dataset.retirer)] })); } catch (e) { retour(e.message); }
+    }));
+    bloc.querySelector('[data-suivi]').onchange = async (ev) => { try { await postJson(`/api/equipes/${id}`, { suiviMin: Number(ev.target.value) }, 'PATCH'); retour(Number(ev.target.value) ? 'Suivi activé : la carte demande leur position aux membres à cet intervalle, et signale ceux qui ne répondent plus (onglet Réseau › Alertes).' : 'Suivi arrêté.'); } catch (e) { retour(e.message); } };
+    bloc.querySelectorAll('[data-voir-pos]').forEach((l) => (l.onclick = (ev) => { ev.preventDefault(); const [la, lo] = l.dataset.voirPos.split(',').map(Number); carte.setView([la, lo], Math.max(carte.getZoom(), 14)); }));
+    bloc.querySelector('[data-positions]').onchange = async (ev) => { try { await postJson(`/api/equipes/${id}`, { positions: ev.target.checked }, 'PATCH'); retour('Enregistré : « Renvoyer » ou une nouvelle clé l’appliquera aux nœuds déjà membres.'); } catch (e) { retour(e.message); } };
+    { const bp = bloc.querySelector('[data-positions-eq]'); if (bp) bp.onclick = async () => {
+      const eq = r.equipes.find((x) => x.id === id);
+      const nums = eq.membres.filter((m) => m.etat === 'membre').map((m) => m.num);
+      try { const x = await postJson('/api/demander-position', { nums }); retour(`📍 Position demandée à ${x.nb} nœud(s)${x.dureeS ? ` (sur ${x.dureeS} s)` : ''} : les réponses s’affichent en bas de l’écran.`); } catch (e) { retour(e.message); }
+    }; }
+    bloc.querySelector('[data-reappliquer]').onclick = async () => { try { apres(id, await postJson(`/api/equipes/${id}/reappliquer`, {})); } catch (e) { retour(e.message); } };
+    bloc.querySelector('[data-cle]').onclick = async () => {
+      const c = (await saisir(`Nouvelle clé pour « ${nom} » : elle sera envoyée à tous les membres ; tant qu’un nœud ne l’a pas reçue, il ne comprend plus les autres.\nTapez NOUVELLE CLE pour confirmer.`));
+      if (c == null) return;
+      try { apres(id, await postJson(`/api/equipes/${id}/nouvelle-cle`, { confirmation: c.trim().toUpperCase() })); } catch (e) { retour(e.message); }
+    };
+    bloc.querySelector('[data-export]').onclick = async () => {
+      if (!(await confirmer(`Exporter la clé du canal « ${nom} » ? Toute personne qui l’obtient peut lire les messages de l’équipe. L’export est inscrit dans l’historique.`))) return;
+      try {
+        const x = await api(`/api/equipes/${id}/export`);
+        const ex = bloc.querySelector('.export-eq');
+        ex.hidden = false;
+        ex.innerHTML = `<div class="alerte attention">Clé affichée une seule fois, ne la laissez pas à l’écran.</div>
+          <div class="actions-prop"><button data-fichier>💾 Fichier ${esc(x.nom)}.cle</button><button data-lien>📋 Copier le lien de canal</button><button data-masquer>Masquer</button></div>
+          <div class="note">Lien de canal (appli Meshtastic, ajoute le canal sans toucher aux autres) : <code class="coupe">${esc(x.url)}</code></div>`;
+        ex.querySelector('[data-fichier]').onclick = () => telechargerTexte(`${x.nom}.cle`, x.cle + '\n');
+        ex.querySelector('[data-lien]').onclick = async () => { try { await navigator.clipboard.writeText(x.url); retour('Lien copié.'); } catch { retour('Copie impossible : sélectionnez le lien.'); } };
+        ex.querySelector('[data-masquer]').onclick = () => { ex.hidden = true; ex.innerHTML = ''; };
+      } catch (e) { retour(e.message); }
+    };
+    bloc.querySelector('[data-supprimer]').onclick = async () => {
+      if (!(await confirmer(`Supprimer l’équipe « ${nom} » ? Le canal sera retiré de tous ses nœuds joignables.`))) return;
+      try { const x = await postJson(`/api/equipes/${id}`, { retirerDesNoeuds: true }, 'DELETE'); ficheEquipes(); if (x.taches.length) suivreTaches(); } catch (e) { retour(e.message); }
+    };
+  });
+}
+
+async function ficheFavoris() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.dataset.tache = '';
+  z.innerHTML = '<div class="vide">Recherche des routeurs que chaque relais entend…</div>';
+  let r;
+  try { r = await api('/api/admin-noeuds/favoris'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const rec = r.recepteurs;
+  z.innerHTML = `<h2>⭐ Favoris entre relais</h2>
+    <p class="note">Depuis le firmware <b>2.7.11</b>, un ROUTER, ROUTER_LATE ou CLIENT_BASE <b>ne décompte pas le saut</b> d’un paquet que lui transmet un routeur de ses favoris : les paquets vont plus loin avec la même limite de sauts. Le favori se pose sur le relais <b>qui reçoit</b> ; entre deux routeurs, dans les deux sens. La carte propose, pour chaque relais, les routeurs qu’il entend directement (7 derniers jours).</p>
+    ${rec.length ? `<div class="resume-tache">${rec.length} relais · ${r.totalAPoser} favori(s) à poser</div>` + rec.map((x) => `<div class="proposition fav-recepteur">
+      <div class="entete-prop"><label class="case"><input type="checkbox" data-rec="${x.num}" ${x.aPoser && x.admin !== false ? 'checked' : ''}> <b>${esc(x.nom)}</b></label><span class="marge">${esc(ROLES_FR_ADMIN[x.role] || x.role)}${x.firmware ? ' · ' + esc(x.firmware) : ''}</span></div>
+      ${x.firmwareOk === false ? '<div class="note" style="color:var(--attention)">⚠ Firmware antérieur au 2.7.11 : les favoris seront enregistrés mais ne feront gagner des sauts qu’après la mise à jour.</div>' : ''}
+      ${x.admin === false ? '<div class="note">⛔ Ce relais a refusé les commandes du module (clé d’administration absente) : à poser sur place, dans l’appli (appui long sur le nœud › Favori).</div>' : x.admin == null ? '<div class="note">Programmation à distance pas encore essayée sur ce relais.</div>' : ''}
+      <div class="fav-liste">${x.favoris.map((f) => `<label class="case"><input type="checkbox" data-fav="${x.num}:${f.num}" ${f.pose ? '' : 'checked'}> ${esc(f.nom)} <small>${esc(ROLES_FR_ADMIN[f.role] || f.role)} · ${f.snr != null ? fmt(f.snr, 1, ' dB') : 'SNR ?'} · ${f.preuve === 'entendu' ? 'entendu directement' : 'l’entend (liaison sans doute réciproque)'}${f.pose ? ' · ✔ posé ' + ilYa(f.pose) : ''}</small></label>`).join('')}</div>
+    </div>`).join('') : '<div class="vide">Aucun relais ROUTER, ROUTER_LATE ou CLIENT_BASE de votre secteur n’entend directement un routeur ces 7 derniers jours.</div>'}
+    ${rec.length ? '<div class="actions-prop"><button id="fav-poser" class="principal">Poser les favoris cochés</button><button id="fav-tout">Tout cocher</button></div>' : ''}
+    <p class="erreur" id="fav-retour"></p>
+    <p class="note">Les ordres partent en LoRa, chiffrés, un relais à la fois. Le firmware ne permet pas de relire les favoris à distance : la carte retient ceux qu’elle a posés. Un relais n’enregistre un favori que s’il connaît déjà ce nœud. Pour voir le gain : un traceroute avant et après montre moins de sauts consommés.</p>`;
+  const bt = $('#fav-tout');
+  if (bt) bt.onclick = () => z.querySelectorAll('input[data-rec], input[data-fav]').forEach((c) => (c.checked = true));
+  const bp = $('#fav-poser');
+  if (bp) bp.onclick = async () => {
+    const plan = {};
+    z.querySelectorAll('input[data-rec]:checked').forEach((c) => {
+      const R = c.dataset.rec;
+      const a = [...z.querySelectorAll(`input[data-fav^="${R}:"]:checked`)].map((x) => Number(x.dataset.fav.split(':')[1]));
+      if (a.length) plan[R] = { ajouter: a };
+    });
+    const cibles = Object.keys(plan).map(Number);
+    if (!cibles.length) { $('#fav-retour').textContent = 'Cochez au moins un relais et un favori.'; return; }
+    const nb = Object.values(plan).reduce((t, x) => t + x.ajouter.length, 0);
+    if (!(await confirmer(`Poser ${nb} favori(s) sur ${cibles.length} relais ? (un relais à la fois, par LoRa)`))) return;
+    try {
+      await postJson('/api/admin-noeuds/taches', { type: 'favoris', cibles, params: { plan } });
+      $('#fav-retour').textContent = 'Opération lancée : suivez-la dans Programmer › Opérations récentes.';
+      if (typeof rendreGestion === 'function') { rendreGestion(); suivreTaches(); }
+    } catch (e) { $('#fav-retour').textContent = e.message; }
+  };
+}
+
+// ---- Modèles de programmation : réglages types par usage, export / import YAML ----------------------------
+function resumeModele(m) {
+  const t = [];
+  const d = m.device || {}, l = m.lora || {}, p = m.position || {}, v = m.voisinage || {}, te = m.telemetrie || {};
+  if (d.role) t.push(`rôle ${d.role}`);
+  if (d.rebroadcastMode) t.push(`rediffusion ${d.rebroadcastMode}`);
+  if (d.nodeInfoBroadcastSecs != null) t.push(`fiche toutes les ${dureeCourte(d.nodeInfoBroadcastSecs)}`);
+  if (l.hopLimit) t.push(`${l.hopLimit} sauts`);
+  if (l.configOkToMqtt != null) t.push(`MQTT ${l.configOkToMqtt ? 'autorisé' : 'refusé'}`);
+  if (l.sx126xRxBoostedGain) t.push('réception boostée');
+  if (p.positionBroadcastSecs != null) t.push(`position ${p.positionBroadcastSmartEnabled ? 'intelligente, ' : ''}toutes les ${dureeCourte(p.positionBroadcastSecs)}`);
+  if (v.enabled != null) t.push(v.enabled ? `voisinage ${dureeCourte(v.updateInterval)}${v.transmitOverLora ? ' sur LoRa' : ''}` : 'sans voisinage');
+  if (te.deviceTelemetryEnabled != null || te.deviceUpdateInterval != null) t.push(te.deviceTelemetryEnabled === false ? 'sans télémétrie' : `télémétrie ${dureeCourte(te.deviceUpdateInterval)}`);
+  if (m.favoris) t.push('favoris des routeurs voisins');
+  return t.join(' · ');
+}
+async function ficheModeles(prerempli) {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.dataset.tache = '';
+  let r;
+  try { r = await api('/api/admin-noeuds/modeles'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const sel = [...gestion.selection];
+  z.innerHTML = `<h2>📋 Modèles de programmation</h2>
+    <p class="note">Un modèle regroupe les réglages d’un usage (rôle, sauts, intervalles, voisinage, télémétrie). Il s’applique en une fois, nœud par nœud, avec relecture de contrôle. Les canaux et la radio (région, preset, slot) ne sont jamais touchés : utilisez la vérification de conformité pour eux.</p>
+    ${sel.length ? `<div class="alerte info-lecture">${sel.length} nœud(s) coché(s) dans Programmer : ${esc(sel.slice(0, 6).map(nomNoeud).join(', '))}${sel.length > 6 ? '…' : ''}</div>` : '<div class="note">Cochez des nœuds dans Programmer pour pouvoir leur appliquer un modèle.</div>'}
+    ${r.modeles.map((m) => `<div class="proposition modele" data-id="${esc(m.id)}">
+      <div class="entete-prop"><b>${esc(m.nom)}</b><span class="marge">${m.integre ? 'intégré' : 'personnel' + (m.auteur ? ' · ' + esc(m.auteur) : '')}</span></div>
+      ${m.description ? `<div class="meta-longue">${esc(m.description)}</div>` : ''}
+      <div class="note">${esc(resumeModele(m))}</div>
+      <div class="actions-prop">${sel.length ? `<button class="mini principal" data-appliquer="${esc(m.id)}">Appliquer à ${sel.length} nœud(s)</button>` : ''}${etat.admin ? `<button class="mini" data-copier-modele="${esc(m.id)}">${m.integre ? 'Copier pour l’adapter' : 'Modifier'}</button>${m.integre ? '' : `<button class="mini" data-suppr-modele="${esc(m.id)}">Supprimer</button>`}` : ''}</div>
+    </div>`).join('')}
+    ${etat.admin ? `<h3>Nouveau modèle</h3>
+    <div class="actions-prop"><button id="mod-nouveau">Créer un modèle…</button><label class="bouton-lien">Importer un YAML (meshtastic --export-config)<input type="file" id="mod-fichier" accept=".yaml,.yml,text/yaml,text/plain" hidden></label></div>
+    <div id="mod-edition"></div>` : ''}
+    <p class="erreur" id="mod-retour"></p>
+    <p class="note">Export : dans l’éditeur d’un nœud (✏️ Modifier ses réglages), « ⬇ YAML » donne sa configuration au format de l’outil officiel, à appliquer en USB avec <span class="mono">meshtastic --configure fichier.yaml</span> (pratique pour préparer un relais de remplacement avant de monter au point haut).</p>`;
+  z.querySelectorAll('[data-appliquer]').forEach((b) => (b.onclick = async () => {
+    const m = r.modeles.find((x) => x.id === b.dataset.appliquer);
+    if (!(await confirmer(`Appliquer « ${m.nom} » à ${sel.length} nœud(s) ?\n${resumeModele(m)}\n\nLes nœuds enregistrent puis redémarrent si besoin ; comptez 1 à 3 min par nœud.`))) return;
+    try {
+      const x = await postJson(`/api/admin-noeuds/modeles/${encodeURIComponent(m.id)}/appliquer`, { cibles: sel });
+      $('#mod-retour').textContent = `${x.taches.length} opération(s) lancée(s)${x.favoris ? ' + pose des favoris' : ''} : suivez-les dans Programmer › Opérations récentes.`;
+      if (typeof rendreGestion === 'function') { rendreGestion(); suivreTaches(); }
+    } catch (e) { $('#mod-retour').textContent = e.message; }
+  }));
+  z.querySelectorAll('[data-copier-modele]').forEach((b) => (b.onclick = () => {
+    const m = r.modeles.find((x) => x.id === b.dataset.copierModele);
+    editerModele(m.integre ? { ...m, id: null, nom: m.nom + ' (copie)' } : m);
+  }));
+  z.querySelectorAll('[data-suppr-modele]').forEach((b) => (b.onclick = async () => {
+    if (!(await confirmer('Supprimer ce modèle ?'))) return;
+    try { await api('/api/admin-noeuds/modeles/' + encodeURIComponent(b.dataset.supprModele), { method: 'DELETE' }); ficheModeles(); } catch (e) { $('#mod-retour').textContent = e.message; }
+  }));
+  const bn = $('#mod-nouveau');
+  if (bn) bn.onclick = () => editerModele({ nom: '', device: {}, lora: {}, position: {}, voisinage: {}, telemetrie: {} });
+  const fi = $('#mod-fichier');
+  if (fi) fi.onchange = async () => {
+    const f = fi.files[0];
+    if (!f) return;
+    try {
+      const x = await api('/api/admin-noeuds/modeles/import', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: await f.text() });
+      editerModele({ nom: x.nom, ...x.reglages }, x.ignores.length ? `Ignorés (propres à un nœud) : ${x.ignores.join(', ')}. Seuls les réglages d’usage sont repris.` : '');
+    } catch (e) { $('#mod-retour').textContent = e.message; }
+    fi.value = '';
+  };
+  if (prerempli) editerModele(prerempli);
+}
+function editerModele(m, note = '') {
+  const zone = $('#mod-edition');
+  if (!zone) return;
+  const d = m.device || {}, l = m.lora || {}, p = m.position || {}, v = m.voisinage || {}, t = m.telemetrie || {};
+  const i = gestion.info || {};
+  const opt = (liste, val, fr = {}) => `<option value="">inchangé</option>` + liste.map((x) => `<option value="${x}" ${String(x) === String(val ?? '') ? 'selected' : ''}>${esc(fr[x] || x)}</option>`).join('');
+  const oui = (val) => `<option value="">inchangé</option><option value="1" ${val === true ? 'selected' : ''}>oui</option><option value="0" ${val === false ? 'selected' : ''}>non</option>`;
+  const dur = (liste, val) => `<option value="">inchangé</option>` + liste.map(([s, txt]) => `<option value="${s}" ${val === s ? 'selected' : ''}>${txt}</option>`).join('') + (val != null && !liste.some(([s]) => s === val) ? `<option value="${val}" selected>${dureeCourte(val)}</option>` : '');
+  zone.innerHTML = `<form id="f-modele" class="form-edit">
+    ${note ? `<div class="note">${esc(note)}</div>` : ''}
+    <div class="grille-edit"><label>Nom <input name="nom" maxlength="60" required value="${esc(m.nom || '')}"></label>
+      <label>Description <input name="description" maxlength="300" value="${esc(m.description || '')}"></label></div>
+    <h4>Appareil</h4><div class="grille-edit">
+      <label>Rôle <select name="role">${opt(i.roles || ['CLIENT', 'CLIENT_BASE', 'ROUTER', 'ROUTER_LATE'], d.role, ROLES_FR_ADMIN)}</select></label>
+      <label>Rediffusion <select name="rebroadcastMode">${opt(i.rediffusions || ['ALL'], d.rebroadcastMode, REDIFFUSION_FR)}</select></label>
+      <label>Fiche (NodeInfo) <select name="nodeInfoBroadcastSecs">${dur([[3600, '1 h'], [10800, '3 h'], [21600, '6 h'], [43200, '12 h'], [86400, '24 h']], d.nodeInfoBroadcastSecs)}</select></label></div>
+    <h4>LoRa (sans toucher à la fréquence ni au preset)</h4><div class="grille-edit">
+      <label>Sauts <select name="hopLimit">${opt([1, 2, 3, 4, 5, 6, 7], l.hopLimit)}</select></label>
+      <label>Autoriser MQTT <select name="configOkToMqtt">${oui(l.configOkToMqtt)}</select></label>
+      <label>Réception boostée <select name="sx126xRxBoostedGain">${oui(l.sx126xRxBoostedGain)}</select></label></div>
+    <h4>Position</h4><div class="grille-edit">
+      <label>Toutes les <select name="positionBroadcastSecs">${dur([[900, '15 min'], [1800, '30 min'], [3600, '1 h'], [10800, '3 h'], [21600, '6 h'], [43200, '12 h'], [86400, '24 h']], p.positionBroadcastSecs)}</select></label>
+      <label>Position intelligente <select name="positionBroadcastSmartEnabled">${oui(p.positionBroadcastSmartEnabled)}</select></label></div>
+    <h4>Voisinage et télémétrie</h4><div class="grille-edit">
+      <label>Voisinage <select name="voisinage"><option value="">inchangé</option><option value="off" ${v.enabled === false ? 'selected' : ''}>désactivé</option>${[[21600, true, 'toutes les 6 h, sur LoRa'], [43200, true, 'toutes les 12 h, sur LoRa'], [14400, false, 'toutes les 4 h, sans LoRa (passerelle MQTT)'], [21600, false, 'toutes les 6 h, sans LoRa']].map(([s, lo, txt]) => `<option value="${s}-${lo ? 1 : 0}" ${v.enabled && v.updateInterval === s && !!v.transmitOverLora === lo ? 'selected' : ''}>${txt}</option>`).join('')}</select></label>
+      <label>Télémétrie <select name="telemetrie"><option value="">inchangé</option><option value="off" ${t.deviceTelemetryEnabled === false ? 'selected' : ''}>désactivée</option>${[[1800, '30 min'], [3600, '1 h'], [10800, '3 h']].map(([s, txt]) => `<option value="${s}" ${t.deviceTelemetryEnabled !== false && t.deviceUpdateInterval === s ? 'selected' : ''}>toutes les ${txt}</option>`).join('')}</select></label>
+      <label class="case"><input type="checkbox" name="favoris" ${m.favoris ? 'checked' : ''}> Poser aussi les favoris des routeurs voisins</label></div>
+    <div class="actions-prop"><button type="submit" class="principal">Enregistrer le modèle</button><button type="button" id="mod-annuler">Annuler</button></div>
+  </form>`;
+  $('#mod-annuler').onclick = () => (zone.innerHTML = '');
+  $('#f-modele').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, vv = (n) => f.elements[n].value, num = (n) => (vv(n) === '' ? undefined : Number(vv(n))), bool = (n) => (vv(n) === '' ? undefined : vv(n) === '1');
+    const corps = {
+      id: m.id || undefined, nom: vv('nom'), description: vv('description'), favoris: f.favoris.checked,
+      device: { role: vv('role') || undefined, rebroadcastMode: vv('rebroadcastMode') || undefined, nodeInfoBroadcastSecs: num('nodeInfoBroadcastSecs') },
+      lora: { hopLimit: num('hopLimit'), configOkToMqtt: bool('configOkToMqtt'), sx126xRxBoostedGain: bool('sx126xRxBoostedGain') },
+      position: { positionBroadcastSecs: num('positionBroadcastSecs'), positionBroadcastSmartEnabled: bool('positionBroadcastSmartEnabled') },
+    };
+    if (vv('voisinage') === 'off') corps.voisinage = { enabled: false };
+    else if (vv('voisinage')) { const [s, lo] = vv('voisinage').split('-'); corps.voisinage = { enabled: true, updateInterval: Number(s), transmitOverLora: lo === '1' }; }
+    if (vv('telemetrie') === 'off') corps.telemetrie = { deviceTelemetryEnabled: false };
+    else if (vv('telemetrie')) corps.telemetrie = { deviceTelemetryEnabled: true, deviceUpdateInterval: Number(vv('telemetrie')) };
+    try { await postJson('/api/admin-noeuds/modeles', corps); ficheModeles(); } catch (err) { $('#mod-retour').textContent = err.message; }
+  };
+  zone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+// ---- Firmware 2.8 : préparation, nœuds renumérotés, clés en double -------------------------------------------
+async function ficheV28() {
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.dataset.tache = '';
+  z.innerHTML = '<div class="vide">Analyse…</div>';
+  let r;
+  try { r = await api('/api/admin-noeuds/v28'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const ligneN = (x) => `<b>${esc(x.nom)}</b> <small class="mono">${esc(x.id)}</small>`;
+  z.innerHTML = `<h2>Firmware 2.8</h2>
+    <div class="alerte attention">La 2.8.1 est encore une version de test (alpha) ; la 2.8.0 a été retirée. Meshtastic conseille d’attendre pour la plupart des nœuds. Les nœuds 2.7 et 2.8 continuent de se parler.</div>
+    <p class="note"><b>Ce qui change à la mise à jour :</b> le <b>numéro du nœud change</b> (calculé à partir de sa clé) ; <b>position et télémétrie sont coupées</b> sur les canaux publics ; les noms longs sont limités à 24 octets ; il faut souvent reconfigurer (système de fichiers modifié). <b>Avant de mettre à jour un relais</b> : exportez sa configuration (éditeur › ⬇ YAML + canaux) pour pouvoir la remettre en USB.</p>
+    <div class="grille"><div class="mesure"><span>Relais en 2.7</span><b>${r.n27}</b></div><div class="mesure"><span>Relais en 2.8</span><b>${r.n28}</b></div></div>
+    ${r.noeuds.length ? `<h3>Relais déjà en 2.8</h3>${r.noeuds.map((x) => `<div class="proposition"><div class="entete-prop"><b>${esc(x.nom)}</b><span class="marge">${esc(x.firmware || '')}</span></div>${x.problemes.length ? x.problemes.map((p) => `<div class="meta-longue" style="color:var(--${p.niveau === 'critique' ? 'critique' : 'attention'})">⚠ ${esc(p.texte)}</div>`).join('') : '<div class="note">✔ rien à signaler</div>'}<div class="actions-prop"><button class="mini" data-editer="${x.num}">✏️ Modifier ses réglages</button></div></div>`).join('')}` : ''}
+    <h3>Nœuds renumérotés</h3>
+    ${r.renumerotations.length ? r.renumerotations.map((x) => `<div class="proposition"><div>${ligneN(x.ancien)} → ${ligneN(x.nouveau)}</div>
+      <div class="note">Même clé publique. Ancien numéro vu pour la dernière fois ${ilYa(x.ancien.dernierVu)} ; nouveau apparu ${ilYa(x.nouveau.premierVu)}${x.nouveau.firmware ? ' (' + esc(x.nouveau.firmware) + ')' : ''}.</div>
+      ${etat.admin ? `<div class="actions-prop"><button class="mini principal" data-fusion="${x.ancien.num}:${x.nouveau.num}">Fusionner l’historique</button></div>` : ''}</div>`).join('') : '<div class="vide">Aucun : la carte repère un nœud renuméroté grâce à sa clé publique (fiche NodeInfo) dès qu’elle a reçu la fiche de l’ancien et du nouveau numéro.</div>'}
+    <p class="note">La fusion rattache au nouveau numéro l’historique de l’ancien (positions, télémétrie, paquets, liaisons, traceroutes), sa fiche d’installation, son état d’administration, ses favoris et les secteurs des gestionnaires. L’ancien numéro disparaît de la carte.</p>
+    ${r.doublons.length ? `<h3>Clés publiques en double</h3>${r.doublons.map((x) => `<div class="proposition"><div>${ligneN(x.ancien)} et ${ligneN(x.nouveau)}</div><div class="meta-longue" style="color:var(--attention)">Les deux sont actifs avec la même clé (configuration clonée, ${x.chevauchementH} h en même temps) : les messages directs et l’administration à distance peuvent partir vers le mauvais. Régénérez la clé de l’un des deux (appli › Sécurité › Régénérer la clé privée), puis remettez la clé d’administration.</div></div>`).join('')}` : ''}
+    ${r.historique.length ? `<h3>Fusions faites</h3>${r.historique.map((h) => `<div class="note">${new Date(h.heure).toLocaleString('fr-FR')} · ${esc(h.nom || '')} ${esc(h.idAncien)} → ${esc(h.idNouveau)} par ${esc(h.par || '?')}</div>`).join('')}` : ''}
+    <p class="erreur" id="v28-retour"></p>`;
+  z.querySelectorAll('[data-editer]').forEach((b) => (b.onclick = () => editeurReglages(Number(b.dataset.editer))));
+  z.querySelectorAll('[data-fusion]').forEach((b) => (b.onclick = async () => {
+    const [a, n] = b.dataset.fusion.split(':').map(Number);
+    if (!(await confirmer(`Fusionner ${nomNoeud(a)} dans ${nomNoeud(n)} ? L’historique de l’ancien numéro passe au nouveau ; c’est définitif.`))) return;
+    try {
+      const h = await postJson('/api/admin-noeuds/fusion', { ancien: a, nouveau: n });
+      $('#v28-retour').textContent = `Fusionné : ${Object.entries(h.lignes).map(([k, v]) => `${v} ${k}`).join(', ')}.`;
+      setTimeout(ficheV28, 1500);
+      chargerNoeuds().catch(() => {});
+    } catch (e) { $('#v28-retour').textContent = e.message; }
+  }));
+}
+
+async function rendreGestion() {
+  const z = $('#gestion');
+  if (!etat.gestion || !z) return;
+  try { gestion.info = await api('/api/admin-noeuds'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const i = gestion.info;
+  // Nouvelle version de firmware pour le module connecté (vérifiée au plus toutes les 10 min)
+  if (etat.admin && (!gestion.fw || Date.now() - gestion.fwHeure > 600000)) { gestion.fwHeure = Date.now(); api('/api/admin-noeuds/firmware').then((r) => { gestion.fw = r; if ($('#bandeau-fw') && !$('#bandeau-fw').innerHTML) rendreGestion(); }).catch(() => {}); }
+  const fw = gestion.fw, fwm = fw && fw.module, fwv = (x) => (x ? x.tag.replace(/^v/, '') : null);
+  const nouveauFw = fwm && fwm.firmware && fw.stable && !String(fwm.firmware).startsWith(fwv(fw.stable));
+  const cles = new Set(i.clesConnues);
+  const t = gestion.filtre.toLowerCase();
+  const limite = Date.now() - 7 * 86400000;
+  const liste = [...etat.noeuds.values()]
+    .filter((n) => (etat.admin ? (n.dernierVu || 0) > limite && dansZone(n) : gerable(n.num)))
+    .filter((n) => !t || [n.nomLong, n.nomCourt, n.id].some((x) => x && x.toLowerCase().includes(t)))
+    .sort((a, b) => (b.num === i.noeudLocal) - (a.num === i.noeudLocal) || (b.infrastructure - a.infrastructure) || (a.nomLong || a.id).localeCompare(b.nomLong || b.id));
+  const sel = [...gestion.selection];
+  const un = sel.length === 1 ? etat.noeuds.get(sel[0]) : null;
+  // Positions de défilement conservées (cocher un nœud ne doit pas remonter en haut de la liste)
+  const anc = z.querySelector('.liste-gestion');
+  const defil = { liste: anc ? anc.scrollTop : 0, panneaux: [...document.querySelectorAll('#panneau, #panneau .contenu-onglet, #gestion')].map((el) => [el, el.scrollTop]) };
+  z.innerHTML = `
+    <div id="bandeau-fw">${nouveauFw ? `<div class="alerte info-lecture">⬆️ Firmware <b>${esc(fwv(fw.stable))}</b> disponible pour ${esc(fwm.nom || 'le module')} (actuel ${esc(fwm.firmware)}).${fwm.ip ? ' <button class="mini principal" id="fw-maj">Mettre à jour…</button>' : ' Module relié par agent : mise à jour en USB ou depuis son réseau local.'}</div>` : fwm && fw.test && fw.stable && fw.test.tag !== fw.stable.tag ? `<div class="note">Firmware du module : ${esc(fwm.firmware || '?')} (stable à jour) · version test ${esc(fwv(fw.test))} disponible.</div>` : ''}</div>
+    ${!etat.admin ? `<div class="alerte">Compte gestionnaire : vous programmez les ${(etat.secteur || []).length} nœud(s) de votre secteur. Le module radio est géré par les administrateurs.</div>` : ''}
+    <div class="titre-programmer"><b>Nœuds Meshtastic</b><button class="mini" id="voir-cles" title="Quels modules peuvent programmer quel relais, et ce qu'il reste à faire sur place">🔑 Clés d’administration</button><button class="mini" id="voir-favoris" title="Favoris entre relais : sauts gratuits (firmware 2.7.11+)">⭐ Favoris relais</button>${etat.admin ? '<button class="mini" id="voir-equipes" title="Canal chiffré par équipe, posé ou retiré à distance sur les nœuds des intervenants">👥 Équipes</button>' : ''}<button class="mini" id="voir-modeles" title="Réglages types par usage, export et import YAML">📋 Modèles</button><button class="mini" id="voir-v28" title="Préparer le passage au firmware 2.8">🆕 Firmware 2.8</button><button class="mini" id="voir-trafic" title="Nœuds trop bavards et paquets réinjectés depuis MQTT">🚦 Contrôle du trafic</button>${etat.admin ? '<button class="mini" id="voir-fw" title="Version et mise à jour par le Wi-Fi des modules joignables en IP">⬆️ Firmware Wi-Fi</button>' : ''}${etat.config.meshcore ? '<button class="mini" id="vers-prog-mc">Répéteurs MeshCore →</button>' : ''}</div>
+    ${!i.connecte ? '<div class="alerte attention">Le module radio n’est pas connecté : connectez-le dans l’onglet Réseau, section Modules Wi-Fi.</div>' : ''}
+    <details class="aide-cle"${i.clePublique ? '' : ' open'}>
+      <summary>Autoriser le module à programmer vos nœuds</summary>
+      <p>Sur chaque nœud à gérer (appli Meshtastic, firmware 2.5 ou plus récent) : <b>Réglages › Sécurité › Clé d’administration</b>, collez la clé publique du module :</p>
+      ${i.clePublique ? `<div class="coords-l"><b class="mono cle">${esc(i.clePublique)}</b><button class="mini" data-copier="${esc(i.clePublique)}">Copier</button></div>` : '<p class="vide">Clé publique pas encore reçue (module non connecté).</p>'}
+      <p class="note">🔑 = le module connaît la clé publique du nœud (indispensable). 🛡️ = le nœud a déjà accepté une commande du module (sa clé est dans ses clés d’administration) ; ⛔ = il l’a refusée. Les ordres partent en LoRa, chiffrés, un nœud à la fois ; comptez 10 à 60 s par nœud.</p>
+    </details>
+    <div class="recherche"><input id="filtre-gestion" type="search" placeholder="Filtrer les nœuds…" value="${esc(gestion.filtre)}"><button class="mini" id="tout-select" title="Cocher tous les nœuds affichés">Tous</button><button class="mini" id="tout-deselect">Aucun</button></div>
+    <div class="liste-gestion">${liste.map((n) => `<label class="ligne-gestion ${gestion.selection.has(n.num) ? 'choisi' : ''}">
+      <input type="checkbox" data-num="${n.num}" ${gestion.selection.has(n.num) ? 'checked' : ''}>
+      <span class="titre">${esc(n.nomLong || n.id)} <small>${esc(n.nomCourt || '')} · ${esc(n.id)}${n.num === i.noeudLocal ? ' · module local' : ` · ${ilYa(n.dernierVu)}${n.sautsDernier === 0 ? ' · direct' + (n.snr != null ? ' ' + fmt(n.snr, 1, ' dB') : '') : n.sautsDernier != null ? ' · ' + n.sautsDernier + ' saut(s)' : ''}`}</small></span>
+      <span class="meta">${(i.administrables || {})[n.num] ? ((i.administrables || {})[n.num].ok ? '<span title="A déjà accepté les commandes du module">🛡️</span>' : '<span title="A refusé : clé du module absente de ses clés d’administration">⛔</span>') : ''}${n.num === i.noeudLocal ? '🏠' : cles.has(n.num) ? '🔑' : '<span title="Clé publique inconnue du module">–</span>'} ${n.infrastructure ? '◆' : ''}</span></label>`).join('') || '<div class="vide">Aucun nœud.</div>'}</div>
+    <h3>Actions ${sel.length ? `<span class="pastille">${sel.length} nœud${sel.length > 1 ? 's' : ''}</span>` : ''}</h3>
+    ${!sel.length ? '<div class="vide">Cochez un ou plusieurs nœuds.</div>' : `
+    <div class="actions-gestion">
+      ${un ? '<button data-act="editer" class="principal">✏️ Modifier ses réglages…</button><button data-act="lire">Lire sa configuration</button>' : ''}
+      <button data-act="canal">Canaux (0 à 7)…</button>
+      <button data-act="config">Rôle, sauts, balises…</button>
+      <button data-act="modele" title="Appliquer des réglages types (relais point haut, toit, mobile…)">📋 Appliquer un modèle…</button>
+      ${un ? '<button data-act="nom">Renommer…</button><button data-act="position">Position fixe…</button>' : ''}
+      <button data-act="redemarrer">Redémarrer</button>
+      ${un && etat.admin && un.num === i.noeudLocal ? '<button data-act="firmware" title="Mettre à jour le firmware du module connecté, par le Wi-Fi">⬆️ Firmware…</button>' : ''}
+      <button data-act="echanger" title="Envoie le nom et la clé publique du module au nœud (indispensable pour qu'il accepte les ordres)">Envoyer la fiche du module</button>
+    </div>
+    <div id="form-action"></div>`}
+    <h3>Conformité</h3>
+    <div class="actions-gestion"><button id="btn-verif" class="principal">✔ Vérifier que mes nœuds ont la même configuration…</button></div>
+    <div id="conf-auto"></div>
+    <div id="form-verif"></div>
+    <h3>Opérations récentes</h3>
+    <div id="taches-gestion">${rendreTaches(i.taches)}</div>`;
+  $('#btn-verif').onclick = () => formulaireVerif();
+  rendreConfAuto();
+  $('#filtre-gestion').oninput = (e) => { gestion.filtre = e.target.value; clearTimeout(gestion.minFiltre); gestion.minFiltre = setTimeout(() => { rendreGestion().then(() => { const f = $('#filtre-gestion'); f.focus(); f.setSelectionRange(f.value.length, f.value.length); }); }, 250); };
+  { const bc = $('#voir-cles'); if (bc) bc.onclick = ficheCles; }
+  { const b = $('#voir-favoris'); if (b) b.onclick = ficheFavoris; }
+  { const b = $('#voir-equipes'); if (b) b.onclick = () => ficheEquipes(); }
+  { const b = $('#voir-modeles'); if (b) b.onclick = () => ficheModeles(); }
+  { const b = $('#voir-v28'); if (b) b.onclick = ficheV28; }
+  { const b = $('#voir-trafic'); if (b) b.onclick = () => ficheTrafic(); }
+  { const bw = $('#voir-fw'); if (bw) bw.onclick = ficheFirmware; }
+  { const bf = $('#fw-maj'); if (bf) bf.onclick = ficheFirmware; }
+  const vp = $('#vers-prog-mc');
+  if (vp) vp.onclick = () => {
+    if (etat.vueReseau === 'meshtastic') { const b = document.querySelector('[data-reseau="les-deux"]'); if (b) b.click(); }
+    setTimeout(() => { const o = document.querySelector('.onglets button[data-onglet="meshcore"]'); if (o) o.click(); const g = document.querySelector('.sous-onglets-mc button[data-mc-vue="gestion"]'); if (g) g.click(); }, 100);
+  };
+  $('#tout-deselect').onclick = () => { gestion.selection.clear(); rendreGestion(); };
+  $('#tout-select').onclick = () => { liste.forEach((n) => gestion.selection.add(n.num)); rendreGestion(); };
+  const nl = z.querySelector('.liste-gestion');
+  if (nl) nl.scrollTop = defil.liste;
+  for (const [el, v] of defil.panneaux) el.scrollTop = v;
+  z.querySelectorAll('input[data-num]').forEach((c) => (c.onchange = () => { const n = Number(c.dataset.num); c.checked ? gestion.selection.add(n) : gestion.selection.delete(n); rendreGestion(); }));
+  z.querySelectorAll('[data-act]').forEach((b) => (b.onclick = () => formulaireAction(b.dataset.act)));
+  z.querySelectorAll('[data-voir-tache]').forEach((b) => (b.onclick = () => voirTache(b.dataset.voirTache)));
+  brancherArrets();
+  if (i.taches.some((t) => !t.fin)) suivreTaches();
+}
+
+function rendreTaches(liste) {
+  if (!liste || !liste.length) return '<div class="vide">Aucune.</div>';
+  return liste.slice(0, 8).map((t) => `<div class="tache">
+    <div class="entete-tache"><b>${esc(t.nom)}</b><small>${heure(t.debut)} · ${esc(t.auteur)}${t.fin ? '' : t.prochainEssai ? ` · insiste : prochain essai à ${heure(t.prochainEssai)}` : ' · en cours'}${t.insister && t.fin ? ' · insistance terminée' : ''}</small>${!t.fin && !t.arret ? `<button class="mini arreter" data-arreter-tache="${t.id}" title="Arrêter cette opération">■ Arrêter</button>` : ''}${t.fin && t.noeuds.some((x) => x.statut === 'echec' || x.statut === 'annule') ? `<button class="mini" data-relancer-tache="${t.id}" data-resume="${esc(t.resume || '')}" data-nb="${t.noeuds.filter((x) => x.statut === 'echec' || x.statut === 'annule').length}" title="Relancer avec les mêmes réglages, sur les nœuds en échec">↻ Réessayer</button><button class="mini" data-relancer-tache="${t.id}" data-insister="1" data-resume="${esc(t.resume || '')}" data-nb="${t.noeuds.filter((x) => x.statut === 'echec' || x.statut === 'annule').length}" title="Relancer, puis reprendre automatiquement les nœuds en échec toutes les 10 min pendant 2 h">🔁 Insister 2 h</button>` : ''}${(t.type === 'verifier' || (t.type === 'lire' && (!t.fin || t.noeuds.some((x) => x.statut === 'ok' || x.partiel)))) ? `<button class="mini" data-voir-tache="${t.id}">${t.fin ? 'Voir' : 'Suivre'}</button>` : ''}</div>
+    ${t.resume ? `<div class="resume-tache">${esc(t.resume)}</div>` : ''}
+    ${t.noeuds.map((n) => `<div class="etape ${n.statut}"><span>${esc(nomNoeud(n.num))}</span><span>${STATUTS_TACHE[n.statut]}${n.finNoeud && (n.statut === 'ok' || n.statut === 'echec') ? ` <small class="heure-etape">à ${heure(n.finNoeud)}</small>` : ''}${n.detail && n.statut !== 'ok' ? ' · ' + esc(n.detail) : ''}</span></div>`).join('')}
+  </div>`).join('');
+}
+
+function brancherArrets() {
+  $('#taches-gestion').querySelectorAll('[data-relancer-tache]').forEach((b) => (b.onclick = async () => {
+    const principal = /\(principal\)/.test(b.dataset.resume || '');
+    if (principal && !(await confirmer(`Réessayer « ${b.dataset.resume} » sur ${b.dataset.nb} nœud(s) ?\nLe canal PRINCIPAL sera réécrit (mêmes garde-fous : contrôle de fréquence et vérification).`))) return;
+    b.disabled = true; b.textContent = '↻ …';
+    try {
+      const t = await postJson(`/api/admin-noeuds/taches/${b.dataset.relancerTache}/relancer`, { insister: b.dataset.insister === '1' });
+      if (t && (t.type === 'lire' || t.type === 'verifier')) { gestion.lectureSuivie = t.id; voirTache(t.id); }
+      const i = await api('/api/admin-noeuds');
+      $('#taches-gestion').innerHTML = rendreTaches(i.taches);
+      brancherArrets();
+      suivreTaches();
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = b.dataset.insister === '1' ? '🔁 Insister 2 h' : '↻ Réessayer'; }
+  }));
+  $('#taches-gestion').querySelectorAll('[data-arreter-tache]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true; b.textContent = 'arrêt…';
+    try { await postJson(`/api/admin-noeuds/taches/${b.dataset.arreterTache}/arreter`, {}); } catch (e) { alert(e.message); }
+  }));
+}
+function suivreTaches() {
+  clearInterval(gestion.suivi);
+  gestion.suivi = setInterval(async () => {
+    if (!$('[data-vue="gestion"]').classList.contains('actif')) return;
+    try {
+      const i = await api('/api/admin-noeuds');
+      $('#taches-gestion').innerHTML = rendreTaches(i.taches);
+      $('#taches-gestion').querySelectorAll('[data-voir-tache]').forEach((b) => (b.onclick = () => voirTache(b.dataset.voirTache)));
+      brancherArrets();
+      // Lecture suivie dans le panneau de droite : mise à jour au fur et à mesure
+      const suivie = gestion.lectureSuivie && i.taches.find((t) => t.id === gestion.lectureSuivie);
+      if (suivie && !$('#fiche').hidden && $('#fiche-contenu').dataset.tache === suivie.id) {
+        if (suivie.fin && gestion.editerApres && gestion.editerApres.tache === suivie.id) { const num = gestion.editerApres.num; gestion.editerApres = null; gestion.lectureSuivie = null; editeurReglages(num); }
+        else { voirTache(suivie.id); if (suivie.fin) gestion.lectureSuivie = null; }
+      }
+      if (!i.taches.some((t) => !t.fin) && !gestion.lectureSuivie) clearInterval(gestion.suivi);
+    } catch { /* ignore */ }
+  }, 3000);
+}
+
+async function lancerTache(type, params, cibles = [...gestion.selection]) {
+  const zone = $('#retour-action');
+  try {
+    const ins = $('#insister-action');
+    const t = await postJson('/api/admin-noeuds/taches', { type, cibles, params, insister: !!(ins && ins.checked) });
+    if ((type === 'lire' || type === 'verifier') && t && t.id) { gestion.lectureSuivie = t.id; voirTache(t.id); }
+    if (zone) zone.textContent = 'Opération lancée : suivez-la ci-dessous.';
+    const i = await api('/api/admin-noeuds');
+    $('#taches-gestion').innerHTML = rendreTaches(i.taches);
+    brancherArrets();
+    suivreTaches();
+  } catch (e) { if (zone) zone.textContent = e.message; else alert(e.message); }
+}
+
+async function formulaireAction(act) {
+  const f = $('#form-action');
+  const num = [...gestion.selection][0];
+  const n = etat.noeuds.get(num);
+  const pied = '<label class="case-insister" title="Pour un nœud mobile, lointain ou souvent occupé : les nœuds en échec sont repris automatiquement"><input type="checkbox" id="insister-action"> Insister en cas d’échec : nouvel essai toutes les 10 min pendant 2 h</label><p class="erreur" id="retour-action"></p>';
+  if (act === 'editer') { f.innerHTML = pied; editeurReglages(num); return; }
+  if (act === 'lire') {
+    let l = null;
+    try { l = await api('/api/admin-noeuds/lecture/' + num); } catch { /* ignore */ }
+    if (l && !l.aucune && !l.complete) {
+      f.innerHTML = `<div class="alerte attention">Lecture précédente incomplète (${ilYa(l.heure)}).<br>
+        Déjà lu : ${esc(l.faites.join(', ') || 'rien')}${l.nbCanaux ? ` + ${l.nbCanaux} canal(aux)` : ''}.<br>Manque : <b>${esc(l.manquantes.join(', '))}</b>.</div>
+        <div class="actions-prop"><button id="lire-reprendre" class="principal">Reprendre (seulement ce qui manque)</button><button id="lire-tout">Tout relire</button></div>${pied}`;
+      $('#lire-reprendre').onclick = () => lancerTache('lire', { reprendre: true });
+      $('#lire-tout').onclick = () => lancerTache('lire', {});
+      return;
+    }
+    // Lecture ciblée : seulement les éléments cochés (bien plus rapide qu'une lecture complète)
+    const SECTIONS = [['device', 'Rôle et rediffusion'], ['lora', 'Radio LoRa (preset, sauts, fréquence, puissance)'], ['canaux', 'Canaux'], ['position', 'Position et intervalle'],
+      ['proprietaire', 'Nom'], ['materiel', 'Matériel et firmware'], ['telemetrie', 'Télémétrie'], ['voisinage', 'Module Voisinage'], ['securite', 'Sécurité (clés d’admin)'], ['trafic', 'Gestion du trafic (2.8)']];
+    const deja = l && !l.aucune ? `<p class="note">Dernière lecture ${ilYa(l.heure)}${l.faites && l.faites.length ? ` : ${esc(l.faites.join(', '))}` : ''}.</p>` : '';
+    f.innerHTML = `<form id="f-lire" class="form-gestion">
+      <p class="note">Cochez seulement ce que vous voulez vérifier : chaque élément est une demande radio (10 à 60 s selon la distance). Une lecture complète en fait une quinzaine.</p>
+      ${deja}
+      <div class="sections-lire">${SECTIONS.map(([k, t]) => `<label class="case"><input type="checkbox" name="s" value="${k}"> ${esc(t)}</label>`).join('')}</div>
+      <div class="actions-prop"><button type="submit" class="principal">Lire la sélection</button><button type="button" id="lire-tout">Tout lire</button></div>
+    </form>${pied}`;
+    $('#lire-tout').onclick = () => lancerTache('lire', {});
+    $('#f-lire').onsubmit = (e) => {
+      e.preventDefault();
+      const sections = [...e.target.querySelectorAll('[name=s]:checked')].map((x) => x.value);
+      if (!sections.length) { $('#retour-action').textContent = 'Cochez au moins un élément (ou « Tout lire »).'; return; }
+      lancerTache('lire', { sections });
+    };
+    return;
+  }
+  if (act === 'echanger') { f.innerHTML = pied; lancerTache('echanger', {}); return; }
+  if (act === 'modele') { f.innerHTML = pied; ficheModeles(); return; }
+  if (act === 'firmware') {
+    f.innerHTML = '<div class="vide">Recherche des versions…</div>';
+    let r;
+    try { r = await api('/api/admin-noeuds/firmware'); } catch (e) { f.innerHTML = `<div class="vide">${esc(e.message)}</div>${pied}`; return; }
+    const m = r.module || {};
+    const v = (x) => (x ? x.tag.replace(/^v/, '') : null);
+    const options = [r.stable ? [v(r.stable), `${v(r.stable)} · stable (${new Date(r.stable.date).toLocaleDateString('fr-FR')})`] : null, r.test && r.test.tag !== (r.stable || {}).tag ? [v(r.test), `${v(r.test)} · test / bêta (${new Date(r.test.date).toLocaleDateString('fr-FR')})`] : null].filter(Boolean);
+    const aJour = m.firmware && r.stable && String(m.firmware).startsWith(v(r.stable));
+    f.innerHTML = `<form id="f-act" class="form-gestion">
+      <p><b>${esc(m.nom || '')}</b> · ${esc(m.materiel || '?')} · firmware actuel <b>${esc(m.firmware || 'inconnu')}</b>${aJour ? ' <span class="badge actif">à jour (stable)</span>' : r.stable ? ` <span class="badge attente">${esc(v(r.stable))} disponible</span>` : ''}</p>
+      ${!m.ip ? '<div class="alerte attention">Ce module est relié par un agent ou en USB : la mise à jour par Wi-Fi n’est possible que pour un module joignable en IP depuis le NAS (même réseau local).</div>' : ''}
+      <label>Version à installer <select name="version">${options.map(([val, lib]) => `<option value="${esc(val)}">${esc(lib)}</option>`).join('')}</select></label>
+      <div class="alerte attention">Mise à jour par le Wi-Fi (ESP32, firmware 2.7.18 ou plus récent) : le module redémarre sur son chargeur, reçoit le firmware (≈ 2 Mo), le vérifie puis redémarre. Comptez 2 à 4 minutes, pendant lesquelles la carte ne reçoit plus rien de ce module. Les réglages sont conservés. Une version « test » peut contenir des défauts.</div>
+      <label>Pour confirmer, tapez <b>METTRE A JOUR</b> <input name="confirmation" autocomplete="off" placeholder="METTRE A JOUR"></label>
+      <div class="actions-prop"><button type="submit" class="principal" ${!m.ip || !options.length ? 'disabled' : ''}>Mettre à jour</button></div>
+    </form>${pied}`;
+    $('#f-act').onsubmit = (e) => {
+      e.preventDefault();
+      if (e.target.confirmation.value.trim().toUpperCase() !== 'METTRE A JOUR') { alert('Tapez METTRE A JOUR pour confirmer'); return; }
+      lancerTache('firmware', { version: e.target.version.value });
+    };
+    return;
+  }
+  if (act === 'redemarrer') {
+    f.innerHTML = `<p>Redémarrer ${gestion.selection.size} nœud(s) ?</p><div class="actions-prop"><button id="ok-action" class="principal">Redémarrer</button></div>${pied}`;
+    $('#ok-action').onclick = () => lancerTache('redemarrer', {});
+    return;
+  }
+  if (act === 'canal') {
+    f.innerHTML = `<form id="f-act" class="form-gestion">
+      <label>Emplacement <select name="index"><option value="0">Canal 0 · principal ⚠️</option>${[1, 2, 3, 4, 5, 6, 7].map((k) => `<option value="${k}" ${k === 1 ? 'selected' : ''}>Canal ${k}</option>`).join('')}</select></label>
+      <div class="garde-principal" hidden>
+        <div class="alerte attention"><b>Canal principal :</b> le nœud y envoie sa fiche, sa position et sa télémétrie. Garde-fous appliqués à chaque nœud :
+          relecture de son réglage LoRa (refus si sa fréquence dépend du nom du canal 0), écriture, puis relecture 20 s après pour vérifier qu’il répond toujours.
+          Compter 1 à 2 minutes par nœud.</div>
+        <label>Pour confirmer, tapez <b>CANAL 0</b> <input name="confirmation" autocomplete="off" placeholder="CANAL 0"></label>
+      </div>
+      <label>Nom (11 car. max) <input name="nom" maxlength="11" required></label>
+      <label>Clé <select name="typeCle"><option value="defaut">Clé publique par défaut (AQ==)</option><option value="aleatoire">Nouvelle clé aléatoire (AES-256)</option><option value="saisie">Saisir une clé base64…</option></select></label>
+      <label class="cle-saisie" hidden>Clé base64 <input name="psk" placeholder="ex. 1PG7OiApB1nwvP+rz05pAQ=="></label>
+      <label>Précision de la position sur ce canal <select name="precision">
+        ${[[32, 'précise'], [19, '≈ 45 m'], [18, '≈ 91 m'], [17, '≈ 182 m'], [16, '≈ 364 m'], [15, '≈ 729 m'], [14, '≈ 1,5 km'], [13, '≈ 2,9 km'], [0, 'pas de position']].map(([v, t]) => `<option value="${v}" ${v === 17 ? 'selected' : ''}>${t}${v && v < 32 ? ` (${v} bits)` : ''}</option>`).join('')}</select></label>
+      <label class="case"><input type="checkbox" name="montant"> Envoi vers MQTT (montant)</label>
+      <label class="case"><input type="checkbox" name="descendant"> Réception depuis MQTT (descendant)</label>
+      <div class="actions-prop"><button type="submit" class="principal">Appliquer à ${gestion.selection.size} nœud(s)</button><button type="button" id="suppr-canal">Supprimer ce canal</button></div>
+      <p class="note">Pour un canal privé partagé, choisissez « Nouvelle clé » une fois puis réutilisez la même clé (affichée ici après application) sur les autres nœuds et votre module.</p>
+      ${pied}</form>`;
+    const fo = $('#f-act');
+    fo.typeCle.onchange = () => (fo.querySelector('.cle-saisie').hidden = fo.typeCle.value !== 'saisie');
+    const majPrincipal = () => {
+      const p = fo.index.value === '0';
+      fo.querySelector('.garde-principal').hidden = !p;
+      $('#suppr-canal').hidden = p;
+    };
+    fo.index.onchange = majPrincipal;
+    fo.onsubmit = async (e) => {
+      e.preventDefault();
+      let psk = 'AQ==';
+      if (fo.typeCle.value === 'aleatoire') { const b = new Uint8Array(32); crypto.getRandomValues(b); psk = btoa(String.fromCharCode(...b)); }
+      if (fo.typeCle.value === 'saisie') psk = fo.psk.value.trim();
+      if (!/^[A-Za-z0-9+/=]{2,64}$/.test(psk)) { $('#retour-action').textContent = 'Clé invalide'; return; }
+      fo.typeCle.value = 'saisie'; fo.psk.value = psk; fo.querySelector('.cle-saisie').hidden = false; // garde la clé pour les autres nœuds
+      const index = Number(fo.index.value);
+      if (index === 0) {
+        if (fo.confirmation.value.trim().toUpperCase() !== 'CANAL 0') { $('#retour-action').textContent = 'Tapez « CANAL 0 » pour confirmer le changement du canal principal'; fo.confirmation.focus(); return; }
+        if (!(await confirmer(`Changer le canal PRINCIPAL en « ${fo.nom.value} » sur ${gestion.selection.size} nœud(s) ?`))) return;
+      }
+      lancerTache('canal', { index, nom: fo.nom.value, psk, precision: Number(fo.precision.value), montant: fo.montant.checked, descendant: fo.descendant.checked, role: index === 0 ? 'PRIMARY' : 'SECONDARY', confirmation: index === 0 ? 'CANAL 0' : undefined });
+      if (index === 0) fo.confirmation.value = '';
+    };
+    $('#suppr-canal').onclick = async () => { if ((await confirmer(`Supprimer le canal ${fo.index.value} sur ${gestion.selection.size} nœud(s) ?`))) lancerTache('canal', { index: Number(fo.index.value), role: 'DISABLED' }); };
+    return;
+  }
+  if (act === 'config') {
+    const i = gestion.info;
+    f.innerHTML = `<form id="f-act" class="form-gestion">
+      <p class="note">Laissez « inchangé » ce que vous ne voulez pas modifier. Le nœud redémarre après une modification de rôle ou de LoRa.</p>
+      <label>Rôle <select name="role"><option value="">inchangé</option>${i.roles.map((r) => `<option value="${r}">${ROLES_FR_ADMIN[r] || r}</option>`).join('')}</select></label>
+      <label>Rediffusion (rebroadcast) <select name="rebroadcastMode"><option value="">inchangé</option>${(i.rediffusions || []).map((r) => `<option value="${r}">${REDIFFUSION_FR[r] || r}</option>`).join('')}</select></label>
+      <label>Nombre de sauts (hop limit) <select name="hopLimit"><option value="">inchangé</option>${[1, 2, 3, 4, 5, 6, 7].map((k) => `<option value="${k}">${k}${k === 3 ? ' (conseillé)' : ''}</option>`).join('')}</select></label>
+      <label>Intervalle des positions (s) <input name="positionBroadcastSecs" type="number" min="0" placeholder="inchangé"></label>
+      <label>Intervalle des infos nœud (s) <input name="nodeInfoBroadcastSecs" type="number" min="0" placeholder="inchangé"></label>
+      <label>Module Voisinage (NeighborInfo) <select name="voisinage"><option value="">inchangé</option><option value="lora-21600">activé, toutes les 6 h, aussi sur LoRa (conseillé pour les relais)</option><option value="lora-43200">activé, toutes les 12 h, aussi sur LoRa</option><option value="mqtt-14400">activé, toutes les 4 h, sans LoRa (passerelles MQTT)</option><option value="off">désactivé</option></select></label>
+      <div class="actions-prop"><button type="submit" class="principal">Appliquer à ${gestion.selection.size} nœud(s)</button></div>${pied}</form>`;
+    $('#f-act').onsubmit = async (e) => {
+      e.preventDefault();
+      const fo = e.target;
+      const ops = [];
+      const dev = {}; if (fo.role.value) dev.role = fo.role.value; if (fo.rebroadcastMode.value) dev.rebroadcastMode = fo.rebroadcastMode.value; if (fo.nodeInfoBroadcastSecs.value) dev.nodeInfoBroadcastSecs = Number(fo.nodeInfoBroadcastSecs.value);
+      if (Object.keys(dev).length) ops.push({ section: 'device', valeurs: dev });
+      if (fo.hopLimit.value) ops.push({ section: 'lora', valeurs: { hopLimit: Number(fo.hopLimit.value) } });
+      if (fo.positionBroadcastSecs.value) ops.push({ section: 'position', valeurs: { positionBroadcastSecs: Number(fo.positionBroadcastSecs.value) } });
+      if (fo.voisinage.value) {
+        const [mode, iv] = fo.voisinage.value.split('-');
+        ops.push({ section: 'voisinage', valeurs: mode === 'off' ? { enabled: false } : { enabled: true, updateInterval: Number(iv), transmitOverLora: mode === 'lora' } });
+      }
+      if (!ops.length) { $('#retour-action').textContent = 'Rien à modifier'; return; }
+      for (const o of ops) await lancerTache('config', o);
+    };
+    return;
+  }
+  if (act === 'nom') {
+    f.innerHTML = `<form id="f-act" class="form-gestion">
+      <label>Nom long <input name="nomLong" maxlength="39" value="${esc(n ? n.nomLong || '' : '')}"></label>
+      <label>Nom court (4 car.) <input name="nomCourt" maxlength="4" value="${esc(n ? n.nomCourt || '' : '')}"></label>
+      <div class="actions-prop"><button type="submit" class="principal">Renommer</button></div>${pied}</form>`;
+    $('#f-act').onsubmit = (e) => { e.preventDefault(); lancerTache('nom', { nomLong: e.target.nomLong.value, nomCourt: e.target.nomCourt.value }); };
+    return;
+  }
+  if (act === 'position') {
+    f.innerHTML = `<form id="f-act" class="form-gestion">
+      <div class="grille-2"><label>Latitude <input name="lat" required value="${n && n.lat != null ? n.lat.toFixed(6) : ''}"></label><label>Longitude <input name="lon" required value="${n && n.lon != null ? n.lon.toFixed(6) : ''}"></label></div>
+      <label>Altitude (m, facultatif) <input name="alt" type="number" value="${n && n.alt != null ? n.alt : ''}"></label>
+      <div class="actions-prop"><button type="button" id="choisir-pos">📍 Choisir sur la carte</button><button type="submit" class="principal">Définir la position fixe</button><button type="button" id="retirer-pos">Retirer la position fixe</button></div>
+      <p class="note">Le nœud passe en position fixe : il diffuse ces coordonnées au lieu de celles de son GPS. Astuce : la barre de recherche et le clic droit donnent les coordonnées d’un lieu.</p>${pied}</form>`;
+    const fo = $('#f-act');
+    const marquer = () => {
+      const lat = Number(String(fo.lat.value).replace(',', '.')), lon = Number(String(fo.lon.value).replace(',', '.'));
+      if (gestion.marqueurPos) gestion.marqueurPos.remove();
+      if (Number.isFinite(lat) && Number.isFinite(lon)) gestion.marqueurPos = L.marker([lat, lon], { icon: L.divIcon({ className: 'repere-lieu', html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] }), pane: 'traces' }).addTo(carte).bindTooltip('Nouvelle position', { className: 'info', permanent: true, direction: 'top' });
+    };
+    fo.lat.oninput = fo.lon.oninput = marquer;
+    $('#choisir-pos').onclick = () => {
+      $('#choisir-pos').textContent = 'Cliquez sur la carte…';
+      document.body.classList.add('mode-viseur');
+      carte.once('click', (ev) => {
+        document.body.classList.remove('mode-viseur');
+        fo.lat.value = ev.latlng.lat.toFixed(6); fo.lon.value = ev.latlng.lng.toFixed(6); fo.alt.value = '';
+        $('#choisir-pos').textContent = '📍 Choisir sur la carte';
+        marquer();
+      });
+    };
+    fo.onsubmit = async (e) => {
+      e.preventDefault();
+      const lat = Number(String(fo.lat.value).replace(',', '.')), lon = Number(String(fo.lon.value).replace(',', '.'));
+      if (!(await confirmer(`Définir la position fixe de ${n ? n.nomLong || n.id : 'ce nœud'} à ${lat.toFixed(5)}, ${lon.toFixed(5)} ?`))) return;
+      lancerTache('position', { lat, lon, alt: fo.alt.value });
+    };
+    $('#retirer-pos').onclick = async () => { if ((await confirmer('Retirer la position fixe (le nœud reprendra son GPS) ?'))) lancerTache('position', { retirer: true }); };
+    marquer();
+  }
+}
+
+// Conformité automatique : état et dernier rapport
+async function rendreConfAuto() {
+  const z = $('#conf-auto');
+  if (!z) return;
+  let c;
+  try { c = await api('/api/admin-noeuds/conformite-auto'); } catch { z.innerHTML = ''; return; }
+  const d = c.dernier;
+  z.innerHTML = c.actif ? `<div class="note conf-auto">🌙 Vérification automatique chaque nuit vers ${c.heure} h · référence ${esc(nomNoeud(c.reference))} · ${c.ciblesEffectives.length} nœud(s) · ${esc(c.elements.length + ' élément(s)')}
+      ${d ? `<br>Dernière : ${new Date(d.date).toLocaleString('fr-FR')} — <b style="color:${d.ecarts.length ? 'var(--attention)' : 'var(--ok)'}">${d.conformes.length} conforme(s), ${d.ecarts.length} avec écarts</b>${d.nonLus.length ? `, ${d.nonLus.length} non lu(s)` : ''}${d.ecarts.length ? '<br>' + d.ecarts.map((e) => `⚠️ ${esc(nomNoeud(e.num))} : ${esc(e.ecarts.map((x) => (NOMS_ECARTS[x.element] || x.element) + ' ' + x.trouve + ' au lieu de ' + x.attendu).join(' ; '))}`).join('<br>') : ''}${d.nonLus.length ? '<br><small>Non lus : ' + esc(d.nonLus.map((x) => nomNoeud(x.num)).join(', ')) + '</small>' : ''}` : '<br>Pas encore faite.'}
+      <div class="actions-prop">${etat.admin ? '<button class="mini" id="conf-maintenant">Lancer maintenant</button><button class="mini" id="conf-off">Désactiver</button>' : ''}${d ? `<button class="mini" data-voir-tache="${d.tache}">Voir le rapport</button>` : ''}</div></div>`
+    : (etat.admin ? '<p class="note">🌙 Astuce : cochez « Refaire chaque nuit » dans le formulaire de vérification pour un contrôle automatique.</p>' : '');
+  const bm = $('#conf-maintenant'); if (bm) bm.onclick = async () => { try { const r = await postJson('/api/admin-noeuds/conformite-auto', { maintenant: true }); gestion.lectureSuivie = r.tache; voirTache(r.tache); suivreTaches(); } catch (e) { alert(e.message); } };
+  const bo = $('#conf-off'); if (bo) bo.onclick = async () => { await postJson('/api/admin-noeuds/conformite-auto', { actif: false }); rendreConfAuto(); };
+  const bv = z.querySelector('[data-voir-tache]'); if (bv) bv.onclick = () => { gestion.lectureSuivie = bv.dataset.voirTache; voirTache(bv.dataset.voirTache); };
+}
+function formulaireVerif() {
+  const i = gestion.info, z = $('#form-verif');
+  const adm = Object.entries(i.administrables || {}).filter(([, v]) => v.ok).map(([k]) => Number(k)).filter((k) => k !== i.noeudLocal);
+  const sel = [...gestion.selection].filter((k) => k !== i.noeudLocal);
+  const refs = [...new Set([i.noeudLocal, ...(i.lectures || []).filter((l) => l.complete).map((l) => l.num)])].filter((k) => k != null);
+  const defaut = ['canaux', 'precision', 'frequence', 'preset', 'rediffusion'];
+  z.innerHTML = `<form id="f-verif" class="form-gestion">
+    <label>Référence (la bonne configuration) <select name="reference">${refs.map((k) => `<option value="${k}">${esc(nomNoeud(k))}${k === i.noeudLocal ? ' · module connecté' : ' · lecture complète'}</option>`).join('')}</select></label>
+    <fieldset class="elements-verif"><legend>Éléments à comparer</legend>
+      ${Object.entries(i.elements || {}).map(([k, nom]) => `<label class="case"><input type="checkbox" name="el" value="${k}" ${defaut.includes(k) ? 'checked' : ''}> ${esc(nom)}</label>`).join('')}
+      <p class="note">Le rôle, le nom, la position… ne sont jamais comparés.</p></fieldset>
+    <fieldset><legend>Nœuds à vérifier</legend>
+      <label class="case"><input type="radio" name="quels" value="admin" ${sel.length ? '' : 'checked'}> Détectés automatiquement : ceux qui acceptent déjà les commandes du module 🛡️ (${adm.length})</label>
+      <small class="note">${adm.length ? esc(adm.map(nomNoeud).join(', ')) : 'Aucun encore : un nœud est détecté dès qu’il a répondu à une lecture ou une commande.'}</small>
+      <label class="case"><input type="radio" name="quels" value="sel" ${sel.length ? 'checked' : ''}> Les nœuds cochés dans la liste (${sel.length})</label>
+    </fieldset>
+    <label class="case"><input type="checkbox" name="nuit"> Refaire cette vérification <b>chaque nuit</b> (vers 2 h), avec ces réglages</label>
+    <label class="ligne-age">Réutiliser les lectures de moins de <input name="age" type="number" min="0" max="168" value="24"> h <small>(0 = tout relire par LoRa)</small></label>
+    <div class="actions-prop"><button type="submit" class="principal">Lancer la vérification</button><button type="button" id="annuler-verif">Fermer</button></div>
+    <p class="erreur" id="retour-verif"></p>
+    <p class="note">Seuls les éléments nécessaires sont lus (ex. canaux + LoRa), nœud par nœud. Le rapport s’affiche à droite au fur et à mesure.</p>
+  </form>`;
+  $('#annuler-verif').onclick = () => (z.innerHTML = '');
+  $('#f-verif').onsubmit = async (e) => {
+    e.preventDefault();
+    const fo = e.target;
+    const elements = [...fo.querySelectorAll('input[name="el"]:checked')].map((x) => x.value);
+    const cibles = fo.quels.value === 'sel' ? sel : adm;
+    if (!elements.length) { $('#retour-verif').textContent = 'Cochez au moins un élément'; return; }
+    if (!cibles.length) { $('#retour-verif').textContent = 'Aucun nœud à vérifier'; return; }
+    try {
+      if (fo.nuit.checked) { await postJson('/api/admin-noeuds/conformite-auto', { actif: true, reference: Number(fo.reference.value), elements, mode: fo.quels.value === 'sel' ? 'liste' : 'admin', cibles }); rendreConfAuto(); }
+      const t = await postJson('/api/admin-noeuds/taches', { type: 'verifier', cibles, params: { reference: Number(fo.reference.value), elements, ageMaxHeures: Number(fo.age.value) || 0 } });
+      gestion.lectureSuivie = t.id; voirTache(t.id);
+      const i2 = await api('/api/admin-noeuds');
+      $('#taches-gestion').innerHTML = rendreTaches(i2.taches); brancherArrets(); suivreTaches();
+    } catch (err) { $('#retour-verif').textContent = err.message; }
+  };
+}
+const NOMS_ECARTS = { canaux: 'Canaux', precision: 'Précision', mqtt: 'MQTT', frequence: 'Fréquence', preset: 'Preset', sauts: 'Sauts', puissance: 'Puissance', rediffusion: 'Rediffusion' };
+function rapportVerif(t) {
+  const defil = [$('#fiche').scrollTop, $('#fiche-contenu').scrollTop];
+  const [ref, ...autres] = t.noeuds;
+  const conf = autres.filter((n) => n.statut === 'ok' && n.resultat && n.resultat.conforme).length;
+  const ecart = autres.filter((n) => n.statut === 'ok' && n.resultat && !n.resultat.conforme).length;
+  const ko = autres.filter((n) => n.statut === 'echec' || n.statut === 'annule').length;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  $('#fiche-contenu').innerHTML = `
+    <h2>Vérification de conformité</h2><div class="ident">${esc(t.resume || '')}</div>
+    ${!t.fin ? `<div class="alerte info-lecture"><span class="sablier"></span> Vérification en cours… <small>(${autres.filter((n) => n.statut !== 'en_attente' && n.statut !== 'en_cours').length}/${autres.length} nœuds)</small> <button class="mini arreter" data-arreter-tache="${t.id}">■ Arrêter</button></div>` : ''}
+    <div class="bilan-verif"><span class="ok">✔ ${conf} conforme(s)</span><span class="ecart">⚠ ${ecart} avec écarts</span><span class="ko">✖ ${ko} non vérifié(s)</span></div>
+    <div class="ligne-verif ref"><b>Référence : ${esc(nomNoeud(ref.num))}</b><span>${esc(STATUTS_TACHE[ref.statut])}${ref.statut !== 'ok' && ref.detail ? ' · ' + esc(ref.detail) : ''}</span></div>
+    ${autres.map((n) => {
+      const r = n.resultat;
+      const etatTxt = n.statut === 'ok' ? (r.conforme ? '<span class="ok">✔ conforme</span>' : `<span class="ecart">⚠ ${r.ecarts.length} écart(s)</span>`) : n.statut === 'en_cours' ? `<span class="sablier"></span> ${esc(n.detail || '')}` : n.statut === 'en_attente' ? 'en attente' : `<span class="ko">✖ ${esc(STATUTS_TACHE[n.statut])}</span>`;
+      return `<div class="ligne-verif"><b data-ouvrir="${n.num}">${esc(nomNoeud(n.num))}</b><span>${etatTxt}</span>
+        ${n.statut === 'ok' && !r.conforme ? `<table class="ecarts"><tr><th></th><th>Attendu</th><th>Trouvé</th></tr>${r.ecarts.map((e) => `<tr><td>${esc(NOMS_ECARTS[e.element] || e.element)} · ${esc(e.objet)}</td><td>${esc(e.attendu)}</td><td class="ecart">${esc(e.trouve)}</td></tr>`).join('')}</table>` : ''}
+        ${(n.statut === 'echec' || n.statut === 'annule') && n.detail ? `<small class="note">${esc(n.detail.slice(0, 160))}</small>` : ''}</div>`;
+    }).join('')}
+    ${t.fin && ko ? '<p class="note">Les nœuds non vérifiés peuvent être relancés avec « ↻ Réessayer » dans Opérations récentes.</p>' : ''}`;
+  $('#fiche-contenu').dataset.tache = t.id;
+  $('#fiche').scrollTop = defil[0]; $('#fiche-contenu').scrollTop = defil[1];
+  $('#fiche-contenu').querySelectorAll('[data-ouvrir]').forEach((b) => (b.onclick = () => ouvrirFiche(Number(b.dataset.ouvrir))));
+  const ba = $('#fiche-contenu').querySelector('[data-arreter-tache]');
+  if (ba) ba.onclick = async () => { ba.disabled = true; ba.textContent = 'arrêt…'; try { await postJson(`/api/admin-noeuds/taches/${t.id}/arreter`, {}); } catch (e) { alert(e.message); } };
+  if (!t.fin) { gestion.lectureSuivie = t.id; suivreTaches(); }
+}
+// ---- Éditeur des réglages d'un nœud (module connecté ou nœud distant) ---------------------------
+const PRECISIONS = [[32, 'précise'], [19, '≈ 45 m'], [18, '≈ 91 m'], [17, '≈ 182 m'], [16, '≈ 364 m'], [15, '≈ 729 m'], [14, '≈ 1,5 km'], [13, '≈ 2,9 km'], [0, 'pas de position']];
+async function editeurReglages(num) {
+  const i = gestion.info || await api('/api/admin-noeuds');
+  const local = num === i.noeudLocal;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.dataset.tache = '';
+  z.innerHTML = '<div class="vide">Chargement…</div>';
+  let r;
+  try { r = await api(`/api/admin-noeuds/lecture/${num}/detail`); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const lireDabord = async (reprendre) => {
+    try {
+      const t = await postJson('/api/admin-noeuds/taches', { type: 'lire', cibles: [num], params: reprendre ? { reprendre: true } : {} });
+      gestion.editerApres = { num, tache: t.id }; gestion.lectureSuivie = t.id; voirTache(t.id); suivreTaches();
+    } catch (e) { alert(e.message); }
+  };
+  if (r.aucune || !r.complet || !r.lora || !r.device || !r.position) {
+    z.innerHTML = `<h2>Modifier les réglages · ${esc(nomNoeud(num))}</h2>
+      <p>${r.aucune ? 'Sa configuration n’a pas encore été lue.' : 'La dernière lecture est incomplète.'} Le programme la lit d’abord${local ? ' (module connecté : quelques secondes)' : ' par LoRa (1 à 3 min)'}, puis ouvre l’éditeur tout seul.</p>
+      <div class="actions-prop"><button id="ed-lire" class="principal">Lire la configuration</button>${!r.aucune ? '<button id="ed-reprendre">Reprendre la lecture</button>' : ''}</div>`;
+    $('#ed-lire').onclick = () => lireDabord(false);
+    if ($('#ed-reprendre')) $('#ed-reprendre').onclick = () => lireDabord(true);
+    return;
+  }
+  const lo = r.lora, d = r.device, po = r.position;
+  const vo = r.voisinage, te = r.telemetrie, tr = r.trafic;
+  const v28 = fwAuMoins(r.firmware, '2.8.0'), v281 = fwAuMoins(r.firmware, '2.8.1');
+  const nPos = etat.noeuds.get(num);
+  const posActuelle = nPos && nPos.lat != null ? { lat: nPos.lat, lon: nPos.lon, alt: nPos.alt ?? null } : null;
+  const opt = (liste, v, fr = {}) => liste.map((x) => `<option value="${x}" ${x === v ? 'selected' : ''}>${esc(fr[x] || x)}</option>`).join('');
+  const parIndex = new Map(r.canaux.map((c) => [c.index, c]));
+  const dernierCanal = Math.max(0, ...r.canaux.map((c) => c.index));
+  const ligneCanal = (k) => {
+    const c = parIndex.get(k);
+    return `<tr data-canal="${k}" class="${c ? '' : 'vide-canal'}"><td>${k}${k === 0 ? '<br><small>principal</small>' : ''}</td>
+      <td><input name="nom" maxlength="11" value="${esc(c ? c.nom || '' : '')}" placeholder="${k === 0 ? 'nom du preset' : c ? '' : '(libre)'}"></td>
+      <td><input name="psk" class="mono" value="${esc(c ? c.psk || '' : 'AQ==')}" title="Clé en base64 : AQ== = clé par défaut"></td>
+      <td><select name="precision">${PRECISIONS.map(([v, t]) => `<option value="${v}" ${(c ? c.precision || 0 : 17) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+      <td><input type="checkbox" name="montant" ${c && c.montant ? 'checked' : ''}></td><td><input type="checkbox" name="descendant" ${c && c.descendant ? 'checked' : ''}></td>
+      <td>${k > 0 && c && k === dernierCanal ? '<input type="checkbox" name="supprimer" title="Supprimer ce canal (seul le dernier peut l’être, pour ne pas laisser de trou)">' : ''}</td></tr>`;
+  };
+  z.innerHTML = `<h2>✏️ ${esc(r.proprietaire ? r.proprietaire.nomLong : nomNoeud(num))}</h2>
+    <div class="ident">${esc(r.id)} · ${local ? 'module connecté' : 'nœud distant (LoRa)'} · configuration lue ${ilYa(r.heure)} <button class="mini principal" id="ed-relire">↻ Relire</button> <button class="mini" id="ed-autres" title="Canaux, rôle et balises, renommer, position fixe, redémarrer, firmware, conformité…">Autres actions ›</button>
+      <a class="bouton-lien" href="/api/admin-noeuds/lecture/${num}/yaml" download title="Configuration au format de « meshtastic --export-config », sans les clés des canaux">⬇ YAML</a>
+      <a class="bouton-lien" href="/api/admin-noeuds/lecture/${num}/yaml?canaux=1" download title="Avec le lien des canaux (clés incluses) : pour reprogrammer ce nœud ou un remplaçant en USB avec « meshtastic --configure ». Ne pas diffuser.">⬇ YAML + canaux</a></div>
+    ${r.firmware ? `<div class="note">Firmware ${esc(r.firmware)}${v28 ? ' · réglages 2.8 disponibles ci-dessous' : ''}</div>` : ''}
+    <div class="parametres compact"><label>Préremplir avec un modèle <select id="ed-modele"><option value="">— choisir —</option></select></label></div>
+    ${Date.now() - r.heure > 3600000 ? '<div class="alerte attention">Lecture de plus d’une heure : relisez avant de modifier si quelqu’un a pu changer ce nœud entre-temps.</div>' : ''}
+    <form id="f-edit" class="form-edit">
+      <h4>Nom</h4><div class="grille-edit">
+        <label>Nom long <input name="nomLong" maxlength="39" value="${esc(r.proprietaire.nomLong || '')}"></label>
+        <label>Nom court <input name="nomCourt" maxlength="4" value="${esc(r.proprietaire.nomCourt || '')}"></label></div>
+      <h4>Appareil</h4><div class="grille-edit">
+        <label>Rôle <select name="role">${opt(i.roles, d.role, ROLES_FR_ADMIN)}</select></label>
+        <label>Rediffusion <select name="rebroadcastMode">${opt(i.rediffusions || [], d.rebroadcastMode, REDIFFUSION_FR)}</select></label>
+        <label>Infos nœud toutes les (s) <input name="nodeInfoBroadcastSecs" type="number" min="0" value="${d.nodeInfoBroadcastSecs || 0}"></label></div>
+      <h4>LoRa</h4><div class="grille-edit">
+        <label>Région <select name="region">${opt(i.regions || [lo.region], lo.region)}</select></label>
+        <label>Preset <select name="modemPreset">${opt(i.presets, lo.modemPreset)}</select></label>
+        <label>Slot (0 = auto) <input name="channelNum" type="number" min="0" max="200" value="${lo.channelNum || 0}"></label>
+        <label>Fréquence forcée MHz (0 = non) <input name="overrideFrequency" type="number" step="0.0001" min="0" value="${lo.overrideFrequency ? Number(lo.overrideFrequency).toFixed(4) : 0}"></label>
+        <label>Sauts <select name="hopLimit">${opt([1, 2, 3, 4, 5, 6, 7], lo.hopLimit)}</select></label>
+        <label>Puissance dBm (0 = défaut) <input name="txPower" type="number" min="0" max="30" value="${lo.txPower || 0}"></label>
+        <label class="case"><input type="checkbox" name="sx126xRxBoostedGain" ${lo.sx126xRxBoostedGain ? 'checked' : ''}> Réception boostée (SX126x)</label>
+        <label class="case"><input type="checkbox" name="configOkToMqtt" ${lo.configOkToMqtt ? 'checked' : ''}> Autoriser l’envoi vers MQTT</label></div>
+      <h4>Position</h4><div class="grille-edit">
+        <label>Intervalle (s) <input name="positionBroadcastSecs" type="number" min="0" value="${po.positionBroadcastSecs || 0}"></label>
+        <label class="case"><input type="checkbox" name="positionBroadcastSmartEnabled" ${po.positionBroadcastSmartEnabled ? 'checked' : ''}> Mode intelligent</label></div>
+      <div class="bloc-position-fixe">
+        <div class="ident">Position fixe ${po.fixedPosition ? '<b>activée</b>' : 'désactivée (GPS ou aucune)'} · position connue : ${posActuelle ? `${posActuelle.lat.toFixed(5)}, ${posActuelle.lon.toFixed(5)}${posActuelle.alt != null ? ' · ' + posActuelle.alt + ' m' : ''}` : 'aucune'}</div>
+        <div class="grille-edit">
+          <label>Latitude <input name="pfLat" inputmode="decimal" placeholder="45.12345" value=""></label>
+          <label>Longitude <input name="pfLon" inputmode="decimal" placeholder="3.98765" value=""></label>
+          <label>Altitude (m, facultatif) <input name="pfAlt" type="number" value=""></label>
+        </div>
+        <div class="actions-prop"><button type="button" id="pf-carte">📍 Choisir sur la carte</button><button type="button" id="pf-actuelle" ${posActuelle ? '' : 'disabled'}>Reprendre la position connue</button>${po.fixedPosition ? '<label class="case"><input type="checkbox" name="pfRetirer"> Retirer la position fixe (reprendre le GPS)</label>' : ''}</div>
+        <p class="note">Laisser vide pour ne pas toucher à la position. Renseignée, elle est envoyée comme position fixe : le nœud diffuse ces coordonnées au lieu de celles de son GPS.</p>
+      </div>
+      <h4>Voisinage (NeighborInfo)</h4>
+      ${vo ? `<div class="grille-edit">
+        <label class="case"><input type="checkbox" name="voisEnabled" ${vo.enabled ? 'checked' : ''}> Publier la liste des nœuds entendus directement</label>
+        <label>Toutes les <select name="voisInterval">${[[14400, '4 h'], [21600, '6 h'], [43200, '12 h'], [86400, '24 h']].map(([v, t]) => `<option value="${v}" ${(vo.updateInterval || 0) === v ? 'selected' : ''}>${t}</option>`).join('')}${vo.updateInterval && ![14400, 21600, 43200, 86400].includes(vo.updateInterval) ? `<option value="${Math.max(14400, vo.updateInterval)}" selected>${Math.round(vo.updateInterval / 3600)} h</option>` : ''}</select></label>
+        <label class="case"><input type="checkbox" name="voisLora" ${vo.transmitOverLora ? 'checked' : ''}> Envoyer aussi sur LoRa</label></div>
+        <p class="note">Indispensable pour savoir ce qu’entend un relais qui n’est pas passerelle MQTT (liaisons à sens unique, SNR de chaque voisin). « Envoyer aussi sur LoRa » est nécessaire pour un nœud sans MQTT ; le firmware l’ignore sur un canal principal à clé et nom par défaut, et impose au moins 4 h entre deux envois.</p>`
+      : '<p class="note">Réglage du module Voisinage non encore lu : « Relire » ci-dessus le récupère (firmware récent).</p>'}
+      <h4>Télémétrie de l’appareil</h4>
+      ${te ? `<div class="grille-edit">
+        <label class="case"><input type="checkbox" name="telEnabled" ${te.deviceTelemetryEnabled ? 'checked' : ''}> Envoyer batterie, tension, occupation du canal sur le maillage</label>
+        <label>Toutes les <select name="telInterval">${[[0, 'défaut (30 min)'], [900, '15 min'], [1800, '30 min'], [3600, '1 h'], [7200, '2 h'], [10800, '3 h'], [21600, '6 h']].map(([v, t]) => `<option value="${v}" ${(te.deviceUpdateInterval || 0) === v ? 'selected' : ''}>${t}</option>`).join('')}${te.deviceUpdateInterval && ![0, 900, 1800, 3600, 7200, 10800, 21600].includes(te.deviceUpdateInterval) ? `<option value="${te.deviceUpdateInterval}" selected>${Math.round(te.deviceUpdateInterval / 60)} min</option>` : ''}</select></label></div>
+        <p class="note">Sans télémétrie, la carte ne voit ni la batterie ni la charge radio du nœud. En 2.8, cet envoi est désactivé par défaut sur les canaux publics.</p>`
+      : '<p class="note">Module Télémétrie non encore lu : « Relire » ci-dessus le récupère.</p>'}
+      ${v28 ? `<h4>Gestion du trafic (2.8)</h4>
+      ${tr ? `<div class="grille-edit">
+        <label>Positions d’un même nœud : au plus une toutes les (s, 0 = non) <input name="trPos" type="number" min="0" value="${tr.positionMinIntervalSecs || 0}"></label>
+        <label>Répondre aux demandes de fiche jusqu’à (sauts, 0 = non) <input name="trInfo" type="number" min="0" max="7" value="${tr.nodeinfoDirectResponseMaxHops || 0}"></label>
+        <label>Limite de débit : fenêtre (s, 0 = non) <input name="trFen" type="number" min="0" value="${tr.rateLimitWindowSecs || 0}"></label>
+        <label>Paquets max par nœud et par fenêtre (0 = non) <input name="trMax" type="number" min="0" value="${tr.rateLimitMaxPackets || 0}"></label>
+        <label>Paquets illisibles avant blocage (0 = non) <input name="trInc" type="number" min="0" value="${tr.unknownPacketThreshold || 0}"></label></div>
+        <p class="note">Module du firmware 2.8 pour les grands maillages : un relais ne retransmet plus les positions trop fréquentes ni les nœuds trop bavards. Une valeur à 0 désactive la fonction.</p>`
+      : '<p class="note">Gestion du trafic non encore lue : « Relire » ci-dessus la récupère.</p>'}` : ''}
+      ${v281 ? `<h4>Signature des paquets (2.8.1)</h4><div class="grille-edit">
+        <label>Paquets acceptés <select name="signature">${(i.signatures || []).map((x) => `<option value="${x}" ${x === r.signature ? 'selected' : ''}>${esc(SIGNATURES_FR[x] || x)}</option>`).join('')}</select></label></div>
+        <p class="note">« Compatible » accepte les nœuds 2.7 qui ne signent pas : à garder tant que le réseau n’est pas entièrement en 2.8. « Équilibrée » exige la signature des nœuds qui ont déjà signé. « Stricte » n’accepte que les paquets signés ou chiffrés PKI.</p>` : ''}
+      <h4>Canaux</h4>
+      <div class="defil-canaux"><table class="canaux-edit"><thead><tr><th>#</th><th>Nom</th><th>Clé</th><th>Position</th><th>↑</th><th>↓</th><th>🗑</th></tr></thead><tbody>
+        ${[0, 1, 2, 3, 4, 5, 6, 7].map(ligneCanal).join('')}</tbody></table></div>
+      <p class="note">Pour ajouter un canal, remplissez une ligne libre. AQ== = clé publique par défaut. Seuls les champs modifiés sont envoyés, en une seule fois ; le nœud enregistre puis redémarre si besoin, et le programme relit pour contrôler.</p>
+      <div id="ed-resume" class="note"></div>
+      <div class="actions-prop"><button type="submit" class="principal">Appliquer les modifications</button><button type="button" id="ed-annuler">Annuler</button></div>
+      <p class="erreur" id="ed-retour"></p>
+    </form>`;
+  $('#ed-relire').onclick = () => lireDabord(false);
+  $('#ed-autres').onclick = () => {
+    gestion.selection = new Set([num]);
+    gestion.filtre = '';
+    $('#panneau').classList.remove('replie'); $('#deplier').hidden = true;
+    document.querySelector('.onglets button[data-onglet="gestion"]').click();
+  };
+  $('#ed-annuler').onclick = () => { if (gestion.marqueurPos) { gestion.marqueurPos.remove(); gestion.marqueurPos = null; } editeurReglages(num); };
+  const fo = $('#f-edit');
+  // Position fixe : repère sur la carte, choix au clic
+  const marquerPf = () => {
+    const lat = Number(String(fo.pfLat.value).replace(',', '.')), lon = Number(String(fo.pfLon.value).replace(',', '.'));
+    if (gestion.marqueurPos) { gestion.marqueurPos.remove(); gestion.marqueurPos = null; }
+    if (fo.pfLat.value.trim() && Number.isFinite(lat) && Number.isFinite(lon)) gestion.marqueurPos = L.marker([lat, lon], { icon: L.divIcon({ className: 'repere-lieu', html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] }), pane: 'traces' }).addTo(carte).bindTooltip(`Nouvelle position de ${esc(nomNoeud(num))}`, { className: 'info', permanent: true, direction: 'top' });
+  };
+  fo.pfLat.addEventListener('input', marquerPf); fo.pfLon.addEventListener('input', marquerPf);
+  $('#pf-carte').onclick = () => {
+    $('#pf-carte').textContent = 'Cliquez sur la carte…';
+    document.body.classList.add('mode-viseur');
+    carte.once('click', (ev) => {
+      document.body.classList.remove('mode-viseur');
+      fo.pfLat.value = ev.latlng.lat.toFixed(6); fo.pfLon.value = ev.latlng.lng.toFixed(6); fo.pfAlt.value = '';
+      $('#pf-carte').textContent = '📍 Choisir sur la carte';
+      marquerPf(); majResume();
+    });
+  };
+  $('#pf-actuelle').onclick = () => { if (!posActuelle) return; fo.pfLat.value = posActuelle.lat.toFixed(6); fo.pfLon.value = posActuelle.lon.toFixed(6); fo.pfAlt.value = posActuelle.alt ?? ''; marquerPf(); majResume(); };
+  const diff = () => {
+    const p = {}, chg = [];
+    const val = (n) => fo.elements[n];
+    if (val('nomLong').value.trim() !== (r.proprietaire.nomLong || '') || val('nomCourt').value.trim() !== (r.proprietaire.nomCourt || '')) { p.nom = { nomLong: val('nomLong').value.trim(), nomCourt: val('nomCourt').value.trim() }; chg.push('nom'); }
+    const sec = (nom, champs, src) => {
+      const o = {};
+      for (const [k, type] of champs) {
+        const el = val(k); let v = type === 'bool' ? el.checked : type === 'num' ? Number(el.value) : el.value;
+        const avant = type === 'bool' ? !!src[k] : type === 'num' ? Number(src[k] || 0) : src[k];
+        if (type === 'num' && k === 'overrideFrequency' ? Math.abs(v - avant) > 0.00005 : v !== avant) { o[k] = v; chg.push(k); }
+      }
+      if (Object.keys(o).length) p[nom] = o;
+    };
+    sec('device', [['role', 'txt'], ['rebroadcastMode', 'txt'], ['nodeInfoBroadcastSecs', 'num']], d);
+    sec('lora', [['region', 'txt'], ['modemPreset', 'txt'], ['channelNum', 'num'], ['overrideFrequency', 'num'], ['hopLimit', 'num'], ['txPower', 'num'], ['sx126xRxBoostedGain', 'bool'], ['configOkToMqtt', 'bool']], lo);
+    sec('position', [['positionBroadcastSecs', 'num'], ['positionBroadcastSmartEnabled', 'bool']], po);
+    if (vo) {
+      const v = {};
+      if (val('voisEnabled').checked !== !!vo.enabled) { v.enabled = val('voisEnabled').checked; chg.push(v.enabled ? 'voisinage activé' : 'voisinage désactivé'); }
+      if (Number(val('voisInterval').value) !== (vo.updateInterval || 0) && (val('voisEnabled').checked || vo.enabled)) { v.updateInterval = Number(val('voisInterval').value); chg.push('intervalle du voisinage'); }
+      if (val('voisLora').checked !== !!vo.transmitOverLora) { v.transmitOverLora = val('voisLora').checked; chg.push(v.transmitOverLora ? 'voisinage sur LoRa' : 'voisinage hors LoRa'); }
+      if (Object.keys(v).length) p.voisinage = v;
+    }
+    if (te && val('telEnabled')) {
+      const t = {};
+      if (val('telEnabled').checked !== !!te.deviceTelemetryEnabled) { t.deviceTelemetryEnabled = val('telEnabled').checked; chg.push(t.deviceTelemetryEnabled ? 'télémétrie activée' : 'télémétrie désactivée'); }
+      if (Number(val('telInterval').value) !== (te.deviceUpdateInterval || 0)) { t.deviceUpdateInterval = Number(val('telInterval').value); chg.push('intervalle de télémétrie'); }
+      if (Object.keys(t).length) p.telemetrie = t;
+    }
+    if (tr && val('trPos')) {
+      const t = {};
+      for (const [champ, cle, lib] of [['trPos', 'positionMinIntervalSecs', 'intervalle mini des positions'], ['trInfo', 'nodeinfoDirectResponseMaxHops', 'réponse aux fiches'], ['trFen', 'rateLimitWindowSecs', 'fenêtre de limite de débit'], ['trMax', 'rateLimitMaxPackets', 'paquets max'], ['trInc', 'unknownPacketThreshold', 'seuil de paquets illisibles']]) {
+        if (Number(val(champ).value) !== (tr[cle] || 0)) { t[cle] = Number(val(champ).value); chg.push(lib); }
+      }
+      if (Object.keys(t).length) p.trafic = t;
+    }
+    if (val('signature') && val('signature').value !== r.signature) { p.securite = { packetSignaturePolicy: val('signature').value }; chg.push('signature des paquets'); }
+    const nb = (x) => Number(String(x || '').trim().replace(',', '.'));
+    if (val('pfRetirer') && val('pfRetirer').checked) { p.positionFixe = { retirer: true }; chg.push('retrait de la position fixe'); }
+    else if (val('pfLat').value.trim() || val('pfLon').value.trim()) {
+      const lat = nb(val('pfLat').value), lon = nb(val('pfLon').value);
+      if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) { p.positionFixe = { lat, lon, alt: val('pfAlt').value }; chg.push(`position fixe ${lat.toFixed(5)}, ${lon.toFixed(5)}`); }
+      else chg.push('position invalide');
+    }
+    p.canaux = [];
+    fo.querySelectorAll('tr[data-canal]').forEach((tr) => {
+      const k = Number(tr.dataset.canal), c = parIndex.get(k), q = (n) => tr.querySelector(`[name="${n}"]`);
+      const now = { index: k, nom: q('nom').value.trim(), psk: q('psk').value.trim() || 'AQ==', precision: Number(q('precision').value), montant: q('montant').checked, descendant: q('descendant').checked, supprimer: q('supprimer') ? q('supprimer').checked : false };
+      if (!c) { if (now.nom) { p.canaux.push(now); chg.push('nouveau canal ' + k); } return; }
+      if (now.supprimer) { p.canaux.push({ index: k, supprimer: true }); chg.push('suppression canal ' + k); return; }
+      if (now.nom !== (c.nom || '') || now.psk !== (c.psk || '') || now.precision !== (c.precision || 0) || now.montant !== !!c.montant || now.descendant !== !!c.descendant) { p.canaux.push(now); chg.push('canal ' + k); }
+    });
+    return { p, chg };
+  };
+  const majResume = () => { const { chg } = diff(); $('#ed-resume').textContent = chg.length ? 'Modifié : ' + chg.join(', ') : 'Aucune modification.'; };
+  fo.oninput = majResume; fo.onchange = majResume; majResume();
+  // Préremplissage par un modèle : seuls les champs prévus par le modèle changent, rien n'est envoyé avant « Appliquer »
+  api('/api/admin-noeuds/modeles').then(({ modeles }) => {
+    const sel = $('#ed-modele');
+    if (!sel) return;
+    sel.innerHTML += modeles.map((m) => `<option value="${esc(m.id)}">${esc(m.nom)}</option>`).join('');
+    sel.onchange = () => {
+      const m = modeles.find((x) => x.id === sel.value);
+      if (!m) return;
+      const mettre = (n, v) => { const el = fo.elements[n]; if (!el || v == null) return; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; };
+      const dv = m.device || {}, lv = m.lora || {}, pv = m.position || {}, vv = m.voisinage || {}, tv = m.telemetrie || {};
+      mettre('role', dv.role); mettre('rebroadcastMode', dv.rebroadcastMode); mettre('nodeInfoBroadcastSecs', dv.nodeInfoBroadcastSecs);
+      mettre('hopLimit', lv.hopLimit); mettre('configOkToMqtt', lv.configOkToMqtt); mettre('sx126xRxBoostedGain', lv.sx126xRxBoostedGain);
+      mettre('positionBroadcastSecs', pv.positionBroadcastSecs); mettre('positionBroadcastSmartEnabled', pv.positionBroadcastSmartEnabled);
+      mettre('voisEnabled', vv.enabled); if (vv.enabled) { mettre('voisInterval', vv.updateInterval); mettre('voisLora', vv.transmitOverLora); }
+      mettre('telEnabled', tv.deviceTelemetryEnabled); mettre('telInterval', tv.deviceUpdateInterval);
+      majResume();
+      $('#ed-retour').textContent = `Modèle « ${m.nom} » appliqué au formulaire : vérifiez puis « Appliquer les modifications ».${m.favoris ? ' Pensez aux favoris des routeurs voisins (Programmer › ⭐ Favoris relais).' : ''}`;
+    };
+  }).catch(() => {});
+  fo.onsubmit = async (e) => {
+    e.preventDefault();
+    const { p, chg } = diff();
+    if (!chg.length) { $('#ed-retour').textContent = 'Aucune modification'; return; }
+    if (chg.includes('position invalide')) { $('#ed-retour').textContent = 'Coordonnées de position invalides'; return; }
+    if (p.canaux.some((c) => c.psk && !/^[A-Za-z0-9+/=]{2,64}$/.test(c.psk))) { $('#ed-retour').textContent = 'Clé invalide (base64)'; return; }
+    if (p.canaux.some((c) => c.index === 0)) {
+      const t = (await saisir(`Le canal PRINCIPAL (0) va changer${local ? '' : ' sur un nœud distant'}.\nTapez CANAL 0 pour confirmer :`));
+      if ((t || '').trim().toUpperCase() !== 'CANAL 0') return;
+      p.confirmation = 'CANAL 0';
+    }
+    if (p.lora && (p.lora.region || p.lora.modemPreset || p.lora.channelNum != null || p.lora.overrideFrequency != null) && !local
+      && !(await confirmer('Vous changez la radio (région, preset, slot ou fréquence) d’un nœud DISTANT : s’il ne parle plus comme les autres, vous perdrez le contact. Continuer ?'))) return;
+    if (!(await confirmer(`Appliquer à ${nomNoeud(num)} : ${chg.join(', ')} ?`))) return;
+    try {
+      // La position fixe est une opération à part (message d'administration dédié), mise en file après les réglages
+      const pos = p.positionFixe; delete p.positionFixe;
+      const autres = chg.filter((x) => !/position fixe/.test(x));
+      let t = null;
+      if (autres.length) t = await postJson('/api/admin-noeuds/taches', { type: 'modifier', cibles: [num], params: p });
+      if (pos) { const tp = await postJson('/api/admin-noeuds/taches', { type: 'position', cibles: [num], params: pos }); if (!t) t = tp; }
+      gestion.lectureSuivie = t.id; voirTache(t.id); suivreTaches();
+    } catch (err) { $('#ed-retour').textContent = err.message; }
+  };
+}
+function suiviModif(t) {
+  const n = t.noeuds[0] || {};
+  const defil = $('#fiche').scrollTop;
+  $('#fiche').hidden = false;
+  $('#fiche-contenu').innerHTML = `<h2>Modification · ${esc(nomNoeud(n.num))}</h2><div class="ident">${esc(t.resume || '')}</div>
+    ${!t.fin ? `<div class="alerte info-lecture"><span class="sablier"></span> ${esc(n.detail || 'en cours…')} <button class="mini arreter" data-arreter-tache="${t.id}">■ Arrêter</button></div>` : n.statut === 'ok' ? '<div class="alerte info-lecture">✔ Modifications appliquées et relues.</div>' : `<div class="alerte attention">✖ ${esc(STATUTS_TACHE[n.statut])} : ${esc(n.detail || '')}</div>`}
+    <ol class="etapes-modif">${(n.etapes || []).map((e) => `<li>${esc(e)}</li>`).join('')}</ol>
+    ${t.fin ? `<div class="actions-prop"><button id="ed-retour-editeur" class="principal">Revenir à l’éditeur</button></div>` : ''}`;
+  $('#fiche-contenu').dataset.tache = t.id;
+  $('#fiche').scrollTop = defil;
+  const ba = $('#fiche-contenu').querySelector('[data-arreter-tache]');
+  if (ba) ba.onclick = async () => { ba.disabled = true; try { await postJson(`/api/admin-noeuds/taches/${t.id}/arreter`, {}); } catch (e) { alert(e.message); } };
+  const br = $('#ed-retour-editeur');
+  if (br) br.onclick = () => editeurReglages(n.num);
+  if (!t.fin) { gestion.lectureSuivie = t.id; suivreTaches(); }
+}
+async function voirTache(id) {
+  let t;
+  try { t = await api('/api/admin-noeuds/taches/' + id); } catch (e) { alert(e.message); return; }
+  if (t.type === 'verifier') return rapportVerif(t);
+  if (t.type === 'modifier') return suiviModif(t);
+  const n0 = t.noeuds[0] || {};
+  const enCours = !t.fin;
+  if (enCours) gestion.lectureSuivie = id;
+  const r0 = n0.resultat || (enCours ? { num: n0.num, id: '!' + (n0.num >>> 0).toString(16).padStart(8, '0'), heure: Date.now(), complet: false, canaux: [], canauxComplets: false } : null);
+  if (!r0) return;
+  const defil = [$('#fiche').scrollTop, $('#fiche-contenu').scrollTop];
+  // Lecture partielle : une section pas encore lue s'affiche « … » (en cours) ou « – » (non lue)
+  const att = enCours ? '…' : '–';
+  const sec = (o, f) => (o ? f(o) : att);
+  const nom = r0.proprietaire || { nomLong: nomNoeud(r0.num), nomCourt: '' };
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const lig = (k, v) => `<div class="mesure${v === '…' ? ' attente' : ''}"><span>${k}</span><b>${esc(v ?? '–')}</b></div>`;
+  const { materiel: m, device: d, lora: lo, position: po } = r0;
+  $('#fiche-contenu').innerHTML = `
+    <h2>${esc(nom.nomLong)}</h2><div class="ident">${esc(nom.nomCourt)} · ${esc(r0.id)} · ${enCours ? 'lecture en cours' : 'lu ' + ilYa(r0.heure)}</div>
+    ${enCours ? `<div class="alerte info-lecture"><span class="sablier"></span> Lecture en cours… <b>${esc(n0.detail || 'demande envoyée')}</b><br><small>Les valeurs s’affichent dès qu’elles arrivent.</small> <button class="mini arreter" data-arreter-tache="${t.id}">■ Arrêter</button></div>` : ''}
+    ${!enCours && r0.complet === false ? `<div class="alerte attention">Lecture incomplète : les valeurs « – » n’ont pas été lues${r0.canauxComplets ? '' : ', liste des canaux incomplète'}. </div><div class="actions-prop"><button class="principal" id="reprendre-lecture" data-num="${r0.num}">↻ Reprendre la lecture</button><span class="note">ne redemande que ce qui manque</span></div>` : ''}
+    <h4>Matériel</h4><div class="grille">${lig('Firmware', sec(m, (x) => x.firmwareVersion))}${lig('Matériel', sec(m, (x) => x.hwModel))}${lig('Rôle', sec(d, (x) => ROLES_FR_ADMIN[x.role] || x.role))}</div>
+    <h4>LoRa</h4><div class="grille">${lig('Preset', sec(lo, (x) => x.modemPreset))}${lig('Région', sec(lo, (x) => x.region))}${lig('Sauts', sec(lo, (x) => x.hopLimit))}${lig('Puissance', sec(lo, (x) => (x.txPower ? x.txPower + ' dBm' : 'défaut')))}${lig('Emission', sec(lo, (x) => (x.txEnabled ? 'active' : 'coupée')))}${lig('Slot', sec(lo, (x) => x.channelNum || 'auto'))}${lig('Fréquence forcée', sec(lo, (x) => (x.overrideFrequency ? x.overrideFrequency.toFixed(4) + ' MHz' : 'non')))}</div>
+    <h4>Position</h4><div class="grille">${lig('Position fixe', sec(po, (x) => (x.fixedPosition ? 'oui' : 'non')))}${lig('Intervalle', sec(po, (x) => x.positionBroadcastSecs + ' s'))}${lig('Mode intelligent', sec(po, (x) => (x.positionBroadcastSmartEnabled ? 'oui' : 'non')))}${lig('GPS', sec(po, (x) => x.gpsMode))}</div>
+    <h4>Canaux ${r0.canauxComplets ? `(${r0.canaux.length})` : enCours ? '<small>(lecture…)</small>' : '<small>(incomplet)</small>'}</h4>
+    <table class="voisins"><thead><tr><th>#</th><th>Nom</th><th>Rôle</th><th>Clé</th><th>Position</th><th>MQTT</th></tr></thead><tbody>
+    ${(r0.canaux || []).map((c) => `<tr><td>${c.index}</td><td>${esc(c.nom || '(défaut)')}</td><td>${c.role === 'PRIMARY' ? 'principal' : 'secondaire'}</td><td class="mono">${esc((c.psk || '').length > 6 ? c.psk.slice(0, 6) + '…' : c.psk || 'aucune')}</td><td>${esc(typeof precisionTexte === 'function' ? precisionTexte(c.precision || 0) : c.precision)}</td><td>${c.montant ? '↑' : ''}${c.descendant ? '↓' : ''}</td></tr>`).join('')}
+    ${!r0.canauxComplets ? `<tr><td colspan="6" class="vide">${enCours ? 'canaux suivants en cours de lecture…' : 'canaux suivants non lus'}</td></tr>` : ''}
+    </tbody></table>
+    <h4>Appareil</h4><div class="grille">${lig('Infos nœud toutes les', sec(d, (x) => x.nodeInfoBroadcastSecs + ' s'))}${lig('Retransmission', sec(d, (x) => x.rebroadcastMode))}</div>`;
+  $('#fiche-contenu').dataset.tache = id;
+  $('#fiche').scrollTop = defil[0]; $('#fiche-contenu').scrollTop = defil[1];
+  const ba = $('#fiche-contenu').querySelector('[data-arreter-tache]');
+  if (ba) ba.onclick = async () => { ba.disabled = true; ba.textContent = 'arrêt…'; try { await postJson(`/api/admin-noeuds/taches/${id}/arreter`, {}); } catch (e) { alert(e.message); } };
+  if (enCours) suivreTaches();
+}
+
+// ---- Vue zone ----------------------------------------------------------------------------
+// Paramètre ?zone= des API : 1 = département, v = + voisins, r84 = région, rien = toute la France
+const paramZone = () => (etat.zoneMode === 'voisins' ? 'v' : /^r\d{2}$/.test(etat.zoneMode) ? etat.zoneMode : etat.zone ? '1' : '');
+const regionChoisie = () => (/^r\d{2}$/.test(etat.zoneMode) ? (etat.config.regions || []).find((r) => 'r' + r.code === etat.zoneMode) : null);
+function appliquerZone(recadrer) {
+  const v = etat.config.zoneVoisins;
+  if (!etat.config.zoneDep) etat.config.zoneDep = etat.config.zone;
+  if (etat.zoneMode === 'voisins' && !v) etat.zoneMode = 'dep';
+  if (/^r\d{2}$/.test(etat.zoneMode) && !regionChoisie()) etat.zoneMode = 'dep';
+  const reg = regionChoisie();
+  etat.zone = etat.zoneMode !== 'france';
+  // Le reste de l'application lit etat.config.zone : on y place le rectangle du secteur choisi
+  etat.config.zone = etat.zoneMode === 'voisins' ? v.bbox : reg ? reg.bbox : etat.config.zoneDep;
+  try { localStorage.setItem('gaulix_zone', etat.zoneMode); } catch { /* stockage indisponible */ }
+  const b = $('#sel-zone');
+  // Régions de France, une seule fois
+  if (!b.querySelector('optgroup') && (etat.config.regions || []).length) {
+    b.insertAdjacentHTML('beforeend', `<optgroup label="Régions">${etat.config.regions.map((r) => `<option value="r${r.code}">${esc(r.nom)}</option>`).join('')}</optgroup>`);
+  }
+  const nom = etat.config.zoneNom;
+  b.options[0].textContent = nom;
+  b.options[1].textContent = `${nom} + voisins`;
+  b.options[1].title = v ? v.departements.map((d) => `${d.code} ${d.nom}`).join(', ') : '';
+  b.options[1].hidden = !v;
+  b.value = etat.zoneMode;
+  b.title = etat.zoneMode === 'voisins' && v ? `${nom} et départements voisins : ${v.departements.map((d) => d.nom).join(', ')}` : reg ? `Région ${reg.nom}` : 'Secteur affiché : votre département, avec ses voisins, une région ou toute la France';
+  b.classList.toggle('actif', etat.zone);
+  if (recadrer) {
+    const z = etat.config.zone;
+    if (etat.zone) carte.fitBounds([[z[0], z[1]], [z[2], z[3]]], { padding: [20, 20] });
+    else carte.setView([46.6, 2.5], 6);
+  }
+  dessinerNoeuds();
+  dessinerLiens();
+  dessinerSommets();
+  if (typeof mcRedessiner === 'function') { mcRedessiner(); mcMajKpis(); }
+  rendreNoeuds();
+  if (etat.stats) majEtat({ stats: etat.stats, alertes: etat.alertes, radio: etat.radio, meshmonitor: null });
+  chargerFlux().catch(() => {});
+  if ($('[data-vue="analyse"]').classList.contains('actif')) chargerAnalyse();
+}
+
+// ---- Légende ---------------------------------------------------------------------
+// Tous les liens (Meshtastic et MeshCore) d'un seul clic
+const CLES_LIENS_MT = ['rf', 'voisinage', 'traceroute'];
+function liensAffiches() { return CLES_LIENS_MT.some((k) => etat.couches[k]) || (typeof mc !== 'undefined' && Object.values(mc.couches).some(Boolean)); }
+function boutonLiens() { const on = liensAffiches(); return `<button class="pilule tout${on ? '' : ' on'}" data-tous-liens title="Masquer ou réafficher toutes les lignes de liaison des deux réseaux">${on ? 'Masquer tous les liens' : 'Réafficher les liens'}</button>`; }
+function basculerTousLiens() {
+  const val = !liensAffiches();
+  for (const k of CLES_LIENS_MT) { etat.couches[k] = val; const b = document.querySelector(`.bascule[data-couche="${k}"]`); if (b) b.classList.toggle('actif', val); }
+  if (typeof mc !== 'undefined') { for (const k of Object.keys(mc.couches)) mc.couches[k] = val; if (typeof mcDessinerLiens === 'function') mcDessinerLiens(); }
+  dessinerLiens();
+  rendreLegende();
+}
+function rendreLegende() {
+  const lg = etat.legende;
+  const tous = CATEGORIES.every((c) => lg.cat[c.cle]);
+  const nb = (c) => [...etat.noeuds.values()].filter((n) => n.lat != null && dansZone(n) && categorie(n).cle === c.cle && (etat.couches.inactifs || n.statut !== 'inactif' || n.infrastructure || n.passerelle)).length;
+  const nbMqtt = [...etat.noeuds.values()].filter((n) => dansZone(n) && passerelleEnLigne(n)).length;
+  const bouton = (actif, attr, txt) => `<button class="pilule ${actif ? 'on' : ''}" ${attr}>${txt}</button>`;
+  const mcSeul = etat.vueReseau === 'meshcore';
+  const htmlMc = typeof mcHtmlLegende === 'function' ? mcHtmlLegende() : '';
+  $('#legende').innerHTML = `
+    <details class="leg-pli" ${lg.replie ? '' : 'open'}>
+      <summary>Légende et filtres</summary>
+      ${mcSeul ? `<div class="leg-ligne"><span class="pastille-leg chaleur"></span><span class="leg-nom">Activité (10 dernières min)</span>${bouton(lg.chaleur, 'data-leg="chaleur"', lg.chaleur ? 'Affiché' : 'Masqué')}</div>` + htmlMc.replace('<div class="leg-sep"></div>', '') + `<div class="leg-ligne"><span class="pastille-leg inactif"></span><span class="leg-nom">Inactifs (plus de ${etat.config.seuils.inactifHeures} h)</span>${bouton(etat.couches.inactifs, 'data-leg="inactifs"', etat.couches.inactifs ? 'Affiché' : 'Masqué')}</div><div class="leg-ligne">${boutonLiens()}</div><div class="rang">Liens (SNR) : ${SNR.map((x) => `<span><i class="trait" style="background:${x.hex}"></i>${x.nom}</span>`).join('')}</div>` : `
+      <div class="leg-ligne"><span class="pastille-leg chaleur"></span><span class="leg-nom">Activité (10 dernières min)</span>${bouton(lg.chaleur, 'data-leg="chaleur"', lg.chaleur ? 'Affiché' : 'Masqué')}</div>
+      <div class="leg-ligne"><span class="pastille-leg anneau"></span><span class="leg-nom">Passerelles MQTT en ligne (5 min) <small>${nbMqtt}</small></span>${bouton(lg.seulMqtt, 'data-leg="seulMqtt"', 'Seules')}</div>
+      ${CATEGORIES.map((c) => {
+        const seul = lg.cat[c.cle] && CATEGORIES.every((x) => x.cle === c.cle || !lg.cat[x.cle]);
+        return `<div class="leg-ligne"><span class="pastille-leg" style="background:${c.couleur}"></span><span class="leg-nom">${c.nom} <small>${nb(c)}</small></span>
+          <button class="pilule seul ${seul ? 'on' : ''}" data-seul="${c.cle}" title="N’afficher que cette catégorie">Seul</button>${bouton(lg.cat[c.cle], `data-cat="${c.cle}"`, lg.cat[c.cle] ? 'Affiché' : 'Masqué')}</div>`;
+      }).join('')}
+      <div class="leg-ligne"><span class="pastille-leg inactif"></span><span class="leg-nom">Inactifs (plus de ${etat.config.seuils.inactifHeures} h)</span>${bouton(etat.couches.inactifs, 'data-leg="inactifs"', etat.couches.inactifs ? 'Affiché' : 'Masqué')}</div>
+      <div class="leg-ligne"><span class="pastille-leg alerte"></span><span class="leg-nom">Nœuds en alerte</span>${bouton(lg.alertes, 'data-leg="alertes"', lg.alertes ? 'Signalés' : 'Normaux')}</div>
+      <div class="leg-ligne">${tous ? '' : '<button class="pilule tout" data-tout>Tout réafficher</button>'}${boutonLiens()}</div>
+      <div class="leg-sep"></div>
+      <div class="rang">◆ relais · ● nœud · halo = actif, pâle = inactif</div>
+      <div class="rang">Liens (SNR) : ${SNR.map((x) => `<span><i class="trait" style="background:${x.hex}"></i>${x.nom}</span>`).join('')}</div>
+      <div class="rang">— radio · - - voisinage · ··· traceroute</div>${htmlMc}`}
+    </details>`;
+  const appliquer = () => { memoLegende(); dessinerNoeuds(); dessinerLiens(); dessinerChaleur(); if (typeof mcRedessiner === 'function') { mcRedessiner(); mcDessinerChaleur(); } rendreLegende(); };
+  const z = $('#legende');
+  if (typeof mcBrancherLegende === 'function') mcBrancherLegende(z);
+  z.querySelector('details').ontoggle = (e) => { lg.replie = !e.target.open; memoLegende(); };
+  z.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => { lg.cat[b.dataset.cat] = !lg.cat[b.dataset.cat]; appliquer(); }));
+  z.querySelectorAll('[data-seul]').forEach((b) => (b.onclick = () => {
+    const k = b.dataset.seul;
+    const dejaSeul = lg.cat[k] && CATEGORIES.every((x) => x.cle === k || !lg.cat[x.cle]);
+    for (const c of CATEGORIES) lg.cat[c.cle] = dejaSeul ? true : c.cle === k;
+    appliquer();
+  }));
+  z.querySelectorAll('[data-leg]').forEach((b) => (b.onclick = () => {
+    const k = b.dataset.leg;
+    if (k === 'inactifs') { etat.couches.inactifs = !etat.couches.inactifs; const bb = document.querySelector('.bascule[data-couche="inactifs"]'); if (bb) bb.classList.toggle('actif', etat.couches.inactifs); }
+    else lg[k] = !lg[k];
+    appliquer();
+  }));
+  const tl = z.querySelector('[data-tous-liens]');
+  if (tl) tl.onclick = () => basculerTousLiens();
+  const t = z.querySelector('[data-tout]');
+  if (t) t.onclick = () => { for (const c of CATEGORIES) lg.cat[c.cle] = true; lg.seulMqtt = false; appliquer(); };
+}
+
+// ---- Carte de chaleur de l'activité (paquets des 10 dernières minutes) ----------------------
+const activite = []; // { num, heure }
+let minuterieChaleur = null;
+function noterActivite(num, heure = Date.now()) {
+  if (num == null) return;
+  activite.push({ num, heure });
+  if (!minuterieChaleur && typeof carte !== 'undefined' && carte) minuterieChaleur = setTimeout(() => { minuterieChaleur = null; dessinerChaleur(); }, 3000);
+}
+function dessinerChaleur() {
+  if (!etat.coucheChaleur) etat.coucheChaleur = L.layerGroup().addTo(carte);
+  etat.coucheChaleur.clearLayers();
+  const limite = Date.now() - 10 * 60000;
+  while (activite.length && activite[0].heure < limite) activite.shift();
+  if (!etat.legende.chaleur || etat.vueReseau === 'meshcore') return;
+  const compte = new Map();
+  for (const a of activite) compte.set(a.num, (compte.get(a.num) || 0) + 1);
+  for (const [num, c] of compte) {
+    const n = etat.noeuds.get(num);
+    if (!n || n.lat == null || !dansZone(n)) continue;
+    const f = Math.min(1, c / 12);
+    // Trois disques concentriques : effet de « chaleur » qui s'additionne entre voisins
+    for (const [r, o] of [[4500, 0.06], [2600, 0.1], [1200, 0.16]]) {
+      L.circle([n.lat, n.lon], { radius: r * (0.7 + f * 0.6), stroke: false, fillColor: f > 0.6 ? '#ff3b3b' : f > 0.25 ? '#ff8a3b' : '#ffd23b', fillOpacity: o + f * 0.08, pane: 'couverture', interactive: false }).addTo(etat.coucheChaleur);
+    }
+  }
+}
+setInterval(() => { if (carte) dessinerChaleur(); }, 20000);
+
+// ---- Chargement & temps réel -------------------------------------------------------
+async function chargerNoeuds() {
+  const liste = await api('/api/noeuds');
+  etat.noeuds = new Map(liste.map((n) => [n.num, n]));
+  dessinerNoeuds();
+  if (etat.config) rendreLegende();
+  rendreNoeuds();
+}
+async function chargerLiens() {
+  etat.liens = await api('/api/liens?heures=' + $('#fenetre').value);
+  dessinerLiens();
+  if (etat.zone) $('#k-liens').textContent = etat.liens.filter((l) => dansZoneNum(l.a) || dansZoneNum(l.b)).length;
+}
+async function chargerEtat() {
+  const e = await api('/api/etat');
+  majEtat(e);
+}
+function majEtat(e) {
+  // Module radio (re)connecté ou changé : la liste des canaux du formulaire d'envoi est relue
+  const sig = e.radio ? `${e.radio.connecte}:${e.radio.noeudLocal}` : '';
+  if (etat.admin && sig !== etat.sigRadio) { etat.sigRadio = sig; if ($('#form-envoi') && !$('#form-envoi').hidden) setTimeout(() => preparerEnvoi(), 1500); }
+  etat.stats = e.stats;
+  etat.alertes = e.alertes || [];
+  etat.radio = e.radio || null;
+  etat.ecoutesMt = e.ecoutes || etat.ecoutesMt || [];
+  const s = e.stats;
+  if (etat.zone) {
+    const z = [...etat.noeuds.values()].filter(dansZone);
+    const seuilMuet = etat.config.seuils.muetMinutes * 60000;
+    const gw = z.filter((n) => n.passerelle);
+    const enLigne = gw.filter((n) => n.etatPasserelle !== 'offline' && Date.now() - (n.dernierVuPasserelle || 0) < seuilMuet).length;
+    $('#k-actifs').textContent = `${z.filter((n) => n.statut === 'actif').length}/${z.length}`;
+    $('#k-passerelles').textContent = `${enLigne}/${gw.length}`;
+    $('#k-liens').textContent = etat.liens.filter((l) => dansZoneNum(l.a) || dansZoneNum(l.b)).length;
+  } else {
+    $('#k-actifs').textContent = `${s.actifs}/${s.noeuds}`;
+    $('#k-passerelles').textContent = `${s.passerellesEnLigne}/${s.passerelles}`;
+    $('#k-liens').textContent = s.liens;
+  }
+  $('#k-debit').textContent = fmt(s.paquetsMinute, 1);
+  $('#k-canal').textContent = s.canalMoyen == null ? '–' : fmt(s.canalMoyen, 1, ' %');
+  const mm = e.meshmonitor;
+  const ok = document.querySelector('#direct').classList.contains('ok');
+  $('#sources').innerHTML =
+    `<div class="ligne${etat.admin ? ' cliquable' : ''}" id="ligne-broker" title="${etat.admin ? 'État, réglages et test du broker' : ''}"><span class="point ${ok ? 'actif' : 'alerte'}"></span><span class="titre">Broker MQTT</span><span class="meta">${ok ? 'connecté' : 'déconnecté'}${etat.admin ? ' ›' : ''}</span></div>` +
+    (e.radio
+      ? `<div class="ligne"><span class="point ${e.radio.connecte ? 'actif' : e.radio.evince ? 'recent' : 'alerte'}"></span><span class="titre">Module radio${e.radio.nomLocal ? `<small>${esc(e.radio.nomLocal)}</small>` : ''}</span><span class="meta"></span><span class="sous-ligne meta-longue">${e.radio.connecte ? `connecté · ${e.radio.paquets} paquets${e.radio.prochainCycle ? ` · traceroutes ${e.radio.cycleEnCours ? 'en cours' : 'à ' + new Date(e.radio.prochainCycle).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} (${e.radio.ciblesAuto} relais)` : ''}` : e.radio.arret ? esc(e.radio.repriseAuto ? 'libéré pour un autre client · reprise ' + new Date(e.radio.repriseAuto).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : e.radio.hote ? 'déconnecté à la demande' : 'aucun module choisi') : e.radio.evince ? esc('laissé à un autre client · reprise ' + new Date(e.radio.reprise).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) : esc('déconnecté' + (e.radio.erreur ? ' (' + e.radio.erreur + ')' : ''))}</span></div>` + (e.ecoutes || []).map((x) => `<div class="ligne"><span class="point ${x.connecte ? 'actif' : 'alerte'}"></span><span class="titre">Module en écoute<small>${esc(x.nom || '')}</small></span><span class="meta">${x.connecte ? x.paquets + ' paquets' : 'connexion…'}</span></div>`).join('')
+      : '') +
+    (mm
+      ? `<div class="ligne"><span class="point ${mm.ok ? 'actif' : 'alerte'}"></span><span class="titre">MeshMonitor${mm.sources && mm.sources[0] ? `<small>${esc(mm.sources.map((x) => x.nom).join(', '))}</small>` : ''}</span><span class="meta">${mm.ok ? `${mm.noeuds} nœuds · ${ilYa(mm.derniere)}` : esc(mm.erreur || 'en attente')}</span></div>`
+      : '');
+  const lb = $('#ligne-broker');
+  if (lb && etat.admin) lb.onclick = () => ouvrirBroker();
+  if (typeof mcMajSource === 'function') mcMajSource();
+  rendreReseau();
+  if (etat.admin) rendreModules();
+}
+
+// ---- Page du broker MQTT : état, passerelles entendues, réglages et test ----------------------
+let suiviBroker = null;
+async function ouvrirBroker() {
+  const dlg = $('#dlg-mqtt'), z = $('#mqtt-contenu');
+  if (!dlg.open) dlg.showModal();
+  dlg.onclose = () => { clearInterval(suiviBroker); suiviBroker = null; };
+  let m;
+  try { m = await api('/api/mqtt'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const formOuvert = z.querySelector('#f-broker');
+  const etatHtml = `
+    <div class="grille">
+      <div class="mesure"><span>État</span><b class="${m.connecte ? 'ok' : 'ko'}">${m.connecte ? '● connecté' : '● déconnecté'}</b></div>
+      <div class="mesure"><span>Connecté depuis</span><b>${m.depuis ? ilYa(m.depuis).replace('il y a ', '') : '–'}</b></div>
+      <div class="mesure"><span>Dernier message</span><b>${m.dernierMessage ? ilYa(m.dernierMessage) : '–'}</b></div>
+      <div class="mesure"><span>Messages / min (10 min)</span><b>${fmt(m.parMinute, 1)}</b></div>
+      <div class="mesure"><span>Reçus · décodés · erreurs</span><b>${m.recus} · ${m.decodes} · ${m.erreurs}</b></div>
+      <div class="mesure"><span>Reconnexions</span><b>${m.reconnexions}</b></div>
+    </div>
+    ${m.derniereErreur ? `<div class="alerte attention">Dernière erreur (${ilYa(m.derniereErreur.heure)}) : ${esc(m.derniereErreur.message)}</div>` : ''}
+    <p class="note">Abonnement : <span class="mono">${esc(m.sujets.join(', '))}</span></p>
+    <h4>Passerelles entendues par le broker (${m.passerelles.length})</h4>
+    ${m.passerelles.length ? `<div class="defil-gw"><table class="voisins"><thead><tr><th>Passerelle</th><th>Sujet</th><th class="num">Messages</th><th>Dernier</th></tr></thead><tbody>
+      ${m.passerelles.map((g) => `<tr><td>${esc(g.nom || g.id)}<br><small class="mono">${esc(g.id)}</small></td><td class="mono petit">${esc(g.sujet)}</td><td class="num">${g.messages}</td><td>${ilYa(g.derniere)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="vide">Aucune passerelle depuis le démarrage.</div>'}
+    ${m.canaux.length ? `<p class="note">Canaux vus : ${m.canaux.map((c) => `${esc(c.canal)} (${c.messages})`).join(' · ')}</p>` : ''}`;
+  if (formOuvert) { $('#broker-etat').innerHTML = etatHtml; return; }
+  z.innerHTML = `<h3>Broker MQTT</h3><div class="ident">${esc(m.url)}</div>
+    <div id="broker-etat">${etatHtml}</div>
+    <h4>Réglages</h4>
+    <form id="f-broker" class="form-edit">
+      <div class="grille-edit">
+        <label>Adresse <input name="url" value="${esc(m.url.includes('***') ? '' : m.url)}" placeholder="mqtt://serveur:1883 ou mqtts://serveur:8883"></label>
+        <label>Racine des sujets <input name="racine" value="${esc(m.racine)}" placeholder="msh/EU_868"></label>
+        <label>Utilisateur <input name="utilisateur" value="${esc(m.utilisateur || '')}" autocomplete="off"></label>
+        <label>Mot de passe <input name="motDePasse" type="password" placeholder="${m.motDePasseDefini ? '(inchangé)' : ''}" autocomplete="new-password"></label>
+        <label style="grid-column: 1 / -1">Sujets supplémentaires (séparés par des virgules) <input name="sujetsSupplementaires" value="${esc(m.sujetsSupplementaires || '')}"></label>
+      </div>
+      <div class="actions-prop"><button type="button" id="broker-tester">🔌 Tester ces réglages (10 s)</button><button type="submit" class="principal">Enregistrer et redémarrer</button></div>
+      <div id="broker-test"></div>
+      <p class="note">Le test se connecte avec ces réglages <b>sans toucher</b> à la connexion actuelle, s’abonne à la racine et compte les messages reçus pendant 10 s. Mot de passe vide = celui déjà enregistré.</p>
+    </form>`;
+  const fo = $('#f-broker');
+  const valeurs = () => ({ url: fo.url.value.trim() || undefined, racine: fo.racine.value.trim(), utilisateur: fo.utilisateur.value.trim(), motDePasse: fo.motDePasse.value, sujetsSupplementaires: fo.sujetsSupplementaires.value });
+  $('#broker-tester').onclick = async () => {
+    const b = $('#broker-tester'), zt = $('#broker-test');
+    b.disabled = true; zt.innerHTML = '<div class="alerte info-lecture"><span class="sablier"></span> Test en cours (connexion puis 10 s d’écoute)…</div>';
+    try {
+      const r = await postJson('/api/mqtt/tester', valeurs());
+      zt.innerHTML = r.connecte
+        ? `<div class="alerte info-lecture">✔ Connecté en ${r.delaiConnexionMs} ms · abonnement ${esc(r.abonnement || '?')} · <b>${r.messages}</b> message(s) en ${r.dureeEcouteS} s${r.erreur ? ' · ' + esc(r.erreur) : ''}</div>
+           ${r.messages ? `<table class="voisins petit"><thead><tr><th>Sujet</th><th class="num">Messages</th></tr></thead><tbody>${r.sujets.map((x) => `<tr><td class="mono">${esc(x.sujet)}</td><td class="num">${x.n}</td></tr>`).join('')}</tbody></table>` : '<p class="note">Connexion correcte mais aucun message : vérifiez la racine, les droits (ACL) du compte et que des passerelles publient.</p>'}`
+        : `<div class="alerte attention">✖ Échec : ${esc(r.erreur || 'connexion impossible')}</div>`;
+    } catch (e) { zt.innerHTML = `<div class="alerte attention">${esc(e.message)}</div>`; }
+    b.disabled = false;
+  };
+  fo.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!(await confirmer('Enregistrer ces réglages ? Le service redémarre (quelques secondes) et se reconnecte au broker.'))) return;
+    const v = valeurs();
+    const corps = { mqtt: { racine: v.racine, utilisateur: v.utilisateur, motDePasse: v.motDePasse, sujetsSupplementaires: v.sujetsSupplementaires } };
+    if (v.url) corps.mqtt.url = v.url;
+    try { await postJson('/api/reglages', corps); $('#broker-test').innerHTML = '<div class="alerte info-lecture">Enregistré : redémarrage du service… la page se recharge.</div>'; setTimeout(() => location.reload(), 9000); }
+    catch (err) { $('#broker-test').innerHTML = `<div class="alerte attention">${esc(err.message)}</div>`; }
+  };
+  clearInterval(suiviBroker);
+  suiviBroker = setInterval(() => { if ($('#dlg-mqtt').open) ouvrirBroker(); }, 5000);
+}
+
+let rafraichir = null;
+function planifierRafraichissement() {
+  if (rafraichir) return;
+  rafraichir = setTimeout(async () => {
+    rafraichir = null;
+    await Promise.all([chargerNoeuds(), chargerLiens()]).catch(() => {});
+    rendreReseau();
+  }, 4000);
+}
+
+// Économie de données et de batterie : onglet caché depuis 2 min (téléphone en poche), le flux en direct est coupé ;
+// au retour, reconnexion et rechargement des nœuds et liaisons
+const veille = { ws: null, minuterie: null, endormi: false };
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(veille.minuterie);
+    veille.minuterie = setTimeout(() => { if (document.hidden && veille.ws) { veille.endormi = true; try { veille.ws.close(); } catch { /* déjà */ } } }, 120000);
+  } else {
+    clearTimeout(veille.minuterie);
+    if (veille.endormi) {
+      veille.endormi = false;
+      connecterWs();
+      Promise.all([chargerNoeuds(), chargerLiens()]).then(() => rendreReseau()).catch(() => {});
+      if (typeof mcPlanifier === 'function') mcPlanifier();
+    }
+  }
+});
+function connecterWs() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  veille.ws = ws;
+  const temoin = $('#direct');
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.genre === 'signalement') { if (etat.membre) chargerSignalements(); return; }
+    if (m.genre === 'position-reponse') {
+      const n = etat.noeuds.get(m.num >>> 0);
+      const nom = n ? n.nomLong || n.nomCourt || n.id : '!' + (m.num >>> 0).toString(16);
+      annonce(`📍 ${nom} a répondu en ${Math.round(m.delai / 1000)} s`, 'ok', () => carte.setView([m.lat, m.lon], Math.max(carte.getZoom(), 14)));
+      return;
+    }
+    // Nœud supprimé par un administrateur : retiré de la carte et des listes
+    if (m.genre === 'noeud-supprime') {
+      const k = Number(m.num) >>> 0;
+      etat.noeuds.delete(k);
+      const mk = etat.marqueurs.get(k); if (mk) { mk.remove(); etat.marqueurs.delete(k); }
+      if (etat.selection === k) $('#fermer-fiche').click();
+      rendreNoeuds(); dessinerLiens();
+      return;
+    }
+    if (m.genre === 'mc-supprime' && typeof mc !== 'undefined') {
+      mc.noeuds.delete(m.cle);
+      const mk = mc.marqueurs.get(m.cle); if (mk) { mk.remove(); mc.marqueurs.delete(m.cle); }
+      if (mc.selection === m.cle) $('#fermer-fiche').click();
+      mcRendreNoeuds();
+      return;
+    }
+    if (m.genre === 'bienvenue' || m.genre === 'mqtt') {
+      const ok = m.genre === 'bienvenue' ? m.mqtt : m.connecte;
+      temoin.className = 'direct ' + (ok ? 'ok' : 'ko');
+      temoin.querySelector('b').textContent = ok ? 'En direct' : 'Broker déconnecté';
+    } else if (m.genre === 'paquet') {
+      if (!etat.noeuds.has(m.de) || (m.passerelle != null && !etat.noeuds.has(m.passerelle))) planifierRafraichissement();
+      else {
+        const n = etat.noeuds.get(m.de);
+        n.dernierVu = m.heure;
+        if (n.statut !== 'actif') { n.statut = 'actif'; dessinerNoeuds(); }
+        if (['position', 'nodeinfo', 'telemetrie', 'voisinage', 'traceroute', 'mapreport'].includes(m.port)) planifierRafraichissement();
+      }
+      animerPaquet(m);
+      porteeRecevoir(m);
+      ajouterAuFlux(m);
+      noterActivite(m.de, m.heure || Date.now());
+      if (m.texte && etat.membre) { noterMessageRecu(m); chargerMessages(); }
+    } else if (m.genre === 'etat') {
+      majEtat(m);
+      dessinerNoeuds();
+    } else if (m.genre === 'statut') {
+      planifierRafraichissement();
+    } else if (m.genre && m.genre.startsWith('mc-') && typeof mcRecevoir === 'function') {
+      mcRecevoir(m);
+    }
+  };
+  ws.onclose = () => {
+    temoin.className = 'direct ko';
+    if (veille.endormi) { temoin.querySelector('b').textContent = 'En pause'; return; } // reprise au retour sur l'onglet
+    temoin.querySelector('b').textContent = 'Reconnexion…';
+    setTimeout(connecterWs, 4000);
+  };
+}
+
+// ---- Interactions --------------------------------------------------------------------
+function brancherInterface() {
+  document.querySelectorAll('.onglets button[data-onglet]').forEach((b) => (b.onclick = () => {
+    document.querySelectorAll('.onglets button').forEach((x) => x.classList.toggle('actif', x === b));
+    document.querySelectorAll('.vue').forEach((v) => v.classList.toggle('actif', v.dataset.vue === b.dataset.onglet));
+    if (b.dataset.onglet === 'messages') { chargerMessages(); setTimeout(() => { marquerLus(); if (typeof rendreMessages === 'function') rendreMessages(); }, 50); }
+    if (b.dataset.onglet === 'analyse') { chargerAnalyse(); chargerHistorique(); document.querySelectorAll('details.maint[open]').forEach((d) => chargerMaintenance(d.dataset.maint)); }
+    if (b.dataset.onglet === 'sites') rendreSites();
+    if (b.dataset.onglet === 'gestion') { rendreGestion(); suivreTaches(); }
+  }));
+  installerTiroir();
+  { const b = $('#outil-passerelle'); if (b) { b.hidden = !(etat.config.passerelleDispo && etat.admin); b.onclick = () => { b.closest('details').open = false; ouvrirPasserelle(); }; } }
+  installerFicheTiroir();
+  appliquerTheme(lireLs('gaulix_theme_clair', false));
+  { const b = $('#outil-theme'); if (b) b.onclick = () => appliquerTheme(!document.body.classList.contains('theme-clair')); }
+  { const b = $('#outil-installer'); if (b) b.onclick = async () => { if (!invitationInstall) return; invitationInstall.prompt(); await invitationInstall.userChoice.catch(() => null); invitationInstall = null; b.hidden = true; }; }
+  $('#replier').onclick = () => { $('#panneau').classList.add('replie'); $('#deplier').hidden = false; document.body.classList.add('panneau-replie'); };
+  $('#deplier').onclick = () => { $('#panneau').classList.remove('replie'); $('#deplier').hidden = true; document.body.classList.remove('panneau-replie'); };
+  $('#fermer-fiche').onclick = () => { $('#fiche').hidden = true; etat.selection = null; if (etat.trajet) { etat.trajet.remove(); etat.trajet = null; } };
+  document.body.addEventListener('click', (e) => {
+    const el = e.target.closest('.ligne[data-num], .alerte[data-num], .paquet[data-num]');
+    if (!el || el.closest('#fiche')) return;
+    const num = Number(el.dataset.num);
+    const n = etat.noeuds.get(num);
+    if (n && n.lat != null) carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 11), { duration: 0.6 });
+    ouvrirFiche(num);
+  });
+  $('#recherche').oninput = rendreNoeuds;
+  $('#tri').onchange = rendreNoeuds;
+  { const bp = $('#btn-position-envoi'); if (bp) bp.onclick = () => { const c = carte.getCenter(); insererPosition($('#form-envoi').texte, c.lat, c.lng); }; }
+  { const g = $('#groupe-noeuds'); if (g) { try { g.value = localStorage.getItem('gaulix_groupe') || ''; } catch { /* ignoré */ } g.hidden = !etat.membre; g.onchange = () => { try { localStorage.setItem('gaulix_groupe', g.value); } catch { /* ignoré */ } rendreNoeuds(); }; } }
+  $('#fenetre').onchange = chargerLiens;
+  document.querySelectorAll('.bascule').forEach((b) => (b.onclick = () => {
+    const c = b.dataset.couche;
+    etat.couches[c] = !etat.couches[c];
+    b.classList.toggle('actif', etat.couches[c]);
+    if (c) ecrireLs('gaulix_couches', etat.couches); // choix gardé pour la prochaine visite
+    if (c === 'inactifs') { dessinerNoeuds(); rendreLegende(); } else if (c === 'sommets') dessinerSommets(); else if (c === 'animations') { if (typeof dessinerAxes === 'function') dessinerAxes(); } else if (c === 'federation') dessinerFederation(); else if (c === 'routiers') dessinerRoutiers(); else if (c === 'releves') dessinerReleves(); else dessinerLiens();
+  }));
+  $('#filtres').onclick = (e) => {
+    const b = e.target.closest('button[data-port]');
+    if (!b) return;
+    const p = b.dataset.port;
+    etat.filtresPorts.has(p) ? etat.filtresPorts.delete(p) : etat.filtresPorts.add(p);
+    rendreFiltres();
+    chargerFlux();
+  };
+  carte.on('zoomend', () => { dessinerNoeuds(); if (typeof mcDessinerNoeuds === 'function') mcDessinerNoeuds(); });
+  { let m = null; carte.on('moveend', () => { clearTimeout(m); m = setTimeout(dessinerSommets, 150); }); }
+  $('#btn-couvrir').onclick = () => { basculerMode(etat.modeCarte === 'couvrir' ? null : 'couvrir'); if (etat.modeProfil) $('#btn-profil').click(); };
+  $('#btn-couv-ici').onclick = () => { basculerMode(etat.modeCarte === 'ici' ? null : 'ici'); if (etat.modeProfil) $('#btn-profil').click(); };
+  $('#btn-relier').onclick = () => { etat.relierA = null; basculerMode(etat.modeCarte === 'relier' ? null : 'relier'); if (etat.modeProfil) $('#btn-profil').click(); };
+  carte.on('click', (e) => {
+    if (etat.dessinZone) { ajouterPointZone(e.latlng); return; }
+    const m = etat.modeCarte;
+    if (!m) return;
+    if (m === 'relier') { choisirPointRelier(e.latlng); return; }
+    if (m === 'couvrir-plus') { basculerMode(null); ajouterCible(e.latlng); return; }
+    if (m === 'couv-plus') { basculerMode(null); ajouterSiteCouverture(e.latlng); return; }
+    if (m === 'simu-ajout') { basculerMode(null); ajouterRelaisSimulation(e.latlng); return; }
+    basculerMode(null);
+    if (m === 'couvrir') { etat.ciblesMulti = null; couvrirPoint(e.latlng); } else couvertureIci(e.latlng, Number($('#relief-hs') ? $('#relief-hs').value : 6) || 6);
+  });
+  // Clic droit : menu rapide sur n'importe quel lieu
+  carte.on('contextmenu', (e) => {
+    const div = L.DomUtil.create('div', 'menu-contexte');
+    const lat = e.latlng.lat, lon = e.latlng.lng;
+    div.innerHTML = `<div class="ctx-coords"><b class="mono">${lat.toFixed(5)}, ${lon.toFixed(5)}</b><button class="mini" data-copier="${lat.toFixed(5)}, ${lon.toFixed(5)}">Copier</button></div>${etat.membre ? '<button data-a="signaler">🚩 Signaler un événement ici</button><button data-a="partager">📍 Partager ce point dans un message</button>' : ''}<button data-a="ici">Couverture depuis ici</button><button data-a="couvrir">Couvrir ce point (4 points hauts)</button><button data-a="relier">${etat.modeCarte === 'relier' && etat.relierA ? 'Relier jusqu’ici (arrivée)' : 'Relier depuis ici (relais nécessaires)'}</button><button data-a="profil">${etat.modeProfil && etat.modeProfil.a ? 'Profil jusqu’ici (point B)' : 'Profil depuis ici (point A)'}</button>`;
+    const pop = L.popup({ closeButton: false, className: 'popup-contexte' }).setLatLng(e.latlng).setContent(div).openOn(carte);
+    div.onclick = (ev) => {
+      const a = ev.target.closest('button');
+      if (!a) return;
+      carte.closePopup(pop);
+      if (a.dataset.a === 'partager') { partagerPoint(lat, lon); return; }
+      if (a.dataset.a === 'signaler') { formSignalement(lat, lon); return; }
+      if (a.dataset.a === 'profil') {
+        if (!etat.modeProfil) $('#btn-profil').click();
+        choisirPointProfil({ lat: e.latlng.lat, lon: e.latlng.lng, nom: `Point ${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`, h: 3 });
+      } else if (a.dataset.a === 'relier') { if (etat.modeCarte !== 'relier') { etat.relierA = null; basculerMode('relier'); } choisirPointRelier(e.latlng); }
+      else if (a.dataset.a === 'couvrir-plus') ajouterCible(e.latlng);
+      else if (a.dataset.a === 'couv-plus') ajouterSiteCouverture(e.latlng);
+      else if (a.dataset.a === 'ici') couvertureIci(e.latlng, 6); else { etat.ciblesMulti = null; couvrirPoint(e.latlng); }
+    };
+  });
+  document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if (etat.modeCarte) basculerMode(null); else if (etat.modeProfil) $('#btn-profil').click(); });
+  $('#sel-zone').onchange = (e) => { etat.zoneMode = e.target.value; appliquerZone(true); if (typeof mcRedessiner === 'function') { mc.emprise = null; mcRedessiner(); mcMajAlertes(); } };
+  $('#aller-plan').onclick = allerPlan;
+  const ocm = $('#outil-companion-mc');
+  if (ocm) ocm.onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; const o = document.querySelector('.onglets button[data-onglet="meshcore"]'); if (o) o.click(); const c = document.querySelector('.sous-onglets-mc button[data-mc-vue="companion"]'); if (c) c.click(); };
+  $('#aller-couv-reseau').onclick = couvertureReseau;
+  $('#btn-couv-reseau').onclick = () => { const mr = $('#menu-radio'); if (mr) mr.open = false; couvertureReseau(); };
+  $('#btn-couv-mesuree').onclick = () => { const mr = $('#menu-radio'); if (mr) mr.open = false; couvertureMesuree(); };
+  $('#outil-rapport').onclick = async () => {
+    const m = document.querySelector('.menu-outils'); if (m) m.open = false;
+    let l = [];
+    try { l = await api('/api/rapports'); } catch { /* aucun */ }
+    $('#fiche').hidden = false; etat.selection = null;
+    $('#fiche-contenu').innerHTML = `<h2>📄 Rapport hebdomadaire</h2>
+      <p class="note">État du réseau sur les 7 derniers jours : relais, batteries, alertes, couverture, liaisons, nouveaux nœuds, conformité, firmwares, MeshCore. La page s’imprime en PDF (bouton « Imprimer / PDF »). Un rapport est archivé chaque lundi matin.</p>
+      <div class="actions-prop"><a class="bascule principal" href="/rapport" target="_blank" rel="noopener">Ouvrir le rapport des 7 derniers jours</a></div>
+      <h3>Archives</h3>${l.map((x) => `<div class="ligne"><span class="titre"><a href="/rapports/${encodeURIComponent(x)}" target="_blank" rel="noopener">Semaine du ${esc(x.slice(8, 18).split('-').reverse().join('/'))}</a></span></div>`).join('') || '<div class="vide">Pas encore d’archive (premier rapport lundi prochain vers 7 h).</div>'}`;
+  };
+  { const bc = $('#btn-chercher-reglage'); if (bc) bc.onclick = ouvrirRechercheReglages; }
+  { const bf = $('#outil-france'); if (bf) { bf.hidden = !etat.admin; bf.onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; ficheFrance(); }; } }
+  { const bs = $('#outil-signalements'); if (bs) bs.onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; ficheSignalements(); }; }
+  { const bt = $('#outil-trafic'); if (bt) bt.onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; ficheTrafic(); }; }
+  { const bc = $('#outil-connecter'); if (bc) bc.onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; ouvrirConnexion(); }; }
+  $('#outil-portee').onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; testPortee(null); };
+  $('#outil-terrain').onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; ficheTerrain(); };
+  $('#outil-partager').onclick = () => { const m = document.querySelector('.menu-outils'); if (m) m.open = false; fichePartager(); };
+  $('#btn-simulation').onclick = () => { const mr = $('#menu-radio'); if (mr) mr.open = false; simulation(); };
+  $('#btn-plan-menu').onclick = () => { const mr = $('#menu-radio'); if (mr) mr.open = false; allerPlan(); };
+  $('#consigne-annuler').onclick = () => { if (etat.modeCarte) basculerMode(null); if (etat.modeProfil) $('#btn-profil').click(); };
+  $('#btn-profil').onclick = () => {
+    const actif = !etat.modeProfil;
+    if (actif && etat.modeCarte) basculerMode(null);
+    etat.modeProfil = actif ? { a: null } : null;
+    $('#btn-profil').classList.toggle('actif', actif);
+    majConsigne(actif ? 'Profil : cliquez le point A' : null);
+    const mr = $('#menu-radio'); if (mr) mr.open = false;
+    document.body.classList.toggle('mode-viseur', actif);
+    if (!actif && etat.repereProfil) { etat.repereProfil.remove(); etat.repereProfil = null; }
+  };
+  // En mode profil, un clic n'importe où sur la carte choisit un point (ni nœud ni sommet nécessaire)
+  carte.on('click', (e) => {
+    if (!etat.modeProfil) return;
+    choisirPointProfil({ lat: e.latlng.lat, lon: e.latlng.lng, nom: `Point ${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`, h: 3 });
+  });
+  $('#btn-rejeu').onclick = () => (etat.rejeu ? fermerRejeu() : demarrerRejeu().catch((e) => alert(e.message)));
+  $('#rejeu-lecture').onclick = () => lireRejeu(!etat.rejeu.actif);
+  $('#rejeu-fermer').onclick = fermerRejeu;
+  $('#rejeu-curseur').oninput = (e) => placerRejeu(Number(e.target.value));
+  $('#btn-effacer').onclick = () => {
+    etat.ciblesMulti = null;
+    etat.sitesCouv = null;
+    if (etat.coucheCouverture) etat.coucheCouverture.remove();
+    if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
+    etat.coucheCouverture = null; etat.coucheCouvrir = null; $('#btn-effacer').hidden = true;
+    restaurerLiaisons();
+  };
+  $('#analyse-periode').onchange = chargerAnalyse;
+  $('#fermer-profil').onclick = () => $('#dlg-profil').close();
+  $('#form-profil').onsubmit = (e) => { e.preventDefault(); calculerProfil(); };
+
+  brancherComptes();
+  document.querySelectorAll('dialog [data-fermer]').forEach((b) => (b.onclick = () => b.closest('dialog').close()));
+}
+
+// ---- Comptes : connexion, inscription, gestion, installation --------------------------------
+const postJson = (url, corps, methode = 'POST') => api(url, { method: methode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corps || {}) });
+// ---- Sauvegardes des réglages (admin) ----------------------------------------------------------
+async function rendreSauvegardes() {
+  const z = $('#pan-sauvegardes');
+  let l = [];
+  try { l = await api('/api/sauvegardes'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  z.innerHTML = `<p class="note">Chaque nuit vers 3 h 30, la carte sauvegarde ses réglages : comptes, réglages généraux, fiches d’installation des relais, modules radio, configurations lues des nœuds, mots de passe d’administration MeshCore, traceroutes. Les 14 dernières sont gardées sur le NAS. Les données radio (paquets, liens) ne sont pas sauvegardées : elles se reconstituent toutes seules.</p>
+    <p class="note"><b>Fichier sensible</b> (clés des canaux, mots de passe d’administration MeshCore) : gardez la copie téléchargée en lieu sûr.</p>
+    <div class="actions-prop"><button id="sv-maintenant" class="principal">Sauvegarder maintenant</button></div>
+    <div class="liste">${l.map((x) => `<div class="ligne"><span class="titre">${esc(x.nom.replace('sauvegarde-', '').replace('.json', ''))}<small>${Math.round(x.taille / 1024)} ko · ${new Date(x.date).toLocaleString('fr-FR')}</small></span><span class="meta"><a class="bouton-lien" href="/api/sauvegardes/${encodeURIComponent(x.nom)}">Télécharger</a></span></div>`).join('') || '<div class="vide">Aucune sauvegarde pour l’instant.</div>'}</div>
+    <h4>Restaurer</h4>
+    <p class="note">Choisissez un fichier de sauvegarde téléchargé : les réglages et les comptes sont remplacés (l’état actuel est d’abord mis de côté), puis la carte redémarre.</p>
+    <input type="file" id="sv-fichier" accept=".json,application/json"><button id="sv-restaurer" disabled>Restaurer ce fichier</button>
+    <p class="erreur" id="sv-retour"></p>`;
+  $('#sv-maintenant').onclick = async () => { try { await postJson('/api/sauvegardes', {}); rendreSauvegardes(); } catch (e) { $('#sv-retour').textContent = e.message; } };
+  const fi = $('#sv-fichier'), br = $('#sv-restaurer');
+  fi.onchange = () => { br.disabled = !fi.files.length; };
+  br.onclick = async () => {
+    const f = fi.files[0];
+    if (!f) return;
+    let s;
+    try { s = JSON.parse(await f.text()); } catch { $('#sv-retour').textContent = 'Fichier illisible'; return; }
+    if (s.format !== 'carte-live-sauvegarde') { $('#sv-retour').textContent = 'Ce fichier n’est pas une sauvegarde de la carte'; return; }
+    if (!(await confirmer(`Restaurer la sauvegarde du ${new Date(s.date).toLocaleString('fr-FR')} ? Les réglages et les comptes actuels seront remplacés et la carte redémarrera.`))) return;
+    try { await postJson('/api/sauvegardes/restaurer', s); attendreRedemarrage('Sauvegarde restaurée'); } catch (e) { $('#sv-retour').textContent = e.message; }
+  };
+}
+function ongletsDialogue(dlg) {
+  dlg.querySelectorAll('[data-dlg]').forEach((b) => (b.onclick = () => {
+    dlg.querySelectorAll('[data-dlg]').forEach((x) => x.classList.toggle('actif', x === b));
+    dlg.querySelectorAll('[data-pan]').forEach((p) => (p.hidden = p.dataset.pan !== b.dataset.dlg));
+    if (b.dataset.dlg === 'comptes') rendreComptes();
+    if (b.dataset.dlg === 'journal') rendreJournal();
+    if (b.dataset.dlg === 'sauvegardes') rendreSauvegardes();
+    if (b.dataset.dlg === 'archive') rendreArchive();
+    if (b.dataset.dlg === 'reglages') rendreReglages();
+  }));
+}
+async function attendreRedemarrage(message) {
+  document.body.insertAdjacentHTML('beforeend', `<div class="voile-redemarrage"><div><b>${esc(message)}</b><br><small>Le service redémarre, la page se rechargera toute seule.</small></div></div>`);
+  await new Promise((r) => setTimeout(r, 4000));
+  for (let k = 0; k < 60; k++) {
+    try { const r = await fetch('/sante', { cache: 'no-store' }); if (r.ok) { location.reload(); return; } } catch { /* pas encore prêt */ }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  location.reload();
+}
+
+function brancherComptes() {
+  const dlgC = $('#dlg-compte'), dlgG = $('#dlg-gestion');
+  ongletsDialogue(dlgC);
+  ongletsDialogue(dlgG);
+  $('#fermer-compte').onclick = () => dlgC.close();
+  $('#fermer-gestion').onclick = () => dlgG.close();
+  $('#btn-admin').onclick = () => {
+    if (etat.membre) { ouvrirGestion(); return; }
+    dlgC.querySelectorAll('.erreur').forEach((x) => (x.textContent = ''));
+    const insc = etat.config.inscriptions;
+    $('#onglet-inscription').hidden = insc === 'fermees';
+    $('#note-inscription').textContent = insc === 'validation' ? 'Votre compte sera actif après validation par un administrateur de la carte.' : 'Votre compte sera actif immédiatement.';
+    dlgC.showModal();
+    $('#form-connexion').identifiant.focus();
+  };
+  $('#form-connexion').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try { await postJson('/api/connexion', { identifiant: f.identifiant.value, motDePasse: f.motDePasse.value, code: f.code.value || undefined }); location.reload(); }
+    catch (err) {
+      // Double authentification : le code à 6 chiffres est demandé après le mot de passe
+      if (err.donnees && err.donnees.codeRequis) { $('#champ-code').hidden = false; f.code.required = true; f.code.focus(); f.querySelector('.erreur').textContent = f.code.value ? err.message : ''; }
+      else f.querySelector('.erreur').textContent = err.message;
+    }
+  };
+  $('#form-inscription').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, err = f.querySelector('.erreur');
+    if (f.motDePasse.value !== f.confirmation.value) { err.textContent = 'Les deux mots de passe sont différents'; return; }
+    try {
+      const r = await postJson('/api/inscription', { identifiant: f.identifiant.value, indicatif: f.indicatif.value, email: f.email.value, motDePasse: f.motDePasse.value });
+      if (r.enAttente) { f.innerHTML = '<p class="succes">Inscription enregistrée ✓<br>Un administrateur doit valider votre compte ; vous pourrez ensuite vous connecter.</p>'; }
+      else location.reload();
+    } catch (x) { err.textContent = x.message; }
+  };
+}
+
+// Bouton « Reprendre la lecture » d'une lecture de configuration incomplète
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('#reprendre-lecture');
+  if (!b) return;
+  b.disabled = true; b.textContent = 'Reprise…';
+  try {
+    const t = await postJson('/api/admin-noeuds/taches', { type: 'lire', cibles: [Number(b.dataset.num)], params: { reprendre: true } });
+    gestion.lectureSuivie = t.id; voirTache(t.id); suivreTaches();
+  } catch (err) { b.disabled = false; b.textContent = '↻ Reprendre la lecture'; alert(err.message); }
+});
+function ouvrirGestion() {
+  const dlg = $('#dlg-gestion');
+  dlg.querySelectorAll('.seul-admin').forEach((b) => (b.hidden = !etat.admin));
+  const c = etat.config.compte;
+  $('#pan-moncompte').innerHTML = `
+    <div class="grille">
+      <div class="mesure"><span>Identifiant</span><b>${esc(c.identifiant)}</b></div>
+      <div class="mesure"><span>Rôle</span><b>${ROLES_COMPTE[c.role] || c.role}</b></div>
+      <div class="mesure"><span>Double authentification</span><b>${c.deuxFacteurs ? '✔ activée' : 'non'}</b></div>
+      <div class="mesure"><span>Indicatif</span><b>${esc(c.indicatif || '–')}</b></div>
+    </div>
+    <h3>Changer de mot de passe</h3>
+    <form id="form-mdp" class="parametres compact">
+      <label>Actuel <input name="ancien" type="password" autocomplete="current-password" required></label>
+      <label>Nouveau <input name="nouveau" type="password" autocomplete="new-password" required minlength="8"></label>
+      <button type="submit">Changer</button>
+    </form>
+    <p class="erreur" id="retour-mdp"></p>
+    <h3>Double authentification</h3>
+    <div id="zone-2fa">${c.deuxFacteurs ? `<p class="note">Un code de votre application d’authentification est demandé à chaque connexion.</p>
+      <form id="form-2fa-retirer" class="parametres compact"><label>Mot de passe <input name="motDePasse" type="password" autocomplete="current-password" required></label><button type="submit">Désactiver</button></form>`
+      : `<p class="note">Recommandée pour les comptes qui programment les relais : en plus du mot de passe, un code à 6 chiffres donné par une application (Google Authenticator, Aegis, FreeOTP, 2FAS…).</p><button id="btn-2fa">Activer la double authentification</button>`}</div>
+    <p class="erreur" id="retour-2fa"></p>
+    <h3>Sessions</h3>
+    <p class="note">Vous êtes resté connecté sur un appareil perdu ou partagé ? Fermez toutes vos autres sessions (celle-ci reste ouverte).</p>
+    <div class="actions"><button id="btn-deco-partout">Déconnecter mes autres appareils</button><button id="btn-deconnexion">Se déconnecter</button></div>`;
+  const r2 = (t) => ($('#retour-2fa').textContent = t);
+  const b2 = $('#btn-2fa');
+  if (b2) b2.onclick = async () => {
+    try {
+      const r = await postJson('/api/compte/deux-facteurs/preparer');
+      $('#zone-2fa').innerHTML = `<p class="note">1. Scannez ce QR code avec l’application (ou saisissez la clé). 2. Tapez le code à 6 chiffres affiché.</p>
+        <div class="qr-2fa"><img src="${r.qr}" alt="QR code"><span class="mono">${esc(r.secret.replace(/(.{4})/g, '$1 ').trim())}</span></div>
+        <form id="form-2fa" class="parametres compact"><label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label><button type="submit" class="principal">Activer</button></form>`;
+      $('#form-2fa').onsubmit = async (e) => { e.preventDefault(); try { await postJson('/api/compte/deux-facteurs/activer', { code: e.target.code.value }); etat.config.compte.deuxFacteurs = true; ouvrirGestion(); r2('✔ Double authentification activée.'); } catch (x) { r2(x.message); } };
+    } catch (x) { r2(x.message); }
+  };
+  const f2 = $('#form-2fa-retirer');
+  if (f2) f2.onsubmit = async (e) => { e.preventDefault(); try { await postJson('/api/compte/deux-facteurs/retirer', { motDePasse: e.target.motDePasse.value }); etat.config.compte.deuxFacteurs = false; ouvrirGestion(); } catch (x) { r2(x.message); } };
+  $('#btn-deco-partout').onclick = async () => { try { await postJson('/api/compte/deconnecter-partout'); r2('✔ Toutes vos autres sessions sont fermées.'); } catch (x) { r2(x.message); } };
+  $('#form-mdp').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await postJson('/api/compte/mot-de-passe', { ancien: e.target.ancien.value, nouveau: e.target.nouveau.value }); $('#retour-mdp').textContent = 'Mot de passe changé ✓'; e.target.reset(); }
+    catch (x) { $('#retour-mdp').textContent = x.message; }
+  };
+  $('#btn-deconnexion').onclick = async () => { await postJson('/api/deconnexion'); location.reload(); };
+  dlg.querySelector('[data-dlg="moncompte"]').click();
+  dlg.showModal();
+}
+
+const ROLES_COMPTE = { membre: 'Membre', gestionnaire: 'Gestionnaire de secteur', admin: 'Administrateur' };
+// Choix des nœuds d'un gestionnaire : relais Meshtastic connus et répéteurs MeshCore, ou saisie libre (!a1b2c3d4, clé MeshCore)
+function editerSecteur(c, fini) {
+  const z = $('#edition-secteur');
+  const choisis = new Set(c.noeuds || []);
+  const mt = [...etat.noeuds.values()].filter((n) => n.infrastructure || choisis.has(String(n.num))).map((n) => ({ id: String(n.num), nom: n.nomLong || n.id, info: n.id + (n.role ? ' · ' + n.role : '') }));
+  const mcl = (typeof mc !== 'undefined' && mc.noeuds ? [...mc.noeuds.values()] : []).filter((n) => ['repeteur', 'salon'].includes(n.role) || choisis.has(String(n.cle).toUpperCase())).map((n) => ({ id: String(n.cle).toUpperCase(), nom: n.nom || n.cle.slice(0, 8), info: 'MeshCore · ' + n.cle.slice(0, 8) }));
+  const tous = [...mt, ...mcl].sort((a, b) => a.nom.localeCompare(b.nom));
+  const connus = new Set(tous.map((x) => x.id));
+  const autres = [...choisis].filter((x) => !connus.has(x));
+  z.innerHTML = `<h3>Secteur de ${esc(c.identifiant)}</h3>
+    <div class="recherche"><input id="filtre-secteur" type="search" placeholder="Filtrer…"></div>
+    <div class="liste-gestion" style="max-height:260px">${tous.map((x) => `<label class="ligne-gestion" data-nom="${esc((x.nom + ' ' + x.info).toLowerCase())}"><input type="checkbox" value="${x.id}" ${choisis.has(x.id) ? 'checked' : ''}><span class="titre">${esc(x.nom)} <small>${esc(x.info)}</small></span></label>`).join('') || '<div class="vide">Aucun relais connu.</div>'}</div>
+    <label class="champ-libre">Autres nœuds (identifiants !xxxxxxxx ou clés MeshCore, séparés par des virgules) <input id="secteur-autres" value="${esc(autres.join(', '))}"></label>
+    <div class="actions-prop"><button class="principal" id="secteur-ok">Enregistrer le secteur</button><button id="secteur-annuler">Annuler</button></div>`;
+  z.scrollIntoView({ block: 'nearest' });
+  $('#filtre-secteur').oninput = (e) => { const t = e.target.value.toLowerCase(); z.querySelectorAll('[data-nom]').forEach((l) => (l.hidden = t && !l.dataset.nom.includes(t))); };
+  $('#secteur-annuler').onclick = () => (z.innerHTML = '');
+  $('#secteur-ok').onclick = async () => {
+    const l = [...z.querySelectorAll('input[type=checkbox]:checked')].map((i) => i.value).concat($('#secteur-autres').value.split(/[\s,;]+/).filter(Boolean));
+    try { await postJson(`/api/comptes/${c.id}`, { noeuds: l }); z.innerHTML = ''; fini(); } catch (e) { $('#retour-comptes').textContent = e.message; }
+  };
+}
+const ACTIONS_AUDIT = [
+  [/admin-noeuds\/taches\/[^/]+\/relancer/, 'Programmation relancée'], [/admin-noeuds\/taches\/[^/]+\/arreter/, 'Programmation arrêtée'], [/admin-noeuds\/taches$/, 'Programmation à distance (Meshtastic)'],
+  [/mc\/admin\/taches/, 'Administration MeshCore'], [/mc\/admin\/mot-de-passe/, 'Mot de passe MeshCore mémorisé'], [/compte\/deux-facteurs\/activer/, 'Double authentification activée'],
+  [/compte\/deux-facteurs\/retirer/, 'Double authentification retirée'], [/compte\/deux-facteurs\/preparer/, 'Double authentification : QR code affiché'], [/compte\/deconnecter-partout/, 'Autres sessions fermées'],
+  [/compte\/mot-de-passe/, 'Mot de passe changé'], [/^DELETE \/api\/comptes/, 'Compte supprimé'], [/\/api\/comptes\/\d+/, 'Compte modifié'], [/\/api\/comptes$/, 'Compte créé'],
+  [/installation$/, 'Fiche d’installation'], [/a-faire$/, 'Note « à faire sur place »'], [/sauvegardes\/restaurer/, 'Sauvegarde restaurée'], [/\/api\/sauvegardes$/, 'Sauvegarde manuelle'],
+  [/traceroute\//, 'Traceroute manuel'], [/\/api\/envoi/, 'Message envoyé'], [/mc\/messages/, 'Message MeshCore envoyé'], [/federation/, 'Bulles voisines'], [/releves/, 'Relevé de terrain'],
+  [/radio\/(connecter|deconnecter|modules|scanner|agents)/, 'Module radio'], [/reglages|mqtt|config/, 'Réglages'],
+];
+const libelleAudit = (a) => { for (const [re, l] of ACTIONS_AUDIT) if (re.test(a)) return `${l} <small class="mono">${esc(a)}</small>`; return esc(a); };
+async function rendreJournal(filtre) {
+  const z = $('#pan-journal');
+  let l;
+  try { l = await api('/api/audit?limite=500' + (filtre ? '&action=' + encodeURIComponent(filtre) : '')); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  let bl = [];
+  try { bl = await api('/api/securite/blocages'); } catch { /* ignoré */ }
+  const blocs = bl.length ? `<h3>🔒 Blocages et échecs récents</h3>
+    <table class="voisins"><thead><tr><th>Adresse ou compte</th><th>État</th><th></th></tr></thead><tbody>
+    ${bl.map((x) => `<tr class="${x.bloqueJusqua ? 'refus' : ''}"><td>${x.type === 'ip' ? '🌐 ' : '👤 '}<span class="mono">${esc(x.valeur)}</span></td><td>${x.bloqueJusqua ? `bloqué jusqu’à ${new Date(x.bloqueJusqua).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}${x.niveau > 1 ? ` (${x.niveau}ᵉ blocage)` : ''}` : `${x.echecs} échec${x.echecs > 1 ? 's' : ''} récent${x.echecs > 1 ? 's' : ''}`}</td><td><button class="mini" data-debloquer="${esc(x.cle)}">Débloquer</button></td></tr>`).join('')}
+    </tbody></table>` : '<p class="note">🔒 Aucun blocage en cours.</p>';
+  z.innerHTML = `<p class="note">Qui a fait quoi : connexions (et refus), programmation des nœuds, réglages, comptes, sauvegardes… Les mots de passe, clés et codes n’y figurent jamais. Gardé 180 jours.</p>
+    <p class="note">Sécurité : après ${3} échecs de connexion en 15 min, l’adresse est bloquée 15 min (durée doublée à chaque récidive, jusqu’à 24 h) et le compte visé est suspendu 15 min.</p>
+    ${blocs}
+    <div class="recherche"><input id="filtre-journal" type="search" placeholder="Filtrer (ex. connexion, admin-noeuds, comptes)…" value="${esc(filtre || '')}"></div>
+    <table class="voisins journal-audit"><thead><tr><th>Quand</th><th>Qui</th><th>Action</th><th>Détail</th></tr></thead><tbody>
+    ${l.map((x) => `<tr class="${x.ok ? '' : 'refus'}"><td title="${new Date(x.heure).toLocaleString('fr-FR')}">${new Date(x.heure).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td>${esc(x.compte || '?')}<br><small>${esc(x.ip || '')}</small></td><td>${x.ok ? '' : '⛔ '}${libelleAudit(x.action)}</td><td><small>${esc(x.detail || '')}</small></td></tr>`).join('') || '<tr><td colspan="4" class="vide">Rien pour l’instant.</td></tr>'}
+    </tbody></table>`;
+  const fi = $('#filtre-journal');
+  fi.onchange = () => rendreJournal(fi.value.trim());
+  z.querySelectorAll('[data-debloquer]').forEach((b) => (b.onclick = async () => { try { await postJson('/api/securite/debloquer', { cle: b.dataset.debloquer }); } catch (e) { alert(e.message); return; } rendreJournal(filtre); }));
+}
+async function rendreComptes() {
+  const z = $('#pan-comptes');
+  let liste;
+  try { liste = await api('/api/comptes'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const STATUTS = { actif: 'Actif', en_attente: 'À valider', desactive: 'Désactivé' };
+  z.innerHTML = `
+    <table class="voisins comptes"><thead><tr><th>Identifiant</th><th>Indicatif</th><th>Rôle</th><th>Statut</th><th>Dernière connexion</th><th></th></tr></thead><tbody>
+    ${liste.map((c) => `<tr data-id="${c.id}">
+      <td><b>${esc(c.identifiant)}</b>${c.email ? `<br><small>${esc(c.email)}</small>` : ''}</td><td>${esc(c.indicatif || '–')}</td>
+      <td><select data-role>${['membre', 'gestionnaire', 'admin'].map((r) => `<option value="${r}" ${c.role === r ? 'selected' : ''}>${ROLES_COMPTE[r]}</option>`).join('')}</select>${c.role === 'gestionnaire' ? `<br><button class="mini" data-secteur>Secteur : ${(c.noeuds || []).length} nœud(s)…</button>` : ''}</td>
+      <td><span class="badge ${c.statut === 'actif' ? 'actif' : c.statut === 'en_attente' ? 'attente' : 'inactif'}">${STATUTS[c.statut] || c.statut}</span>${c.deuxFacteurs ? ' <span class="badge actif" title="Double authentification activée">2FA</span>' : ''}</td>
+      <td>${c.derniere ? ilYa(c.derniere) : 'jamais'}</td>
+      <td class="actions-ligne">${c.statut === 'en_attente' ? '<button data-statut="actif" class="principal">Valider</button>' : c.statut === 'actif' ? '<button data-statut="desactive">Désactiver</button>' : '<button data-statut="actif">Réactiver</button>'}${c.deuxFacteurs ? '<button data-retirer-2fa title="Téléphone perdu : retirer la double authentification de ce compte">Retirer 2FA</button>' : ''}<button data-deco title="Fermer toutes les sessions ouvertes de ce compte">Déconnecter</button><button data-suppr title="Supprimer">✕</button></td>
+    </tr>`).join('')}
+    </tbody></table>
+    <h3>Ajouter un compte</h3>
+    <form id="form-ajout-compte" class="parametres compact">
+      <label>Identifiant <input name="identifiant" required minlength="3"></label>
+      <label>Indicatif <input name="indicatif"></label>
+      <label>Mot de passe provisoire <input name="motDePasse" type="password" required minlength="8" autocomplete="new-password"></label>
+      <label>Rôle <select name="role"><option value="membre">Membre</option><option value="gestionnaire">Gestionnaire de secteur</option><option value="admin">Administrateur</option></select></label>
+      <button type="submit">Créer</button>
+    </form>
+    <p class="erreur" id="retour-comptes"></p>
+    <div id="edition-secteur"></div>
+    <p class="note">Un <b>membre</b> voit les messages texte et les positions exactes. Un <b>gestionnaire de secteur</b> programme à distance, remplit la fiche d’installation et teste (traceroute) les seuls nœuds de son secteur, Meshtastic ou MeshCore. Un <b>administrateur</b> gère en plus les comptes, les réglages, les modules et tous les nœuds.</p>`;
+  const retour = (t) => ($('#retour-comptes').textContent = t);
+  const action = async (fn) => { try { await fn(); rendreComptes(); } catch (e) { retour(e.message); } };
+  z.querySelectorAll('tr[data-id]').forEach((tr) => {
+    const id = tr.dataset.id;
+    tr.querySelector('[data-role]').onchange = (e) => action(() => postJson(`/api/comptes/${id}`, { role: e.target.value }));
+    const bs = tr.querySelector('[data-statut]');
+    if (bs) bs.onclick = () => action(() => postJson(`/api/comptes/${id}`, { statut: bs.dataset.statut }));
+    tr.querySelector('[data-suppr]').onclick = async () => { if ((await confirmer('Supprimer ce compte ?'))) action(() => postJson(`/api/comptes/${id}`, {}, 'DELETE')); };
+    const b2f = tr.querySelector('[data-retirer-2fa]');
+    if (b2f) b2f.onclick = async () => { if ((await confirmer('Retirer la double authentification de ce compte ?'))) action(() => postJson(`/api/comptes/${id}`, { retirerDeuxFacteurs: true })); };
+    tr.querySelector('[data-deco]').onclick = () => action(() => postJson(`/api/comptes/${id}`, { deconnecter: true }));
+    const bsec = tr.querySelector('[data-secteur]');
+    if (bsec) bsec.onclick = () => editerSecteur(liste.find((c) => String(c.id) === id), () => rendreComptes());
+  });
+  $('#form-ajout-compte').onsubmit = (e) => {
+    e.preventDefault();
+    const f = e.target;
+    action(() => postJson('/api/comptes', { identifiant: f.identifiant.value, indicatif: f.indicatif.value, motDePasse: f.motDePasse.value, role: f.role.value }));
+  };
+}
+
+// Zone hors de France : carré de 1° × 1° nommé d'après son coin sud-ouest (ex. MN40W075), relief Copernicus
+const RE_MONDE = /^M([NS])(\d{2})([EW])(\d{3})$/;
+function codeMonde(lat, lon) {
+  const la = Math.floor(lat), lo = Math.floor(lon), p = (n, l) => String(Math.abs(n)).padStart(l, '0');
+  return `M${la >= 0 ? 'N' : 'S'}${p(la, 2)}${lo >= 0 ? 'E' : 'W'}${p(lo, 3)}`;
+}
+function nomMonde(code) {
+  const m = RE_MONDE.exec(code || ''); if (!m) return code;
+  const s = (m[1] === 'N' ? 1 : -1) * Number(m[2]), o = (m[3] === 'E' ? 1 : -1) * Number(m[4]);
+  const d = (v, a, b) => `${Math.abs(v)}°${v >= 0 ? a : b}`;
+  return `${d(s, 'N', 'S')}–${d(s + 1, 'N', 'S')} · ${d(o, 'E', 'W')}–${d(o + 1, 'E', 'W')}`;
+}
+async function optionsDepartements(select, code) {
+  const liste = await api('/api/departements').catch(() => []);
+  const monde = RE_MONDE.test(code || '');
+  select.innerHTML = `<optgroup label="🌍 Monde (relief Copernicus)">${monde ? `<option value="${esc(code)}" selected>🌍 ${esc(nomMonde(code))}</option>` : ''}<option value="choisir-monde">🌍 Hors de France : choisir la position…</option></optgroup>`
+    + `<optgroup label="France (relief IGN)">${liste.map((d) => `<option value="${d.code}" ${d.code === code ? 'selected' : ''}>${d.code} · ${esc(d.nom)}</option>`).join('')}</optgroup>`;
+  let avant = select.value;
+  select.addEventListener('change', async () => {
+    if (select.value !== 'choisir-monde') { avant = select.value; return; }
+    const c = typeof carte !== 'undefined' ? carte.getCenter() : { lat: 40, lng: -75 };
+    const v = typeof saisir === 'function'
+      ? await saisir('Position du centre de votre réseau (latitude, longitude en degrés décimaux, ex. 40.7, -74.0) :', `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`)
+      : prompt('Latitude, longitude du centre de votre réseau :', `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`);
+    const m = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/.exec(v || '');
+    if (!m || Math.abs(Number(m[1])) > 85 || Math.abs(Number(m[2])) > 180) { select.value = avant; return; }
+    const k = codeMonde(Number(m[1]), Number(m[2]));
+    let o = [...select.options].find((x) => x.value === k);
+    if (!o) { o = new Option('🌍 ' + nomMonde(k), k); select.querySelector('optgroup').prepend(o); }
+    select.value = avant = k;
+  });
+}
+
+async function rendreReglages() {
+  const z = $('#pan-reglages');
+  let r;
+  try { r = await api('/api/reglages'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  z.innerHTML = `
+    <form id="form-reglages">
+      <div class="grille-form">
+        <label>Nom de la carte <input name="titre" value="${esc(r.titre)}" maxlength="80"></label>
+        <label>Département <select name="departement"></select><small>Fixe la zone, le contour et le centrage de la carte</small></label>
+        <div class="large-col note-source">${r.depuisPage && r.depuisPage.mqtt ? `⚠️ Le serveur MQTT est réglé ici : ces valeurs <b>remplacent celles du .env</b>${r.env && r.env.mqtt.url ? ` (MQTT_URL=${esc(r.env.mqtt.url)})` : ''}. <button type="button" class="mini" data-revenir-env="mqtt">Revenir au .env</button>` : 'ℹ️ Serveur MQTT lu dans le fichier .env. Une valeur changée ici le remplacera (le .env ne sera plus lu pour elle).'}</div>
+        <label>Serveur MQTT <input name="mqttUrl" value="${esc(r.mqtt.url)}"></label>
+        <label>Sujet racine <input name="mqttRacine" value="${esc(r.mqtt.racine)}"></label>
+        <label>Utilisateur MQTT <input name="mqttUtilisateur" value="${esc(r.mqtt.utilisateur)}" autocomplete="off"></label>
+        <label>Mot de passe MQTT <input name="mqttMotDePasse" type="password" placeholder="${r.mqtt.motDePasseDefini ? '•••••• (inchangé)' : ''}" autocomplete="new-password"></label>
+        <label>Sujets supplémentaires <input name="mqttSujets" value="${esc(r.mqtt.sujetsSupplementaires)}" placeholder="séparés par des virgules"></label>
+        <label>Inscriptions <select name="inscriptions">${[['validation', 'Sur validation de l’admin'], ['ouvertes', 'Ouvertes à tous'], ['fermees', 'Fermées']].map(([v, l]) => `<option value="${v}" ${r.inscriptions === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Positions publiques <select name="precisionPublique">${[[3, 'Arrondies à ≈ 100 m'], [2, 'Arrondies à ≈ 1 km'], [4, 'Arrondies à ≈ 10 m'], [-1, 'Exactes']].map(([v, l]) => `<option value="${v}" ${r.precisionPublique === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Conservation (jours) <input name="retentionJours" type="number" min="1" max="90" value="${r.retentionJours}"></label>
+        <label class="large-col">Canaux à déchiffrer <textarea name="canaux" rows="5">${esc(r.canaux)}</textarea><small>Un canal par ligne : nom=clé en base64${r.depuisPage && r.depuisPage.canaux ? ' · réglés ici, ils remplacent CANAUX du .env <button type="button" class="mini" data-revenir-env="canaux">Revenir au .env</button>' : ' · lus dans le .env tant qu’ils ne sont pas changés ici'}</small></label>
+      </div>
+      <p class="erreur" id="retour-reglages"></p>
+      <div class="actions"><button type="submit" class="principal">Enregistrer et redémarrer</button></div>
+      <p class="note">L’enregistrement redémarre le service (une dizaine de secondes). Un changement de département retélécharge le relief IGN (quelques minutes).</p>
+    </form>
+    <div class="bloc-france" id="bloc-france"></div>`;
+  rendreFrance();
+  optionsDepartements(z.querySelector('[name=departement]'), r.departement.code);
+  z.querySelectorAll('[data-revenir-env]').forEach((b) => (b.onclick = async () => {
+    if (!(await confirmer('Reprendre les valeurs du fichier .env pour ce réglage ? Le service redémarre.'))) return;
+    try { const x = await postJson('/api/reglages', { revenirEnv: [b.dataset.revenirEnv] }); if (x.redemarrage) attendreRedemarrage('Réglages du .env repris ✓'); } catch (err) { alert(err.message); }
+  }));
+  $('#form-reglages').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const corps = {
+      titre: f.titre.value, inscriptions: f.inscriptions.value, precisionPublique: Number(f.precisionPublique.value), retentionJours: Number(f.retentionJours.value), canaux: f.canaux.value,
+      mqtt: { url: f.mqttUrl.value, racine: f.mqttRacine.value, utilisateur: f.mqttUtilisateur.value, motDePasse: f.mqttMotDePasse.value, sujetsSupplementaires: f.mqttSujets.value },
+    };
+    if (f.departement.value !== r.departement.code) corps.departement = f.departement.value;
+    try { await postJson('/api/reglages', corps); $('#dlg-gestion').close(); attendreRedemarrage('Réglages enregistrés'); }
+    catch (x) { $('#retour-reglages').textContent = x.message; }
+  };
+}
+
+// Carte publique : couverture sur le département de la carte ou sur toute la France, préparation du relief
+// Toute la France (administrateur) : la même chose que dans Réglages, en accès direct depuis Outils
+function ficheFrance() {
+  $('#fiche').hidden = false; etat.selection = null;
+  $('#fiche-contenu').innerHTML = '<div class="bloc-france" id="bloc-france"><div class="vide">Chargement…</div></div>';
+  rendreFrance();
+}
+async function rendreFrance() {
+  const z = $('#bloc-france');
+  if (!z) return;
+  let r;
+  try { r = await api('/api/relief/france'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const p = r.precharge;
+  const duree = p.debut ? Math.round(((p.fin || Date.now()) - p.debut) / 60000) : 0;
+  z.innerHTML = `<h3>🗺️ Carte publique et relief</h3>
+    <label>Calculs de couverture de la carte publique <select id="fr-couv">
+      <option value="departement" ${r.couverture === 'departement' ? 'selected' : ''}>Département de la carte seulement (léger)</option>
+      <option value="france" ${r.couverture === 'france' ? 'selected' : ''}>Tous les départements de France (relief chargé à la demande)</option></select></label>
+    <p class="note">Avec « tous les départements », chaque visiteur peut calculer la couverture, les emplacements de relais et la couverture d’un point dans n’importe quel département. Le premier calcul d’un département télécharge son relief IGN et ses points hauts (quelques minutes), sauf s’il a été préparé ci-dessous.</p>
+    <div class="actions-prop">${p.enCours ? '<button class="mini" id="fr-stop">⏹ Arrêter la préparation</button>' : '<button class="mini principal" id="fr-go" title="Installe le paquet « relief France » puis complète département par département ; la carte publique passe ensuite d’elle-même en « tous les départements »">⬇ Télécharger et installer toute la France</button>'}<span class="note">Relief prêt sur le serveur : <b>${r.surDisque}</b> / ${r.total} départements</span></div>
+    ${p.enCours ? `<div class="alerte info-lecture"><span class="sablier"></span> Préparation en cours : ${p.faits}/${p.total} départements${p.courant ? ` · département ${esc(p.courant === 'paquet' ? 'paquet GitHub' : p.courant)}${p.etape ? ' : ' + esc(p.etape) : ''}` : p.etape ? ' · ' + esc(p.etape) : ''} · ${duree} min${p.faits > p.deja + 1 && p.total > p.faits ? `, encore ≈ ${Math.round(((Date.now() - p.debut) / 60000 / Math.max(1, p.faits - p.deja)) * (p.total - p.faits) / 60)} h` : ''}. Elle continue même si vous fermez cette page.</div>` : p.fin ? `<p class="note">Dernière préparation : ${p.faits}/${p.total} départements en ${duree} min${p.erreurs.length ? `, ${p.erreurs.length} erreur(s) : ${p.erreurs.slice(0, 5).map((x) => esc(x.code + ' ' + x.erreur)).join(' ; ')}` : ''}.${p.aCompleter && p.aCompleter.length ? ` Points hauts OpenStreetMap manquants pour ${p.aCompleter.length} département(s) (${esc(p.aCompleter.slice(0, 12).join(', '))}${p.aCompleter.length > 12 ? '…' : ''}) : relancez la préparation plus tard, seuls ceux-là seront repris.` : ''}</p>` : ''}
+    <p class="note">La préparation installe d’abord le paquet « relief France » publié sur GitHub (≈ 110 Mo, quelques minutes), puis télécharge département par département ce qui manque encore : relief IGN, points hauts, voies d’accès et sites (OpenStreetMap). Sans paquet, comptez plusieurs heures. Environ 250 Mo sur le disque. Les départements déjà prêts sont sautés.</p>
+    <div class="actions-prop"><a class="mini bouton-lien" href="/api/relief/france/paquet" download>📦 Fabriquer le paquet « relief France »</a><span class="note">tous les départements prêts sur ce serveur, en un fichier tar.gz, à publier sur GitHub (version « relief-france »)</span></div>`;
+  $('#fr-couv').onchange = async (e) => { try { await postJson('/api/relief/france', { couverture: e.target.value }); } catch (x) { alert(x.message); } rendreFrance(); };
+  const go = $('#fr-go'); if (go) go.onclick = async () => { try { await postJson('/api/relief/france', { precharger: true, activer: true }); } catch (x) { alert(x.message); } setTimeout(rendreFrance, 800); };
+  const st = $('#fr-stop'); if (st) st.onclick = async () => { try { await postJson('/api/relief/france', { precharger: false }); } catch (x) { alert(x.message); } setTimeout(rendreFrance, 800); };
+  if (p.enCours) { clearTimeout(etat.minuterieFrance); etat.minuterieFrance = setTimeout(() => { if ($('#bloc-france')) rendreFrance(); }, 15000); }
+}
+
+// Téléphone : panneau en tiroir (réduit / moitié / plein), poignée à tirer ou à toucher, état gardé
+function installerTiroir() {
+  const mq = matchMedia('(max-width: 900px)');
+  const p = $('#panneau');
+  if (!p.querySelector('.poignee-tiroir')) p.insertAdjacentHTML('afterbegin', '<div class="poignee-tiroir" title="Tirer ou toucher pour agrandir / réduire"></div>');
+  const ETATS = ['reduit', 'moitie', 'plein'];
+  // Hauteur réduite : poignée + choix du réseau + onglets, sans contenu (mesurée une fois la page affichée)
+  const majReduit = () => {
+    const o = (p.querySelector('.onglets') || {}).offsetHeight ? p.querySelector('.onglets') : p.querySelector('.groupes');
+    if (mq.matches && o && o.offsetHeight) document.documentElement.style.setProperty('--h-tiroir-reduit', Math.min(220, o.offsetTop + o.offsetHeight + 4) + 'px');
+  };
+  setTimeout(majReduit, 400); setTimeout(majReduit, 2500);
+  const appliquer = (e) => {
+    document.body.classList.remove('tiroir-reduit', 'tiroir-moitie', 'tiroir-plein');
+    if (mq.matches) document.body.classList.add('tiroir-' + e);
+    etat.tiroir = e; ecrireLs('gaulix_tiroir', e);
+    const o = document.querySelector('.outils');
+    if (o) document.documentElement.style.setProperty('--h-outils', o.offsetHeight + 'px');
+    majReduit();
+    setTimeout(() => { document.documentElement.style.setProperty('--h-tiroir-reel', p.offsetHeight + 'px'); if (typeof carte !== 'undefined' && carte) carte.invalidateSize(); }, 260);
+  };
+  appliquer(lireLs('gaulix_tiroir', 'reduit'));
+  mq.addEventListener('change', () => appliquer(etat.tiroir || 'reduit'));
+  window.addEventListener('resize', () => { const o = document.querySelector('.outils'); if (o) document.documentElement.style.setProperty('--h-outils', o.offsetHeight + 'px'); majReduit(); });
+  const poignee = p.querySelector('.poignee-tiroir');
+  let depart = null;
+  poignee.addEventListener('pointerdown', (ev) => { depart = { y: ev.clientY, h: p.offsetHeight, t: Date.now() }; poignee.setPointerCapture(ev.pointerId); p.style.transition = 'none'; });
+  poignee.addEventListener('pointermove', (ev) => { if (!depart) return; p.style.height = Math.max(70, depart.h + (depart.y - ev.clientY)) + 'px'; });
+  poignee.addEventListener('pointerup', (ev) => {
+    if (!depart) return;
+    const dy = depart.y - ev.clientY, h = p.offsetHeight;
+    p.style.height = ''; p.style.transition = '';
+    let e;
+    if (Math.abs(dy) < 8) e = ETATS[(ETATS.indexOf(etat.tiroir) + 1) % 3]; // simple toucher : hauteur suivante
+    else { const r = h / window.innerHeight; e = r < 0.25 ? 'reduit' : r < 0.62 ? 'moitie' : 'plein'; }
+    depart = null;
+    appliquer(e);
+  });
+  // Un onglet touché alors que le tiroir est réduit : il s'ouvre à mi-hauteur
+  document.querySelectorAll('.onglets button[data-onglet]').forEach((b) => b.addEventListener('click', () => { if (mq.matches && etat.tiroir === 'reduit') appliquer('moitie'); }));
+}
+
+
+// ---- Passerelle inter-réseaux Meshtastic ⇄ MeshCore (PASSERELLE=1 dans le .env, administrateurs) ----
+const pp = { onglet: 'bord', donnees: null, minuterie: null, choixMt: null, choixMc: null, sens: 'bi', filtreJournal: '' };
+async function ouvrirPasserelle() {
+  const dlg = $('#dlg-passerelle');
+  if (!dlg.open) dlg.showModal();
+  dlg.querySelectorAll('[data-pp]').forEach((b) => (b.onclick = () => { pp.onglet = b.dataset.pp; dlg.querySelectorAll('[data-pp]').forEach((x) => x.classList.toggle('actif', x === b)); rendrePasserelle(true); }));
+  $('#fermer-passerelle').onclick = () => dlg.close();
+  dlg.addEventListener('close', () => { clearInterval(pp.minuterie); pp.minuterie = null; }, { once: true });
+  // Aucune liaison encore : on ouvre directement l'onglet Règles
+  try { const d = await api('/api/passerelle'); if (!d.regles.length) ppOnglet('regles'); else ppOnglet(pp.onglet); } catch { /* affiché plus bas */ }
+  await rendrePasserelle(true);
+  clearInterval(pp.minuterie);
+  pp.minuterie = setInterval(() => { if (pp.onglet === 'bord' && !document.hidden) rendrePasserelle(false); }, 3000);
+}
+const ppSens = { mt2mc: 'MT → MC', mc2mt: 'MC → MT', bi: 'MT ⇄ MC' };
+function ppOnglet(o) { pp.onglet = o; document.querySelectorAll('#dlg-passerelle [data-pp]').forEach((x) => x.classList.toggle('actif', x.dataset.pp === o)); }
+async function rendrePasserelle(complet) {
+  const z = $('#pp-contenu');
+  try { pp.donnees = await api('/api/passerelle'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  const d = pp.donnees, m = d.modules, g = d.reglages;
+  const pastille = (ok, txt) => `<span class="badge ${ok ? 'actif' : 'inactif'}">${ok ? '●' : '○'} ${esc(txt)}</span>`;
+  const entete = `<div class="pp-etat">${pastille(m.mt.connecte, 'Meshtastic : ' + (m.mt.connecte ? m.mt.nom || 'module principal' : 'module hors ligne'))}${pastille(m.mc.connecte, 'MeshCore : ' + (m.mc.connecte ? m.mc.nom || 'companion' : 'companion hors ligne'))}
+    ${d.actif ? `<button class="mini ${g.pause ? 'principal' : ''}" id="pp-pause">${g.pause ? '▶ Reprendre la passerelle' : '⏸ Mettre en pause'}</button><button class="mini danger" id="pp-desactiver" title="Coupe complètement la passerelle (les règles sont gardées)">⏻ Désactiver</button>` : ''}</div>
+    ${!d.actif ? `<div class="alerte attention pp-off"><b>Passerelle désactivée</b> : aucun message n’est relayé entre Meshtastic et MeshCore. Vous pouvez préparer les règles avant de l’activer.
+      <div class="actions-prop"><button class="principal" id="pp-activer">⏻ Activer la passerelle</button></div></div>` : g.pause ? '<div class="alerte attention">Passerelle en pause : aucun message n’est relayé.</div>' : ''}`;
+  if (pp.onglet === 'bord') {
+    const rej = Object.entries(d.stats.rejets).sort((a, b) => b[1] - a[1]);
+    const journalHtml = d.journal.slice().reverse().filter((x) => !pp.filtreJournal || x.type === pp.filtreJournal).slice(0, 150).map((x) => `<div class="${x.type}">[${new Date(x.heure).toLocaleTimeString('fr-FR')}] ${x.type === 'in' ? 'REÇU  ' : x.type === 'out' ? 'RELAYÉ' : 'IGNORÉ'} ${esc(x.texte)}${x.motif ? ` <b>(${esc(x.motif)})</b>` : ''}</div>`).join('') || '<div class="vide">Rien pour l’instant.</div>';
+    if (!complet && $('#pp-journal')) { $('#pp-journal').innerHTML = journalHtml; $('#pp-c1').textContent = d.stats.mt2mc; $('#pp-c2').textContent = d.stats.mc2mt; $('#pp-c3').textContent = rej.reduce((t, x) => t + x[1], 0); return; }
+    z.innerHTML = `${entete}
+      <div class="pp-grille"><div class="mesure"><span>Relayés MT → MC</span><b id="pp-c1">${d.stats.mt2mc}</b></div><div class="mesure"><span>Relayés MC → MT</span><b id="pp-c2">${d.stats.mc2mt}</b></div><div class="mesure"><span>Ignorés</span><b id="pp-c3">${rej.reduce((t, x) => t + x[1], 0)}</b></div></div>
+      <p class="note">Depuis ${ilYa(d.stats.depuis).replace('il y a ', '')}${d.stats.agreges ? ` · ${d.stats.agreges} message(s) regroupé(s)` : ''}${rej.length ? ' · ignorés : ' + rej.map(([k, v]) => `${esc(k)} ${v}`).join(', ') : ''}.</p>
+      <p class="note">${d.regles.filter((x) => x.actif).length} règle(s) active(s) sur ${d.regles.length}. ${d.regles.length ? d.regles.map((x) => `<b>${esc(x.libelle)}</b>${x.actif ? '' : ' (suspendue)'}`).join(' · ') : 'Aucune liaison : '}${'<button class="mini principal" id="pp-aller-liaisons">🔗 Choisir les canaux à relier</button>'}</p>
+      <h3>Journal en direct <select id="pp-filtre" class="mini"><option value="">tout</option><option value="in">reçus</option><option value="out">relayés</option><option value="drop">ignorés</option></select></h3>
+      <div class="pp-journal" id="pp-journal">${journalHtml}</div>`;
+    $('#pp-filtre').value = pp.filtreJournal;
+    $('#pp-filtre').onchange = (e) => { pp.filtreJournal = e.target.value; rendrePasserelle(true); };
+  } else if (pp.onglet === 'regles') {
+    // Chaque côté : canaux du module (ou, s'il n'est pas relié, canaux connus de la carte) + saisie libre d'un nom
+    const col = (liste, cote) => {
+      const choix = cote === 'mt' ? pp.choixMt : pp.choixMc;
+      const connus = (d.canauxConnus || {})[cote] || [];
+      const lignes = liste.length
+        ? liste.map((c) => `<div class="pp-canal ${choix && choix.nom === c.nom ? 'sel' : ''}" data-cote="${cote}" data-index="${c.index}" data-nom="${esc(c.nom)}"><span>#${esc(c.nom)}</span><small>${cote === 'mt' ? (c.index === 0 ? 'canal 0 · principal' : 'canal ' + c.index) : 'canal ' + c.index}</small></div>`).join('')
+        : `<div class="note">${cote === 'mt' ? 'Module Meshtastic principal non relié' : 'Companion MeshCore non relié'} : choisissez un canal connu de la carte ou tapez son nom. La liaison fonctionnera dès que ${cote === 'mt' ? 'le module' : 'le companion'} aura ce canal.</div>`
+          + connus.map((nom) => `<div class="pp-canal ${choix && choix.nom === nom ? 'sel' : ''}" data-cote="${cote}" data-nom="${esc(nom)}"><span>#${esc(nom.replace(/^#/, ''))}</span><small>connu de la carte</small></div>`).join('');
+      return lignes + `<label class="pp-saisie">Autre canal <input data-saisie-canal="${cote}" placeholder="${cote === 'mt' ? 'ex. ADRASEC43' : 'ex. #adrasec'}" value="${choix && choix.saisi ? esc(choix.nom) : ''}"></label>`;
+    };
+    z.innerHTML = `${entete}
+      <p class="note">Choisissez un canal de chaque côté (canaux du module Meshtastic principal et du companion MeshCore), le sens, puis « Créer la liaison ». Les messages relayés partent par ces deux modules.</p>
+      <div class="pp-colonnes"><div><h3>Canal Meshtastic</h3>${col(m.mt.canaux, 'mt')}</div>
+        <div class="pp-sens">${Object.entries(ppSens).map(([k, v]) => `<button class="mini ${pp.sens === k ? 'actif' : ''}" data-sens="${k}">${v}</button>`).join('')}
+          <label class="case"><input type="checkbox" id="pp-coal"> Regrouper (${g.coalescenceS} s)</label><button class="principal" id="pp-creer">Créer la liaison</button></div>
+        <div><h3>Canal MeshCore</h3>${col(m.mc.canaux, 'mc')}</div></div>
+      ${pp.choixMt || pp.choixMc ? `<p class="note pp-resume">Liaison : <b>MT #${esc(pp.choixMt ? pp.choixMt.nom : '?')}</b> ${ppSens[pp.sens] ? esc(ppSens[pp.sens]).replace(/MT|MC/g, '') : '⇄'} <b>MC ${esc(pp.choixMc ? (pp.choixMc.nom.startsWith('#') ? pp.choixMc.nom : '#' + pp.choixMc.nom) : '?')}</b></p>` : ''}
+      <p class="erreur" id="pp-retour"></p>
+      <h3>Règles</h3>
+      ${d.regles.length ? `<table class="voisins"><thead><tr><th>Liaison</th><th>Regrouper</th><th>Active</th><th></th></tr></thead><tbody>${d.regles.map((x) => `<tr data-id="${x.id}"><td><b>${esc(x.libelle)}</b>${x.enAttente ? ` <small>· ${x.enAttente} en attente</small>` : ''}
+        <details class="pp-filtres"><summary>Filtres${Object.values(x.filtres || {}).some((v) => v && v !== 2) ? ' (réglés)' : ''}</summary>
+          <label>Expéditeurs bloqués <input data-f="expediteurs" value="${esc((x.filtres || {}).expediteurs || '')}" placeholder="noms ou !id, séparés par des virgules"></label>
+          <label>Mot requis <input data-f="motRequis" value="${esc((x.filtres || {}).motRequis || '')}" placeholder="vide = tout"></label>
+          <label>Mots exclus <input data-f="motExclu" value="${esc((x.filtres || {}).motExclu || '')}" placeholder="ex. !pos, !meteo"></label>
+          <label>Longueur min. <input data-f="longueurMin" type="number" min="1" max="50" value="${(x.filtres || {}).longueurMin || 2}"></label>
+          <label>Heures silencieuses <input data-f="silence" value="${esc((x.filtres || {}).silence || '')}" placeholder="ex. 22-7"></label>
+          <button class="mini principal" data-filtres>Enregistrer les filtres</button></details></td>
+        <td><input type="checkbox" data-coal ${x.coalescence ? 'checked' : ''}></td><td><input type="checkbox" data-actif ${x.actif ? 'checked' : ''}></td><td><button class="mini" data-suppr>✕</button></td></tr>`).join('')}</tbody></table>` : '<div class="vide">Aucune liaison : choisissez un canal de chaque côté ci-dessus, puis « Créer la liaison ».</div>'}
+      <details class="pp-essai"><summary>🧪 Essayer un message (rien n’est envoyé)</summary>
+        <div class="parametres compact"><label>Arrive par <select id="pe-reseau"><option value="mt">Meshtastic</option><option value="mc">MeshCore</option></select></label>
+          <label>Canal <input id="pe-canal" placeholder="ADRASEC43"></label><label>Expéditeur <input id="pe-nom" value="F4XYZ"></label><label>Texte <input id="pe-texte" value="essai de liaison"></label></div>
+        <div class="actions-prop"><button type="button" class="mini principal" id="pe-go">Voir ce que ferait la passerelle</button></div><div id="pe-resultat" class="note"></div></details>
+      <details class="pp-profils"><summary>🗂️ Profils (${(d.profils || []).length}) : normal, crise…</summary>
+        <p class="note">Un profil garde toutes les liaisons, la liste noire et les réglages. Chargez-le d’un clic pour changer de configuration.</p>
+        ${(d.profils || []).map((p) => `<div class="ligne"><span class="titre">${esc(p.nom)}<small>${p.regles} liaison(s) · ${esc(p.par || '')} ${p.heure ? ilYa(p.heure) : ''}</small></span><span class="meta"><button class="mini principal" data-prof-charger="${esc(p.nom)}">Charger</button> <button class="mini" data-prof-suppr="${esc(p.nom)}">✕</button></span></div>`).join('')}
+        <div class="champ-ajout"><input id="pp-prof-nom" maxlength="20" placeholder="nom du profil (ex. crise)"><button type="button" class="mini principal" id="pp-prof-enr">Enregistrer la configuration actuelle</button></div></details>`;
+    { const go = $('#pe-go'); if (go) go.onclick = async () => {
+      try {
+        const x = await postJson('/api/passerelle/essai', { reseau: $('#pe-reseau').value, canal: $('#pe-canal').value, nom: $('#pe-nom').value, texte: $('#pe-texte').value });
+        $('#pe-resultat').innerHTML = `<b>${x.relaye ? '✅ Relayé' : '❌ Pas relayé'}</b>${x.motif ? ' : ' + esc(x.motif) : ''}${(x.etapes || []).map((s) => '<br>• ' + esc(s)).join('')}${(x.sorties || []).map((s) => `<br>→ ${s.vers === 'mc' ? 'MeshCore' : 'Meshtastic'} ${esc(s.canal)} : <span class="mono">${esc(s.texte)}</span>`).join('')}`;
+      } catch (e) { $('#pe-resultat').textContent = e.message; }
+    }; }
+    { const be = $('#pp-prof-enr'); if (be) be.onclick = async () => { try { await postJson('/api/passerelle/profils', { nom: $('#pp-prof-nom').value }); rendrePasserelle(true); } catch (e) { $('#pp-retour').textContent = e.message; } }; }
+    z.querySelectorAll('[data-prof-charger]').forEach((b) => (b.onclick = async () => { if (!(await confirmer(`Charger le profil « ${b.dataset.profCharger} » ? Il remplace les liaisons, la liste noire et les réglages actuels.`, { ok: 'Charger' }))) return; try { await postJson('/api/passerelle/profils', { action: 'charger', nom: b.dataset.profCharger }); rendrePasserelle(true); } catch (e) { $('#pp-retour').textContent = e.message; } }));
+    z.querySelectorAll('[data-prof-suppr]').forEach((b) => (b.onclick = async () => { await postJson('/api/passerelle/profils', { action: 'supprimer', nom: b.dataset.profSuppr }).catch(() => {}); rendrePasserelle(true); }));
+    z.querySelectorAll('.pp-canal').forEach((el) => (el.onclick = () => {
+      const c = { index: el.dataset.index !== undefined ? Number(el.dataset.index) : null, nom: el.dataset.nom };
+      if (el.dataset.cote === 'mt') pp.choixMt = c; else pp.choixMc = c;
+      rendrePasserelle(true);
+    }));
+    z.querySelectorAll('[data-saisie-canal]').forEach((i) => (i.onchange = () => {
+      const v = i.value.trim(), c = v ? { index: null, nom: v, saisi: true } : null;
+      if (i.dataset.saisieCanal === 'mt') pp.choixMt = c; else pp.choixMc = c;
+      rendrePasserelle(true);
+    }));
+    z.querySelectorAll('[data-sens]').forEach((b) => (b.onclick = () => { pp.sens = b.dataset.sens; rendrePasserelle(true); }));
+    $('#pp-creer').onclick = async () => {
+      if (pp.choixMt == null || pp.choixMc == null) { $('#pp-retour').textContent = 'Choisissez un canal de chaque côté.'; return; }
+      try { await postJson('/api/passerelle/regles', { mt: pp.choixMt.index, mtNom: pp.choixMt.nom, mc: pp.choixMc.index, mcNom: pp.choixMc.nom, sens: pp.sens, coalescence: $('#pp-coal').checked }); pp.choixMt = pp.choixMc = null; rendrePasserelle(true); } catch (e) { $('#pp-retour').textContent = e.message; }
+    };
+    z.querySelectorAll('tr[data-id]').forEach((tr) => {
+      const id = tr.dataset.id, maj = async (o) => { try { await postJson(`/api/passerelle/regles/${id}`, o); } catch (e) { alert(e.message); } rendrePasserelle(true); };
+      tr.querySelector('[data-actif]').onchange = (e) => maj({ actif: e.target.checked });
+      tr.querySelector('[data-coal]').onchange = (e) => maj({ coalescence: e.target.checked });
+      tr.querySelector('[data-filtres]').onclick = () => maj({ filtres: Object.fromEntries([...tr.querySelectorAll('[data-f]')].map((i) => [i.dataset.f, i.value])) });
+      tr.querySelector('[data-suppr]').onclick = async () => { if (!(await confirmer('Supprimer cette liaison ?'))) return; await fetch(`/api/passerelle/regles/${id}`, { method: 'DELETE' }); rendrePasserelle(true); };
+    });
+  } else if (pp.onglet === 'noire') {
+    const connus = [...etat.noeuds.values()].filter((n) => n.nomCourt || n.nomLong).map((n) => ({ reseau: 'mt', id: String(n.num), nom: n.nomCourt || n.nomLong, lib: `${n.nomLong || n.nomCourt} (${n.id}) — Meshtastic` }))
+      .concat(typeof mc !== 'undefined' && mc.noeuds ? [...mc.noeuds.values()].filter((n) => n.nom).map((n) => ({ reseau: 'mc', id: n.nom, nom: n.nom, lib: `${n.nom} — MeshCore` })) : []);
+    z.innerHTML = `${entete}
+      <p class="note">Les messages de ces utilisateurs ne sont jamais relayés vers l’autre réseau, quelle que soit la règle. Ils reçoivent toujours les messages de leur propre réseau.</p>
+      <div class="pp-ajout"><input list="pp-connus" id="pp-qui" placeholder="Rechercher un nœud Meshtastic ou MeshCore connu…"><datalist id="pp-connus">${connus.slice(0, 1500).map((c) => `<option value="${esc(c.lib)}"></option>`).join('')}</datalist>
+        <input id="pp-motif" placeholder="Motif (facultatif)" maxlength="120"><label class="case"><input type="checkbox" id="pp-recip"> aussi dans l’autre réseau (même nom)</label><button class="principal" id="pp-bloquer">Interdire le transfert</button></div>
+      <p class="erreur" id="pp-retour"></p>
+      ${d.listeNoire.length ? `<table class="voisins"><thead><tr><th>Utilisateur</th><th>Réseau</th><th>Motif</th><th>Autre réseau</th><th>Ajouté</th><th></th></tr></thead><tbody>${d.listeNoire.map((b) => `<tr data-r="${b.reseau}" data-id="${esc(b.id)}"><td><b>${esc(b.nom)}</b></td><td>${b.reseau === 'mt' ? 'Meshtastic' : 'MeshCore'}</td><td>${esc(b.motif || '—')}</td><td><input type="checkbox" data-recip ${b.reciproque ? 'checked' : ''}></td><td><small>${new Date(b.ajoute).toLocaleDateString('fr-FR')}${b.par ? ' · ' + esc(b.par) : ''}</small></td><td><button class="mini" data-retirer>✕</button></td></tr>`).join('')}</tbody></table>` : '<div class="vide">Liste noire vide.</div>'}`;
+    $('#pp-bloquer').onclick = async () => {
+      const v = $('#pp-qui').value.trim(), c = connus.find((x) => x.lib === v);
+      if (!c) { $('#pp-retour').textContent = 'Choisissez un utilisateur dans la liste des nœuds connus.'; return; }
+      try { await postJson('/api/passerelle/liste-noire', { reseau: c.reseau, id: c.id, nom: c.nom, motif: $('#pp-motif').value, reciproque: $('#pp-recip').checked }); rendrePasserelle(true); } catch (e) { $('#pp-retour').textContent = e.message; }
+    };
+    z.querySelectorAll('tr[data-r]').forEach((tr) => {
+      tr.querySelector('[data-recip]').onchange = async (e) => { await postJson('/api/passerelle/liste-noire', { modifier: true, reseau: tr.dataset.r, id: tr.dataset.id, reciproque: e.target.checked }).catch((x) => alert(x.message)); rendrePasserelle(true); };
+      tr.querySelector('[data-retirer]').onclick = async () => { await postJson('/api/passerelle/liste-noire', { retirer: true, reseau: tr.dataset.r, id: tr.dataset.id }).catch((x) => alert(x.message)); rendrePasserelle(true); };
+    });
+  } else {
+    z.innerHTML = `${entete}
+      <form id="pp-form" class="grille-form">
+        <label>Préfixe des messages venus de Meshtastic <input name="prefixeMt" value="${esc(g.prefixeMt)}" maxlength="10"></label>
+        <label>Préfixe des messages venus de MeshCore <input name="prefixeMc" value="${esc(g.prefixeMc)}" maxlength="10"></label>
+        <label class="case"><input type="checkbox" name="avecExpediteur" ${g.avecExpediteur ? 'checked' : ''}> Nom de l’expéditeur dans le préfixe ([MT|F4XYZ])</label>
+        <label class="case"><input type="checkbox" name="canalPrincipalAutorise" ${g.canalPrincipalAutorise ? 'checked' : ''}> Autoriser le canal principal Meshtastic (canal 0)</label>
+        <label>Anti-doublon (minutes) <input name="ttlDoublonMin" type="number" min="1" max="120" value="${g.ttlDoublonMin}"></label>
+        <label>Messages par minute, par règle et par sens <input name="quotaRegleMin" type="number" min="1" max="30" value="${g.quotaRegleMin}"></label>
+        <label>Messages par minute, toute la passerelle <input name="quotaGlobalMin" type="number" min="1" max="120" value="${g.quotaGlobalMin}"></label>
+        <label>File d’attente max. (au-delà : les plus anciens abandonnés) <input name="fileMax" type="number" min="1" max="50" value="${g.fileMax}"></label>
+        <label>Écart minimal entre deux émissions sur un réseau (s) <input name="ecartEnvoiS" type="number" min="2" max="60" value="${g.ecartEnvoiS}"></label>
+        <label>Fenêtre de regroupement <select name="coalescenceS">${[10, 30, 60].map((v) => `<option value="${v}" ${g.coalescenceS === v ? 'selected' : ''}>${v} s</option>`).join('')}</select></label>
+      </form>
+      <div class="actions"><button class="principal" id="pp-enreg">Enregistrer</button></div><p class="erreur" id="pp-retour"></p>
+      <p class="note">Toujours actifs : un message envoyé par nos propres modules n’est jamais repris (anti-écho), un texte commençant par un préfixe de passerelle n’est jamais retransmis (anti-boucle). Messages texte de canal uniquement ; rien n’apparaît sur la carte publique.</p>`;
+    $('#pp-enreg').onclick = async () => {
+      const f = $('#pp-form'), o = {};
+      for (const el of f.elements) if (el.name) o[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+      try { await postJson('/api/passerelle/reglages', o); $('#pp-retour').textContent = ''; rendrePasserelle(true); } catch (e) { $('#pp-retour').textContent = e.message; }
+    };
+  }
+  const activer = async (oui) => {
+    if (!oui && !(await confirmer('Désactiver la passerelle ? Plus aucun message ne sera relayé ; les règles sont gardées.'))) return;
+    try { await postJson('/api/passerelle/activation', { active: oui }); etat.config.passerelle = oui; } catch (e) { alert(e.message); }
+    // Activée : on passe directement aux règles pour créer la liaison canal ↔ canal
+    if (oui) ppOnglet('regles');
+    rendrePasserelle(true);
+  };
+  { const b = $('#pp-activer'); if (b) b.onclick = () => activer(true); }
+  { const b = $('#pp-aller-liaisons'); if (b) b.onclick = () => { ppOnglet('regles'); rendrePasserelle(true); }; }
+  { const b = $('#pp-desactiver'); if (b) b.onclick = () => activer(false); }
+  const bp = $('#pp-pause');
+  if (bp) bp.onclick = async () => { await postJson('/api/passerelle/reglages', { pause: !g.pause }).catch((e) => alert(e.message)); rendrePasserelle(true); };
+}
+
+// ---- Ma position (bouton ◎ sur la carte) : point bleu et précision, suivi tant que le bouton est actif ----
+function installerMaPosition() {
+  if (!('geolocation' in navigator)) return;
+  const Ctrl = L.Control.extend({
+    onAdd() {
+      const b = L.DomUtil.create('button', 'btn-position');
+      b.type = 'button'; b.title = 'Ma position (suivre sur la carte)'; b.innerHTML = '◎';
+      L.DomEvent.disableClickPropagation(b);
+      b.onclick = () => basculerMaPosition(b);
+      return b;
+    },
+  });
+  new Ctrl({ position: 'topright' }).addTo(carte);
+}
+function basculerMaPosition(b) {
+  const p = etat.maPosition || (etat.maPosition = { suivi: null, couche: L.layerGroup().addTo(carte), premier: true });
+  if (p.suivi != null) {
+    navigator.geolocation.clearWatch(p.suivi); p.suivi = null; p.couche.clearLayers(); b.classList.remove('actif', 'attente'); return;
+  }
+  b.classList.add('attente'); p.premier = true;
+  p.suivi = navigator.geolocation.watchPosition((pos) => {
+    const { latitude: lat, longitude: lon, accuracy: prec } = pos.coords;
+    b.classList.remove('attente'); b.classList.add('actif');
+    p.couche.clearLayers();
+    L.circle([lat, lon], { radius: prec, color: '#3b82f6', weight: 1, fillOpacity: 0.1, interactive: false }).addTo(p.couche);
+    L.circleMarker([lat, lon], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1, pane: 'traces' })
+      .bindTooltip(`Vous êtes ici · précision ${Math.round(prec)} m<br><small>${lat.toFixed(5)}, ${lon.toFixed(5)}</small>`, { className: 'info', direction: 'top' }).addTo(p.couche);
+    if (p.premier) { p.premier = false; carte.flyTo([lat, lon], Math.max(carte.getZoom(), 13)); }
+  }, (e) => {
+    b.classList.remove('attente', 'actif'); p.suivi = null;
+    alert(e.code === 1 ? 'Position refusée : autorisez la localisation pour ce site (la carte doit être en HTTPS sur téléphone).' : 'Position indisponible : ' + e.message);
+  }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+}
+
+// ---- Téléphone : fiche d'un nœud en tiroir (moitié / plein), glisser vers le bas pour fermer ----
+function installerFicheTiroir() {
+  const f = $('#fiche');
+  if (f.querySelector('.poignee-fiche-mob')) return;
+  f.insertAdjacentHTML('afterbegin', '<div class="poignee-fiche-mob" title="Toucher : agrandir / réduire · glisser vers le bas : fermer"></div>');
+  const pg = f.querySelector('.poignee-fiche-mob');
+  let d = null;
+  pg.addEventListener('pointerdown', (ev) => { d = { y: ev.clientY, h: f.offsetHeight }; pg.setPointerCapture(ev.pointerId); f.style.transition = 'none'; });
+  pg.addEventListener('pointermove', (ev) => { if (d) f.style.height = Math.max(120, d.h + (d.y - ev.clientY)) + 'px'; });
+  pg.addEventListener('pointerup', (ev) => {
+    if (!d) return;
+    const dy = ev.clientY - d.y;
+    f.style.height = ''; f.style.transition = ''; d = null;
+    if (dy > 90) { $('#fermer-fiche').click(); document.body.classList.remove('fiche-pleine'); return; }
+    if (Math.abs(dy) < 8) document.body.classList.toggle('fiche-pleine');
+    else document.body.classList.toggle('fiche-pleine', dy < 0);
+  });
+}
+
+// ---- Thème clair à fort contraste (plein soleil), choisi dans Outils, gardé dans ce navigateur ----
+function appliquerTheme(clair) {
+  document.body.classList.toggle('theme-clair', clair);
+  ecrireLs('gaulix_theme_clair', clair);
+  const b = $('#outil-theme'); if (b) b.textContent = clair ? '🌙 Thème sombre' : '☀️ Thème clair (plein soleil)';
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = clair ? '#ffffff' : '#0f172a';
+}
+// Installer l'appli (Android, Chrome, Edge) : bouton dans Outils quand le navigateur le propose
+let invitationInstall = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); invitationInstall = e; const b = $('#outil-installer'); if (b) b.hidden = false; });
+
+async function installation() {
+  const info = await api('/api/installation');
+  if (!info.requise) return false;
+  const dlg = $('#dlg-installation'), f = $('#form-installation');
+  // (champ propre à l'installation : l'identifiant « champ-code » est celui du formulaire de connexion)
+  $('#champ-code-installation').hidden = !info.codeRequis;
+  f.code.required = !!info.codeRequis;
+  if (info.codeAuto) $('#aide-code-installation').innerHTML = 'Code affiché dans le journal du serveur : <span class="mono">docker compose logs carte-live | grep -i installation</span> (ou valeur de ADMIN_MOT_DE_PASSE si vous en mettez une dans le .env)';
+  {
+    const a = info.actuel;
+    await optionsDepartements(f.departement, a.departement);
+    f.titre.value = a.titre || '';
+    f.mqttUrl.value = a.mqtt.url || '';
+    f.mqttRacine.value = a.mqtt.racine || 'msh/EU_868';
+    f.mqttUtilisateur.value = a.mqtt.utilisateur || '';
+    if (a.mqtt.motDePasseDefini) f.mqttMotDePasse.placeholder = '•••••• (inchangé)';
+    f.canaux.placeholder = a.canaux.length ? `Laisser vide pour garder : ${a.canaux.join(', ')}` : 'LongFast=AQ==';
+    if (!a.canaux.length) f.canaux.value = 'LongFast=AQ==';
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = f.querySelector('.erreur');
+      if (f.motDePasse.value !== f.confirmation.value) { err.textContent = 'Les deux mots de passe sont différents'; return; }
+      const reglages = { departement: f.departement.value, canaux: f.canaux.value, inscriptions: f.inscriptions.value, mqtt: { url: f.mqttUrl.value, racine: f.mqttRacine.value, utilisateur: f.mqttUtilisateur.value, motDePasse: f.mqttMotDePasse.value } };
+      if (f.titre.value.trim()) reglages.titre = f.titre.value.trim();
+      if (!f.mqttUrl.value.trim()) delete reglages.mqtt.url;
+      try {
+        const r = await postJson('/api/installation', { compte: { identifiant: f.identifiant.value, indicatif: f.indicatif.value, motDePasse: f.motDePasse.value }, code: f.code.value, reglages });
+        dlg.close();
+        if (r.redemarrage) attendreRedemarrage('Installation terminée ✓'); else location.reload();
+      } catch (x) { err.textContent = x.message; }
+    };
+  }
+  { const bt = $('#inst-tester-mqtt'); if (bt) bt.onclick = async () => {
+    const z = $('#inst-test-mqtt'); bt.disabled = true; z.textContent = '⏳ Connexion au serveur…';
+    try {
+      const r = await postJson('/api/mqtt/tester', { url: f.mqttUrl.value, racine: f.mqttRacine.value, utilisateur: f.mqttUtilisateur.value, motDePasse: f.mqttMotDePasse.value || undefined, code: f.code.value });
+      z.textContent = r.connecte ? `✅ Connecté${r.messages != null ? ` · ${r.messages} message(s) reçu(s) en 10 s${r.messages ? '' : ' : vérifiez le sujet racine'}` : ''}` : `❌ ${r.erreur || 'connexion impossible'}`;
+    } catch (e) { z.textContent = '❌ ' + e.message; }
+    bt.disabled = false;
+  }; }
+  dlg.addEventListener('cancel', (e) => e.preventDefault()); // non refermable tant que l'installation n'est pas faite
+  dlg.showModal();
+  return true;
+}
+
+async function demarrer() {
+  etat.config = await api('/api/config');
+  etat.admin = etat.config.admin;
+  etat.gestion = !!etat.config.gestion;
+  etat.secteur = etat.admin ? null : (etat.config.compte && etat.config.compte.noeuds) || [];
+  etat.membre = etat.config.membre;
+  document.title = etat.config.titre;
+  // Couches : masquées par défaut sur cette carte (CARTE_COUCHES_MASQUEES), puis choix du visiteur
+  for (const c of etat.config.couchesMasquees || []) if (c in etat.couches) etat.couches[c] = false;
+  // Téléphone ou tablette, sans choix enregistré : pas d'animation des paquets (coûteuse sur mobile)
+  const choixCouches = lireLs('gaulix_couches', null);
+  const economie = !!(navigator.connection && (navigator.connection.saveData || /(^|-)2g$/.test(navigator.connection.effectiveType || '')));
+  if (!choixCouches && ((window.matchMedia && matchMedia('(pointer: coarse)').matches) || economie)) etat.couches.animations = false;
+  Object.assign(etat.couches, Object.fromEntries(Object.entries(choixCouches || {}).filter(([k, v]) => k in etat.couches && typeof v === 'boolean')));
+  document.querySelectorAll('.bascule[data-couche]').forEach((b) => b.classList.toggle('actif', !!etat.couches[b.dataset.couche]));
+  // Liens vers le client et le flasheur officiels (Web Serial / Web Bluetooth : HTTPS et Chrome ou Edge obligatoires)
+  {
+    const o = etat.config.outils || {}, https = location.protocol === 'https:';
+    const auto = (portHttps, portHttp) => `${location.protocol}//${location.hostname}:${https ? portHttps : portHttp}/`;
+    const lc = $('#lien-client'), lf = $('#lien-flasher'), note = $('#note-outils');
+    if (lc) lc.href = o.client || auto(8443, 8096);
+    if (lf) lf.href = o.flasher || auto(10000, 8097);
+    const chromium = !!(navigator.userAgentData && navigator.userAgentData.brands && navigator.userAgentData.brands.some((b) => /Chrom|Edge/i.test(b.brand)));
+    if (note) note.textContent = !https ? 'USB et Bluetooth demandent la carte en HTTPS (voir README).' : !('serial' in navigator) && !chromium ? 'USB et Bluetooth : utilisez Chrome ou Edge.' : '';
+  }
+  const nomMarque = document.querySelector('.marque .nom');
+  if (nomMarque) nomMarque.textContent = etat.config.titre.split(' · ')[0];
+  const marque = document.querySelector('.marque .sous');
+  if (marque) marque.textContent = `Carte live · ${etat.config.zoneNom}`;
+  afficherVersion(etat.config.version);
+  setInterval(() => fetch('/api/version').then((r) => r.json()).then(afficherVersion).catch(() => {}), 3600000);
+  if (etat.membre) {
+    const c = etat.config.compte;
+    $('#btn-admin').textContent = `${c.indicatif || c.identifiant}${etat.admin ? ' · admin' : etat.gestion ? ' · gestionnaire' : ''}`;
+    $('#btn-admin').classList.add('connecte');
+    $('#onglet-messages').hidden = false; majBadgesMessages();
+  }
+  if (etat.admin) $('#bloc-modules').hidden = false;
+  if (etat.gestion) $('#onglet-gestion').hidden = false;
+  initCarte();
+  rendreFiltres();
+  rendreLegende();
+  brancherInterface();
+  brancherRecherche();
+  await chargerNoeuds();
+  appliquerZone(etat.zone);
+  await Promise.all([chargerLiens(), chargerEtat(), chargerFlux()]);
+  connecterWs();
+  // Lien direct vers la fiche d'un nœud (?noeud=NUM, ex. depuis la page Topologie)
+  { const pn = Number(new URLSearchParams(location.search).get('noeud')) >>> 0; if (pn && etat.noeuds.has(pn)) setTimeout(() => ouvrirFiche(pn), 300); }
+  if (typeof demarrerMeshcore === 'function') demarrerMeshcore();
+  chargerRelief();
+  chargerAsymetrie(); setInterval(chargerAsymetrie, 120000);
+  chargerNouveaux(); setInterval(chargerNouveaux, 300000);
+  chargerBavards(); setInterval(chargerBavards, 900000);
+  chargerSuivis(); setInterval(rendreMesNoeuds, 60000); setInterval(chargerSuivis, 600000);
+  chargerChemins(); setInterval(chargerChemins, 300000);
+  chargerSanteCarte(); setInterval(chargerSanteCarte, 60000);
+  chargerFederation(); setInterval(chargerFederation, 600000);
+  demarrerTerrain();
+  if (etat.membre) chargerSignalements();
+  chargerActiviteInitiale();
+  setInterval(rendreLegende, 60000);
+  if (etat.config.installation) installation();
+  if (typeof demarrerErgonomie === 'function') { try { demarrerErgonomie(); } catch (e) { console.error('ergonomie', e); } }
+  setInterval(() => { rendreNoeuds(); rendreReseau(); }, 30000);
+  setInterval(() => chargerLiens().catch(() => {}), 120000);
+}
+
+demarrer().catch((e) => {
+  console.error(e);
+  document.body.insertAdjacentHTML('beforeend', `<div style="position:fixed;inset:auto 0 50% 0;text-align:center;color:#ff5c6c">Erreur de chargement : ${esc(e.message)}</div>`);
+});
+
+// ---- QR code des réglages d'un nœud (ChannelSet meshtastic.org/e/#…) -------------------------
+const precisionTexte = (bits) => {
+  if (!bits) return 'pas de position';
+  if (bits >= 32) return 'exacte';
+  const m = 23300 / 2 ** (bits - 10);
+  return m >= 1000 ? `≈ ${(m / 1000).toFixed(1).replace('.', ',')} km` : `≈ ${Math.round(m)} m`;
+};
+async function ouvrirQr(n, choix = {}) {
+  const dlg = $('#dlg-qr'), z = $('#qr-contenu');
+  const nom = n.nomLong || n.nomCourt || n.id;
+  if (!dlg.open) dlg.showModal();
+  if (!z.querySelector('.qr-image')) z.innerHTML = '<div class="vide">Chargement…</div>';
+  const q = new URLSearchParams();
+  if (choix.canaux) q.set('canaux', choix.canaux.join(','));
+  if (choix.lora === false) q.set('lora', '0');
+  if (choix.up) q.set('up', choix.up.join(','));
+  if (choix.down) q.set('down', choix.down.join(','));
+  const estLocal = etat.radio && etat.radio.noeudLocal === n.num;
+  let r;
+  try { r = await api(`/api/noeuds/${n.num}/qr?${q}`); } catch (e) {
+    z.innerHTML = `<h3>QR code des réglages · ${esc(nom)}</h3>
+      <div class="vide">${esc(e.message)}</div>
+      ${e.statut === 404 ? `<p class="note">Le programme connaît d’office les réglages du module connecté en Wi-Fi. Pour un autre nœud, il faut d’abord lire sa configuration par LoRa (le nœud doit avoir la clé du module dans ses clés d’administration).</p>
+      <div class="boutons"><button id="qr-lire" class="principal">📡 Lire sa configuration par LoRa</button></div><div id="qr-suivi" class="note"></div>` : ''}`;
+    const b = $('#qr-lire');
+    if (b) b.onclick = () => lireAvantQr(n, b);
+    return;
+  }
+  const lora = r.lora;
+  z.innerHTML = `<h3>QR code des réglages · ${esc(nom)}</h3>
+    <div class="ident">${esc(n.id)} · ${r.source === 'module' ? 'réglages du module connecté' : 'configuration lue par LoRa'} ${esc(ilYa(r.heure))}</div>
+    <div class="qr-zone">
+      <div>
+        <div class="qr-image">${r.svg}</div>
+        <div class="boutons centre"><button id="qr-png">⬇️ PNG</button><button id="qr-copier">📋 Copier le lien</button><button id="qr-imprimer">🖨️ Imprimer</button></div>
+      </div>
+      <div class="qr-choix">
+        <h4>Canaux inclus</h4>
+        ${r.canaux.map((c) => `<div class="qr-canal"><label class="qr-nom"><input type="checkbox" data-qr-canal="${c.index}" ${c.inclus ? 'checked' : ''} ${c.principal ? 'disabled' : ''}>
+          <span><b>${c.index} · ${esc(c.nom || '(sans nom)')}</b>${c.principal ? ' <span class="badge canal">principal</span>' : ''}<br>
+          <small>clé ${esc(c.cle)} · position ${esc(precisionTexte(c.precision))}</small></span></label>
+          <span class="qr-mqtt" title="MQTT : montant = envoyé au serveur, descendant = réémis en LoRa depuis le serveur">
+            <label><input type="checkbox" data-qr-up="${c.index}" ${c.montant ? 'checked' : ''}>↑</label>
+            <label><input type="checkbox" data-qr-down="${c.index}" ${c.descendant ? 'checked' : ''}>↓</label></span></div>`).join('')}
+        <div class="boutons qr-raccourcis"><small>MQTT :</small>
+          <button data-qr-mqtt="zero">↑↓ canal 0 seulement</button><button data-qr-mqtt="up">↑ partout, ↓ nulle part</button><button data-qr-mqtt="aucun">aucun</button><button data-qr-mqtt="noeud">comme le nœud</button></div>
+        ${r.canaux.some((c) => c.montant !== c.montantNoeud || c.descendant !== c.descendantNoeud) ? '<div class="note">MQTT modifié par rapport au nœud d’origine.</div>' : ''}
+        <h4>Réglage radio</h4>
+        ${lora ? `<label class="qr-canal"><input type="checkbox" id="qr-lora" ${lora.inclus ? 'checked' : ''}>
+          <span><b>Inclure le réglage LoRa</b><br><small>${esc([lora.region, lora.preset, lora.frequence ? lora.frequence.toFixed(4).replace('.', ',') + ' MHz' : (lora.slot ? 'slot ' + lora.slot : null), lora.sauts ? lora.sauts + ' sauts' : null, lora.puissance ? lora.puissance + ' dBm' : 'puissance par défaut'].filter(Boolean).join(' · '))}</small></span></label>`
+          : '<div class="vide">Réglage LoRa non connu (seuls les canaux sont dans le QR).</div>'}
+        <div class="alerte attention">Ce QR code contient les clés des canaux : ne le donnez qu’à des personnes de confiance.</div>
+        <p class="note">Sur le module à configurer : appli Meshtastic › Canaux › scanner, puis <b>Remplacer</b>. Le rôle, le nom, la position, le Wi-Fi/MQTT et les clés d’administration ne changent pas.</p>
+        ${!estLocal ? '<div class="boutons"><button id="qr-relire">📡 Relire par LoRa</button></div><div id="qr-suivi" class="note"></div>' : ''}
+      </div>
+    </div>
+    <input class="qr-lien" readonly value="${esc(r.url)}">`;
+  const coches = (attr) => [...z.querySelectorAll(`[${attr}]`)].filter((x) => x.checked).map((x) => Number(x.getAttribute(attr)));
+  const relancer = (mqtt) => ouvrirQr(n, {
+    canaux: coches('data-qr-canal').concat(r.canaux.filter((c) => c.principal).map((c) => c.index)),
+    lora: $('#qr-lora') ? $('#qr-lora').checked : true,
+    ...(mqtt || { up: coches('data-qr-up'), down: coches('data-qr-down') }),
+  });
+  z.querySelectorAll('[data-qr-canal], #qr-lora, [data-qr-up], [data-qr-down]').forEach((x) => (x.onchange = () => relancer()));
+  z.querySelectorAll('[data-qr-mqtt]').forEach((b) => (b.onclick = () => {
+    const tous = r.canaux.map((c) => c.index);
+    relancer({ zero: { up: [0], down: [0] }, up: { up: tous, down: [] }, aucun: { up: [], down: [] }, noeud: {} }[b.dataset.qrMqtt]);
+  }));
+  $('#qr-copier').onclick = async () => { try { await navigator.clipboard.writeText(r.url); $('#qr-copier').textContent = '✔ Copié'; } catch { z.querySelector('.qr-lien').select(); } };
+  const fichier = `QR-reglages-${(n.nomCourt || n.id).replace(/[^\w-]+/g, '') || n.num}`;
+  $('#qr-png').onclick = () => {
+    const img = new Image();
+    const u = URL.createObjectURL(new Blob([r.svg], { type: 'image/svg+xml' }));
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = c.height = 1024;
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 1024, 1024); g.imageSmoothingEnabled = false; g.drawImage(img, 0, 0, 1024, 1024);
+      URL.revokeObjectURL(u);
+      c.toBlob((b) => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = fichier + '.png'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); });
+    };
+    img.src = u;
+  };
+  $('#qr-imprimer').onclick = () => {
+    const w = window.open('', '_blank');
+    if (!w) return;
+    const inclus = r.canaux.filter((c) => c.inclus).map((c) => esc(c.nom)).join(', ');
+    w.document.write(`<!doctype html><meta charset="utf-8"><title>${esc(fichier)}</title><style>body{font-family:sans-serif;text-align:center;margin:20mm}svg{width:110mm;height:110mm}p{font-size:12pt}small{word-break:break-all;color:#555}</style>
+      <h2>Réglages de ${esc(nom)}</h2>${r.svg}<p><b>Canaux :</b> ${inclus}</p>${lora && lora.inclus ? `<p><b>Radio :</b> ${esc([lora.region, lora.preset, lora.sauts + ' sauts'].join(' · '))}</p>` : ''}
+      <p>Appli Meshtastic › Canaux › scanner › <b>Remplacer</b></p><small>${esc(r.url)}</small><script>onload=()=>print()<\/script>`);
+    w.document.close();
+  };
+  const br = $('#qr-relire');
+  if (br) br.onclick = () => lireAvantQr(n, br);
+}
+async function lireAvantQr(n, bouton) {
+  const suivi = $('#qr-suivi');
+  bouton.disabled = true;
+  let t;
+  try { t = await postJson('/api/admin-noeuds/taches', { type: 'lire', cibles: [n.num], params: {} }); } catch (e) { suivi.textContent = e.message; bouton.disabled = false; return; }
+  suivi.textContent = 'Lecture en cours par LoRa (compter 30 s à 2 min)…';
+  for (let i = 0; i < 120; i++) {
+    await new Promise((ok) => setTimeout(ok, 2500));
+    try { t = await api('/api/admin-noeuds/taches/' + t.id); } catch { continue; }
+    const x = t.noeuds[0];
+    if (x && x.detail) suivi.textContent = x.detail;
+    if (t.fin) {
+      if (x.statut === 'ok') { $('#qr-contenu').innerHTML = ''; return ouvrirQr(n); }
+      suivi.textContent = 'Échec : ' + (x.detail || 'pas de réponse');
+      bouton.disabled = false;
+      return;
+    }
+  }
+  bouton.disabled = false;
+}
+
+// ---- Largeur des panneaux gauche et droite (glisser la poignée, double-clic pour élargir) ------------
+(function panneauxRedimensionnables() {
+  const regles = { panneau: { var: '--l-panneau', defaut: 360, large: 620, sens: 1 }, fiche: { var: '--l-fiche', defaut: 400, large: 720, sens: -1 } };
+  const appliquer = (cle, l) => {
+    const r = regles[cle];
+    const max = Math.max(r.defaut, Math.round(window.innerWidth * 0.6));
+    l = Math.max(280, Math.min(max, Math.round(l)));
+    document.documentElement.style.setProperty(r.var, l + 'px');
+    try { localStorage.setItem('gaulix_l_' + cle, l); } catch { /* indisponible */ }
+    if (typeof carte !== 'undefined') carte.invalidateSize();
+    return l;
+  };
+  for (const cle of Object.keys(regles)) {
+    let memo = null;
+    try { memo = Number(localStorage.getItem('gaulix_l_' + cle)); } catch { /* indisponible */ }
+    if (memo) appliquer(cle, memo);
+    const el = document.getElementById(cle);
+    if (!el) continue;
+    const p = document.createElement('div');
+    p.className = 'poignee';
+    p.title = 'Glisser pour élargir · double-clic : large / normal';
+    // Le panneau de droite défile et floute son fond : sa poignée est placée juste à côté, hors du panneau
+    if (cle === 'fiche') { p.classList.add('poignee-fiche'); el.after(p); } else el.prepend(p);
+    p.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      p.setPointerCapture(e.pointerId);
+      p.classList.add('active'); document.body.classList.add('redim');
+      const x0 = e.clientX, l0 = el.getBoundingClientRect().width || regles[cle].defaut;
+      const bouger = (ev) => appliquer(cle, l0 + regles[cle].sens * (ev.clientX - x0));
+      const fin = () => { p.classList.remove('active'); document.body.classList.remove('redim'); p.removeEventListener('pointermove', bouger); p.removeEventListener('pointerup', fin); p.removeEventListener('pointercancel', fin); };
+      p.addEventListener('pointermove', bouger);
+      p.addEventListener('pointerup', fin);
+      p.addEventListener('pointercancel', fin);
+    });
+    p.addEventListener('dblclick', () => {
+      const actuelle = el.getBoundingClientRect().width;
+      appliquer(cle, actuelle < regles[cle].large - 20 ? regles[cle].large : regles[cle].defaut);
+    });
+  }
+})();
+
+// ---- Module branché sur ce PC (USB ou Bluetooth), relayé par la page ---------------------------
+// La page ouvre le port USB (Web Serial) ou la liaison Bluetooth (Web Bluetooth) et transmet le flux
+// Meshtastic au serveur par une WebSocket : le module devient celui de la carte, sans agent à installer.
+const moduleNav = { etat: 'aucun', ws: null, port: null, lecteur: null, ble: null, hote: null, nom: null, type: null, erreur: null, role: 'principal' };
+// Reconnexion Bluetooth automatique après une coupure (portée, veille du PC, appli du téléphone qui reprend le module,
+// redémarrage du serveur) : nouvel essai toutes les 5 s pendant 30 s, puis toutes les 30 s pendant 15 min.
+function planifierReconnexionBle(nav, appareil, brancher, maj, raison) {
+  clearTimeout(nav.reco);
+  if (!nav.coupureDepuis) nav.coupureDepuis = Date.now();
+  nav.essais = (nav.essais || 0) + 1;
+  if (Date.now() - nav.coupureDepuis > 15 * 60000) {
+    nav.coupureDepuis = null; nav.essais = 0; nav.appareilBle = null;
+    maj('aucun', 'Bluetooth perdu depuis 15 min : rapprochez le module puis reconnectez-le');
+    return;
+  }
+  const attente = nav.essais <= 6 ? 5000 : 30000;
+  nav.appareilBle = appareil;
+  maj('reconnexion', `${raison || 'Bluetooth coupé'} · reconnexion automatique dans ${attente / 1000} s (essai ${nav.essais})`);
+  nav.reco = setTimeout(async () => {
+    if (nav.etat !== 'reconnexion' || nav.appareilBle !== appareil) return; // débranché à la main entre-temps
+    await brancher(appareil, true);
+    if (nav.etat === 'relie') { nav.essais = 0; nav.coupureDepuis = null; }
+    else if (nav.appareilBle === appareil) planifierReconnexionBle(nav, appareil, brancher, maj, nav.erreur || raison);
+  }, attente);
+}
+function arreterReconnexionBle(nav) { clearTimeout(nav.reco); nav.reco = null; nav.essais = 0; nav.coupureDepuis = null; nav.appareilBle = null; }
+const ENTETE_MT = [0x94, 0xc3];
+const BLE_SERVICE = '6ba1b218-15a8-461f-9fa8-5dcae273eafd', BLE_TORADIO = 'f75c76d2-129e-4dad-a1dd-7866124401e7', BLE_FROMRADIO = '2c55e69e-4993-11ed-b878-0242ac120002', BLE_FROMNUM = 'ed9da18c-a800-4f66-a670-aa7547e34453';
+function blocUsbNavigateur() {
+  const https = location.protocol === 'https:';
+  const m = moduleNav;
+  const sousTitre = m.etat === 'relie' ? `relié par cette page (${m.type === 'ble' ? 'Bluetooth' : 'USB'})${m.role === 'ecoute' ? ' · 👂 en écoute' : ''} · gardez cet onglet ouvert` : m.etat === 'connexion' ? 'connexion…' : m.erreur ? esc(m.erreur) : 'module branché sur ce PC';
+  return `<div class="bloc-usb ${m.etat}">
+    <div class="titre-usb"><span class="point ${m.etat === 'relie' ? 'actif' : m.etat === 'connexion' || m.etat === 'reconnexion' ? 'recent' : 'inactif'}"></span><b>${m.etat === 'relie' ? esc(m.nom || 'Module de ce PC') : 'Module de ce PC'}</b><small>${sousTitre}</small></div>
+    ${!https ? '<p class="note">USB et Bluetooth demandent la carte en <b>HTTPS</b> (adresse en …ts.net) et Chrome ou Edge.</p>'
+      : m.etat === 'relie' || m.etat === 'connexion' || m.etat === 'reconnexion' ? '<div class="actions-prop"><button data-usb="stop">Débrancher</button></div>'
+      : `<div class="actions-prop"><button data-usb="usb" class="principal-usb">🔌 Brancher en USB</button><button data-usb="ble">📶 Bluetooth</button></div>`}
+  </div>`;
+}
+function brancherBoutonsUsb(zone) {
+  zone.querySelectorAll('[data-usb]').forEach((b) => (b.onclick = () => {
+    if (b.dataset.usb !== 'stop') moduleNav.role = 'principal';
+    if (b.dataset.usb === 'usb') brancherUsb(); else if (b.dataset.usb === 'ble') brancherBle(); else debrancherModuleNav();
+  }));
+}
+function majModuleNav(etatNouveau, erreur) {
+  moduleNav.etat = etatNouveau; moduleNav.erreur = erreur || null;
+  signatureModules = '';
+  if (typeof rendreModules === 'function') rendreModules(true);
+  const o = $('#outil-usb'); if (o) o.textContent = moduleNav.etat === 'relie' && moduleNav.type === 'usb' ? '🔌 Débrancher le module USB' : '🔌 Module USB de ce PC';
+}
+function ouvrirWsModule(nom, source, envoyerAuModule) {
+  return new Promise((ok, ko) => {
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/module?nom=${encodeURIComponent(nom)}&source=${encodeURIComponent(source)}&role=${moduleNav.role === 'ecoute' ? 'ecoute' : 'principal'}`);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => ok(ws);
+    ws.onerror = () => ko(new Error('connexion au serveur refusée (êtes-vous connecté en admin ?)'));
+    ws.onmessage = (e) => { if (e.data instanceof ArrayBuffer) envoyerAuModule(new Uint8Array(e.data)); };
+    ws.onclose = () => {
+      if (moduleNav.ws !== ws) return;
+      // Liaison avec le serveur coupée (redémarrage, proxy) : le module est toujours là, on se reconnecte
+      const app = moduleNav.type === 'ble' && moduleNav.ble ? moduleNav.ble.appareil : null;
+      const port = moduleNav.type === 'usb' ? moduleNav.port : null;
+      debrancherModuleNav('liaison avec le serveur fermée', !!(app || port));
+      if (app) planifierReconnexionBle(moduleNav, app, brancherBle, majModuleNav, 'liaison avec le serveur fermée');
+      else if (port) planifierReconnexionBle(moduleNav, port, brancherUsb, majModuleNav, 'liaison avec le serveur fermée');
+    };
+  });
+}
+// Signaux du port série selon le type de module :
+// - pont USB-série (CP210x, CH340, FTDI…, ESP32 Heltec V3, T-Beam…) : DTR et RTS baissés, sinon le module redémarre ;
+// - USB natif (nRF52 : T114, RAK4631, T-Echo… ; ESP32-S3 natif) : DTR levé, sinon le firmware croit qu'aucun
+//   programme n'écoute et n'envoie rien (companion MeshCore muet). C'est le réglage de l'appli officielle.
+const PONTS_USB_SERIE = new Set([0x10c4, 0x1a86, 0x0403, 0x067b]);
+async function reglerSignauxUsb(port) {
+  const info = port.getInfo ? port.getInfo() : {};
+  const pont = info.usbVendorId != null && PONTS_USB_SERIE.has(info.usbVendorId);
+  try { await port.setSignals(pont ? { dataTerminalReady: false, requestToSend: false } : { dataTerminalReady: true, requestToSend: true }); } catch { /* pas géré */ }
+}
+async function brancherUsb(portDonne) {
+  if (!('serial' in navigator)) { alert('Ce navigateur ne gère pas l’USB : utilisez Chrome ou Edge, sur la carte en HTTPS.'); return; }
+  let port = portDonne;
+  if (!port) try { port = await navigator.serial.requestPort({}); } catch { return; } // fenêtre de choix annulée
+  moduleNav.type = 'usb'; majModuleNav('connexion');
+  try {
+    await port.open({ baudRate: 115200 });
+    await reglerSignauxUsb(port);
+    moduleNav.port = port;
+    const info = port.getInfo ? port.getInfo() : {};
+    const nom = `USB ${etat.compte ? etat.compte.identifiant : ''}`.trim();
+    const ecrivain = port.writable.getWriter();
+    moduleNav.ecrivain = ecrivain;
+    // Laisse au module le temps de démarrer s'il a redémarré à l'ouverture du port
+    await new Promise((r) => setTimeout(r, 1500));
+    moduleNav.ws = await ouvrirWsModule(nom, 'USB' + (info.usbVendorId ? ' ' + info.usbVendorId.toString(16) + ':' + (info.usbProductId || 0).toString(16) : ''), (octets) => ecrivain.write(octets).catch(() => {}));
+    moduleNav.nom = 'Module USB de ce PC';
+    moduleNav.hote = 'agent-' + nom.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    majModuleNav('relie');
+    // Module → serveur
+    (async () => {
+      const lecteur = port.readable.getReader();
+      moduleNav.lecteur = lecteur;
+      try {
+        for (;;) {
+          const { value, done } = await lecteur.read();
+          if (done) break;
+          if (value && moduleNav.ws && moduleNav.ws.readyState === 1) moduleNav.ws.send(value);
+        }
+      } catch { /* port débranché */ }
+      if (moduleNav.port === port) debrancherModuleNav('module débranché');
+    })();
+  } catch (e) {
+    try { await port.close(); } catch { /* déjà fermé */ }
+    majModuleNav('aucun', e.message.includes('open') || e.name === 'NetworkError' ? 'port déjà utilisé (fermez l’appli Meshtastic ou l’agent)' : e.message);
+  }
+}
+async function brancherBle(appareilDonne, reprise = false) {
+  if (!navigator.bluetooth) { alert('Ce navigateur ne gère pas le Bluetooth : utilisez Chrome ou Edge, sur la carte en HTTPS.'); return; }
+  let appareil = appareilDonne;
+  if (!appareil) try { appareil = await navigator.bluetooth.requestDevice({ filters: [{ services: [BLE_SERVICE] }] }); } catch { return; }
+  if (!reprise) arreterReconnexionBle(moduleNav);
+  moduleNav.type = 'ble'; majModuleNav(reprise ? 'reconnexion' : 'connexion', reprise ? 'reconnexion Bluetooth…' : null);
+  try {
+    const gatt = await appareil.gatt.connect();
+    const svc = await gatt.getPrimaryService(BLE_SERVICE);
+    const toRadio = await svc.getCharacteristic(BLE_TORADIO), fromRadio = await svc.getCharacteristic(BLE_FROMRADIO), fromNum = await svc.getCharacteristic(BLE_FROMNUM);
+    if (reprise && moduleNav.appareilBle !== appareil) { try { appareil.gatt.disconnect(); } catch { /* déjà */ } return; } // débranché à la main entre-temps
+    moduleNav.ble = { appareil, gatt };
+    // Bluetooth : une trame par lecture/écriture ; on ajoute ou retire l'en-tête du flux série (0x94 0xC3 + longueur)
+    let lecture = false;
+    const vider = async () => {
+      if (lecture) return; lecture = true;
+      try {
+        for (;;) {
+          const v = await fromRadio.readValue();
+          if (!v.byteLength) break;
+          const t = new Uint8Array(4 + v.byteLength);
+          t.set(ENTETE_MT); t[2] = v.byteLength >> 8; t[3] = v.byteLength & 255; t.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), 4);
+          if (moduleNav.ws && moduleNav.ws.readyState === 1) moduleNav.ws.send(t);
+        }
+      } catch { /* liaison interrompue */ }
+      lecture = false;
+    };
+    let tampon = new Uint8Array(0);
+    const versModule = async (octets) => {
+      const n = new Uint8Array(tampon.length + octets.length); n.set(tampon); n.set(octets, tampon.length); tampon = n;
+      for (;;) {
+        let i = 0; while (i + 1 < tampon.length && !(tampon[i] === 0x94 && tampon[i + 1] === 0xc3)) i++;
+        if (i + 4 > tampon.length) { tampon = tampon.slice(Math.max(0, i)); return; }
+        const lg = (tampon[i + 2] << 8) | tampon[i + 3];
+        if (i + 4 + lg > tampon.length) { tampon = tampon.slice(i); return; }
+        const trame = tampon.slice(i + 4, i + 4 + lg); tampon = tampon.slice(i + 4 + lg);
+        try { await toRadio.writeValue(trame); } catch { /* ignoré */ }
+        setTimeout(vider, 50);
+      }
+    };
+    await fromNum.startNotifications();
+    fromNum.addEventListener('characteristicvaluechanged', vider);
+    if (!appareil.gardeReco) {
+      appareil.gardeReco = true;
+      appareil.addEventListener('gattserverdisconnected', () => {
+        if (!moduleNav.ble || moduleNav.ble.appareil !== appareil) return;
+        debrancherModuleNav('Bluetooth déconnecté', true);
+        planifierReconnexionBle(moduleNav, appareil, brancherBle, majModuleNav, 'Bluetooth coupé');
+      });
+    }
+    const nom = `Bluetooth ${appareil.name || ''}`.trim();
+    moduleNav.ws = await ouvrirWsModule(nom, 'Bluetooth', versModule);
+    moduleNav.nom = appareil.name || 'Module Bluetooth';
+    moduleNav.hote = 'agent-' + nom.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    arreterReconnexionBle(moduleNav);
+    majModuleNav('relie');
+    vider();
+  } catch (e) {
+    try { appareil.gatt.disconnect(); } catch { /* déjà */ }
+    moduleNav.ble = null;
+    majModuleNav(reprise ? 'reconnexion' : 'aucun', 'Bluetooth : ' + e.message);
+  }
+}
+// auto : coupure subie (la reconnexion automatique suit) ; sinon débranchement voulu
+async function debrancherModuleNav(raison, auto = false) {
+  const m = moduleNav;
+  if (auto !== true) arreterReconnexionBle(m);
+  const ws = m.ws; m.ws = null;
+  try { if (ws) ws.close(); } catch { /* déjà */ }
+  try { if (m.lecteur) await m.lecteur.cancel(); } catch { /* déjà */ }
+  try { if (m.ecrivain) m.ecrivain.releaseLock(); } catch { /* déjà */ }
+  const port = m.port; m.port = null; m.lecteur = null; m.ecrivain = null;
+  try { if (port) await port.close(); } catch { /* déjà */ }
+  try { if (m.ble) m.ble.gatt.disconnect(); } catch { /* déjà */ }
+  m.ble = null; m.hote = null;
+  majModuleNav(auto === true ? 'reconnexion' : 'aucun', typeof raison === 'string' ? raison : null);
+  setTimeout(() => { if (typeof chargerEtat === 'function') chargerEtat().catch(() => {}); }, 1500);
+}
+window.addEventListener('beforeunload', (e) => { if (moduleNav.etat === 'relie' || moduleNav.etat === 'reconnexion') { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('DOMContentLoaded', () => {
+  const o = $('#outil-usb'), b = $('#outil-ble');
+  if (o) o.onclick = () => { document.querySelector('.menu-outils').open = false; moduleNav.etat === 'relie' && moduleNav.type === 'usb' ? debrancherModuleNav() : brancherUsb(); };
+  if (b) b.onclick = () => { document.querySelector('.menu-outils').open = false; brancherBle(); };
+});
+
+// ---- Connecter un module : un seul endroit, Bluetooth, USB ou adresse IP ; Meshtastic ou MeshCore reconnu tout seul ----
+const MC_BLE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const mcActif = () => typeof mc !== 'undefined' && !!(etat.config && etat.config.meshcore && etat.config.meshcore.actif !== false) && typeof mcBrancherBle === 'function';
+async function etatConnexions() {
+  const r = { mt: null, mc: null };
+  try { const m = await api('/api/radio/modules'); r.mt = m.etat || null; r.mtModules = m.modules || []; r.mtEcoutes = m.ecoutes || []; } catch { /* non admin */ }
+  try { r.mc = await api('/api/mc/etat'); } catch { /* MeshCore absent */ }
+  return r;
+}
+async function ouvrirConnexion(message) {
+  if (!etat.admin) { alert('Connectez-vous en administrateur pour relier un module à la carte.'); return; }
+  const https = location.protocol === 'https:';
+  const nav = !!navigator.bluetooth, ser = 'serial' in navigator;
+  $('#fiche').hidden = false;
+  etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = `<h2>Connecter un module</h2>
+    <p class="note">Meshtastic ou MeshCore : le type est reconnu tout seul. Choisissez simplement comment le module est relié.</p>
+    <div class="cx-etat" id="cx-etat"><small>état des modules…</small></div>
+    <fieldset class="cx-role" id="cx-role"><legend>Ce nouveau module sera…</legend>
+      <label><input type="radio" name="cx-role" value="principal" checked> <b>le module principal</b> <small>(remplace l’actuel : écoute, envois de messages, administration)</small></label>
+      <label><input type="radio" name="cx-role" value="ecoute"> <b>👂 en écoute, en plus</b> <small>(l’actuel reste principal ; celui-ci ajoute ce qu’il entend à la carte)</small></label>
+    </fieldset>
+    <div class="cx-choix">
+      <button class="cx-gros" data-cx="ble" ${!https || !nav ? 'disabled' : ''}><span>📶</span><b>Bluetooth</b><small>module à quelques mètres de ce PC</small></button>
+      <button class="cx-gros" data-cx="usb" ${!https || !ser ? 'disabled' : ''}><span>🔌</span><b>USB</b><small>câble branché sur ce PC</small></button>
+    </div>
+    ${!https ? '<p class="alerte attention">Bluetooth et USB demandent la carte en <b>HTTPS</b> (adresse en …ts.net), dans Chrome ou Edge.</p>' : !nav || !ser ? '<p class="alerte attention">Ce navigateur ne gère pas le Bluetooth ou l’USB : utilisez <b>Chrome ou Edge</b> (pas Firefox ni Safari).</p>' : ''}
+    <div class="cx-serie"><button type="button" class="cx-gros cx-large" data-cx="serie"><span>🖥️</span><b>USB du serveur</b><small>module branché sur la machine qui fait tourner la carte (NAS, Raspberry Pi…)</small></button><div id="cx-ports"></div></div>
+    <form class="cx-ip" id="cx-ip"><label><span>🌐 <b>Adresse IP</b> du module en Wi-Fi</span>
+      <span class="ligne-ip"><input name="adresse" placeholder="192.168.1.122" inputmode="decimal" autocomplete="off" required><button class="principal">Connecter</button></span></label>
+      <small>Si le module est sur un autre réseau que la carte, un PC de ce réseau avec l’agent Gaulix 1.6 sert de relais tout seul.</small></form>
+    <div id="cx-retour" class="cx-retour">${message ? esc(message) : ''}</div>
+    <details class="cx-aide"><summary>Ça ne marche pas ?</summary><ul>
+      <li><b>Bluetooth</b> : fermez l’appli Meshtastic / MeshCore du téléphone (un seul appareil à la fois). Code PIN : celui affiché par le module, sinon 123456. En cas d’échec, appairez d’abord le module dans les réglages Bluetooth de Windows.</li>
+      <li><b>Meshtastic en Wi-Fi</b> (ESP32 : Heltec, T-Beam…) : le Bluetooth est coupé tant que le Wi-Fi est actif ; utilisez l’adresse IP.</li>
+      <li><b>USB</b> : fermez l’appli, l’agent ou toute autre page qui utilise déjà le port.</li>
+      <li><b>Bluetooth qui se coupe</b> : la page se reconnecte toute seule pendant 15 min. Fermez l’appli du téléphone, rapprochez le module et, sous Windows, décochez « Autoriser l’ordinateur à éteindre ce périphérique » (Gestionnaire de périphériques › Bluetooth › Gestion de l’alimentation).</li>
+      <li><b>Plusieurs modules</b> : un seul est principal pour chaque réseau (Meshtastic, MeshCore) ; les autres peuvent être « en écoute ». Depuis cette page, un seul module Bluetooth ou USB par réseau ; les autres par adresse IP ou par agent.</li>
+      <li><b>Adresse IP</b> : le module doit être allumé, en Wi-Fi, et sur un réseau joignable par la carte ou par un PC avec l’agent 1.6 (<a href="/agent/agent-gaulix-windows.exe">télécharger pour Windows</a>).</li>
+    </ul></details>`;
+  const retour = (t, cls = '') => { const r = $('#cx-retour'); if (r) { r.className = 'cx-retour ' + cls; r.innerHTML = t; } };
+  const role = () => { const c = z.querySelector('input[name="cx-role"]:checked'); return c ? c.value : 'principal'; };
+  const libRole = (r) => (r === 'ecoute' ? ' en écoute, en plus du module principal' : '');
+  let premierEtat = true;
+  const majEtat = async () => {
+    const e = await etatConnexions();
+    const el = $('#cx-etat'); if (!el) return;
+    const mt = e.mt, m = e.mc && e.mc.companion;
+    // Modules principaux déjà reliés : on propose d'emblée l'écoute en plus
+    if (premierEtat) { premierEtat = false; if (mt && mt.connecte && (!e.mc || (m && m.connecte))) { const r = z.querySelector('input[name="cx-role"][value="ecoute"]'); if (r) r.checked = true; } }
+    const ecMt = e.mtEcoutes || [], ecMc = (e.mc && e.mc.ecoutes) || [];
+    const ligneEc = (l) => (l.length ? `<div class="cx-ecoutes">👂 en écoute : ${l.map((x) => `<span class="${x.connecte ? '' : 'attention'}">${esc(x.nom || x.hote || 'module')}${x.connecte ? ` (${x.paquets})` : ' (connexion…)'}</span>`).join(', ')}</div>` : '');
+    el.innerHTML = `<div><span class="point ${mt && mt.connecte ? 'actif' : 'inactif'}"></span><b>Meshtastic</b> · ${mt && mt.connecte ? esc(mt.nomLocal || mt.hote || 'module relié') : mt && mt.erreur ? '<span class="attention">' + esc(mt.erreur) + '</span>' : 'aucun module relié'}${typeof moduleNav !== 'undefined' && moduleNav.etat === 'relie' ? ` <button class="mini" data-cx-stop="mt">Débrancher (${moduleNav.type === 'ble' ? 'Bluetooth' : 'USB'})</button>` : ''}${ligneEc(ecMt)}</div>
+      ${e.mc ? `<div><span class="point ${m && m.connecte ? 'actif' : 'inactif'}"></span><b>MeshCore</b> · ${m && m.connecte ? esc(m.nom || 'companion relié') : m && m.erreur ? '<span class="attention">' + esc(m.erreur) + '</span>' : 'aucun companion relié'}${mcActif() && mc.nav && mc.nav.etat === 'relie' ? ` <button class="mini" data-cx-stop="mc">Débrancher (${mc.nav.type === 'ble' ? 'Bluetooth' : 'USB'})</button>` : m && m.cible ? ' <button class="mini" data-cx-stop="mc-cible">Oublier</button>' : ''}${ligneEc(ecMc)}</div>` : ''}`;
+    el.querySelectorAll('[data-cx-stop]').forEach((b) => (b.onclick = async () => {
+      const k = b.dataset.cxStop;
+      if (k === 'mt') await debrancherModuleNav();
+      else if (k === 'mc') await mcDebrancherNav();
+      else { try { await fetch('/api/mc/companion', { method: 'DELETE' }); } catch { /* ignore */ } }
+      setTimeout(majEtat, 1500);
+    }));
+  };
+  majEtat();
+  const fini = (type) => { setTimeout(majEtat, 2500); setTimeout(majEtat, 8000); return type; };
+
+  z.querySelector('[data-cx="ble"]').onclick = async () => {
+    let app;
+    try {
+      app = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [BLE_SERVICE] }, { services: [MC_BLE] }, { namePrefix: 'Meshtastic' }, { namePrefix: 'MeshCore' }],
+        optionalServices: [BLE_SERVICE, MC_BLE],
+      });
+    } catch { return; } // fenêtre fermée
+    retour(`Connexion à « ${esc(app.name || 'module')} »… (Windows peut demander le code PIN)`);
+    let type = null;
+    try {
+      const gatt = await app.gatt.connect();
+      try { await gatt.getPrimaryService(MC_BLE); type = 'meshcore'; } catch {
+        try { await gatt.getPrimaryService(BLE_SERVICE); type = 'meshtastic'; } catch { /* aucun */ }
+      }
+    } catch (e) { retour(`✗ Bluetooth : ${esc(e.message)}. Fermez l’appli du téléphone, puis réessayez ; sinon appairez le module dans Windows (code affiché par le module, ou 123456).`, 'ko'); return; }
+    if (!type) { try { app.gatt.disconnect(); } catch { /* déjà */ } retour('✗ Cet appareil Bluetooth n’est ni un module Meshtastic ni un companion MeshCore.', 'ko'); return; }
+    if (type === 'meshcore') {
+      if (!mcActif()) { retour('✗ Companion MeshCore reconnu, mais MeshCore n’est pas activé dans cette carte.', 'ko'); return; }
+      mc.nav.role = role();
+      await mcBrancherBle(app);
+      const ok = mc.nav.etat === 'relie';
+      retour(ok ? `✓ Companion MeshCore « ${esc(app.name || '')} » relié en Bluetooth${libRole(mc.nav.role)}. Gardez cet onglet ouvert.` : `✗ ${esc(mc.nav.erreur || 'échec de la liaison')}`, ok ? 'ok' : 'ko');
+    } else {
+      moduleNav.role = role();
+      await brancherBle(app);
+      const ok = moduleNav.etat === 'relie';
+      retour(ok ? `✓ Module Meshtastic « ${esc(app.name || '')} » relié en Bluetooth${moduleNav.role === 'ecoute' ? libRole('ecoute') : ' : il devient le module principal de la carte'}. Gardez cet onglet ouvert.` : `✗ ${esc(moduleNav.erreur || 'échec de la liaison')}`, ok ? 'ok' : 'ko');
+    }
+    fini(type);
+  };
+
+  z.querySelector('[data-cx="usb"]').onclick = async () => {
+    let port;
+    try { port = await navigator.serial.requestPort({}); } catch { return; }
+    retour('Port ouvert, reconnaissance du module (jusqu’à 8 s : il redémarre souvent à l’ouverture du port)…');
+    let type = null, texteRecu = '';
+    try {
+      await port.open({ baudRate: 115200 });
+      await reglerSignauxUsb(port);
+      // Deux questions : MeshCore (DEVICE_QUERY, réponse « > » code 13) et Meshtastic (want_config_id, réponse 0x94 0xC3).
+      // Reposées toutes les 2,5 s : le module peut être en train de redémarrer.
+      const w = port.writable.getWriter();
+      const questionner = async () => {
+        try {
+          await w.write(new Uint8Array([0x3c, 0x02, 0x00, 22, 3]));
+          await w.write(new Uint8Array(32).fill(0xc3));
+          await w.write(new Uint8Array([0x94, 0xc3, 0x00, 0x03, 0x18, 0xb9, 0x60])); // ToRadio { want_config_id: 12345 }
+        } catch { /* port fermé */ }
+      };
+      await questionner();
+      const relances = [setTimeout(questionner, 2500), setTimeout(questionner, 5000)];
+      const lecteur = port.readable.getReader();
+      let tampon = new Uint8Array(0);
+      const limite = Date.now() + 8000;
+      const minut = setTimeout(() => lecteur.cancel().catch(() => {}), 8100);
+      try {
+        while (Date.now() < limite) {
+          const { value, done } = await lecteur.read();
+          if (done) break;
+          const n = new Uint8Array(tampon.length + value.length); n.set(tampon); n.set(value, tampon.length); tampon = n;
+          const i = tampon.indexOf(0x3e);
+          if (i >= 0 && i + 3 < tampon.length && (tampon[i + 3] === 13 || (tampon[i + 3] === 1 && (tampon[i + 1] | (tampon[i + 2] << 8)) <= 4))) { type = 'meshcore'; break; }
+          for (let k = 0; k + 1 < tampon.length; k++) if (tampon[k] === 0x94 && tampon[k + 1] === 0xc3) { type = 'meshtastic'; break; }
+          if (type) break;
+          if (tampon.length > 8192) tampon = tampon.slice(-4096);
+        }
+      } catch { /* fin de lecture */ }
+      relances.forEach(clearTimeout);
+      clearTimeout(minut);
+      texteRecu = new TextDecoder().decode(tampon).replace(/[^\x20-\x7e\n]/g, '').trim();
+      try { await lecteur.cancel(); } catch { /* déjà */ }
+      try { lecteur.releaseLock(); } catch { /* déjà */ }
+      try { w.releaseLock(); } catch { /* déjà */ }
+      await port.close();
+    } catch (e) {
+      try { await port.close(); } catch { /* déjà */ }
+      retour(`✗ USB : ${esc(e.name === 'NetworkError' || /open/i.test(e.message) ? 'port déjà utilisé (fermez l’appli Meshtastic / MeshCore, l’agent ou une autre page)' : e.message)}`, 'ko');
+      return;
+    }
+    if (!type) {
+      // Ni Meshtastic ni companion MeshCore : on ne devine pas
+      const repeteur = /repeater|room|MeshCore|^>|ver |advert/i.test(texteRecu);
+      retour(`✗ Le module branché en USB ne répond ni comme un module Meshtastic ni comme un companion MeshCore.<br>
+        ${repeteur ? 'Il semble avoir un firmware MeshCore <b>répéteur</b> ou <b>room server</b> : il s’administre à distance (MeshCore › Programmer), pas comme companion.<br>' : ''}
+        Pour MeshCore en USB, le module doit avoir le firmware <b>« companion USB »</b> : le firmware « companion BLE » ne répond qu’en Bluetooth.
+        Fermez aussi l’appli MeshCore / Meshtastic qui utiliserait le même module, puis réessayez.`, 'ko');
+      return;
+    }
+    if (type === 'meshcore') {
+      if (!mcActif()) { retour('✗ Companion MeshCore reconnu, mais MeshCore n’est pas activé dans cette carte.', 'ko'); return; }
+      retour('Companion MeshCore reconnu, liaison…');
+      mc.nav.role = role();
+      await mcBrancherUsb(port);
+      const ok = mc.nav.etat === 'relie';
+      retour(ok ? `✓ Companion MeshCore relié en USB${libRole(mc.nav.role)}. Gardez cet onglet ouvert.` : `✗ ${esc(mc.nav.erreur || 'échec de la liaison')}`, ok ? 'ok' : 'ko');
+    } else {
+      retour('Module Meshtastic, liaison…');
+      moduleNav.role = role();
+      await brancherUsb(port);
+      const ok = moduleNav.etat === 'relie';
+      retour(ok ? `✓ Module Meshtastic relié en USB${moduleNav.role === 'ecoute' ? libRole('ecoute') : ' : il devient le module principal de la carte'}. Gardez cet onglet ouvert.` : `✗ ${esc(moduleNav.erreur || 'échec de la liaison')}`, ok ? 'ok' : 'ko');
+    }
+    fini(type);
+  };
+
+  z.querySelector('[data-cx="serie"]').onclick = async () => {
+    const zp = $('#cx-ports');
+    zp.innerHTML = '<small>recherche des ports…</small>';
+    let r;
+    try { r = await api('/api/connexion/ports'); } catch (e) { zp.innerHTML = `<small class="attention">${esc(e.message)}</small>`; return; }
+    if (!r.ports.length) { zp.innerHTML = '<p class="note">Aucun port USB vu par la carte. Branchez le module sur le serveur et, avec Docker, transmettez-le au conteneur : <span class="mono">devices: ["/dev/ttyACM0:/dev/ttyACM0"]</span> et <span class="mono">group_add: ["dialout"]</span> dans docker-compose.yml (voir le wiki, Installation).</p>'; return; }
+    zp.innerHTML = `<div class="liste">${r.ports.map((p) => `<div class="ligne"><span class="point ${p.utilise ? 'actif' : 'inactif'}"></span><span class="titre mono">${esc(p.chemin.replace('/dev/serial/by-id/', ''))}<small>${esc(p.chemin)}${p.utilise ? ' · déjà utilisé par la carte' : ''}</small></span><span class="meta"><button class="mini principal" data-port-serie="${esc(p.chemin)}">Connecter</button></span></div>`).join('')}</div>`;
+    zp.querySelectorAll('[data-port-serie]').forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      retour(`Reconnaissance du module sur ${esc(b.dataset.portSerie)} (jusqu’à 8 s)…`);
+      try { const x = await postJson('/api/connexion/serie', { chemin: b.dataset.portSerie, role: role() }); retour('✓ ' + esc(x.texte), 'ok'); fini(x.protocole); }
+      catch (e) { retour('✗ ' + esc(e.message), 'ko'); }
+      b.disabled = false;
+    }));
+  };
+  $('#cx-ip').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const adresse = ev.target.adresse.value.trim();
+    const b = ev.target.querySelector('button'); b.disabled = true;
+    retour(`Recherche d’un module à ${esc(adresse)} (Meshtastic port 4403, MeshCore port 5000)…`);
+    try {
+      const r = await postJson('/api/connexion/ip', { adresse, role: role() });
+      retour('✓ ' + esc(r.texte), 'ok');
+      fini(r.protocole);
+    } catch (e) {
+      const conseil = e.donnees && e.donnees.conseil;
+      retour(`✗ ${esc(e.message)}${conseil ? '<br>' + esc(conseil) : ''}`, 'ko');
+    }
+    b.disabled = false;
+  };
+}
+
+// ---- Contrôle du trafic : nœuds trop bavards et paquets réinjectés depuis MQTT -----------------------
+async function ficheTrafic(heures = 24) {
+  $('#fiche').hidden = false; etat.selection = null;
+  const z = $('#fiche-contenu');
+  z.innerHTML = '<h2>🚦 Contrôle du trafic</h2><div class="vide">Analyse…</div>';
+  let r;
+  try { r = await api('/api/trafic/controle?heures=' + heures); } catch (e) { z.innerHTML = `<h2>🚦 Contrôle du trafic</h2><div class="vide">${esc(e.message)}</div>`; return; }
+  const dur = (s) => (s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 360) / 10} h`);
+  const LIB = { position: 'positions', telemetrie: 'télémétrie', nodeinfo: 'fiche du nœud' };
+  const radio = r.bavards.filter((b) => b.radio), ailleurs = r.bavards.filter((b) => !b.radio);
+  const ligne = (b) => `<tr>
+      <td>${b.administrable && b.radio ? `<input type="checkbox" data-trafic="${b.num}" checked>` : ''}</td>
+      <td><a href="#" data-noeud="${b.num}">${esc(b.nom)}</a><small> ${esc(b.role || '')}${b.zone ? '' : ' · hors zone'}</small></td>
+      <td>${b.problemes.map((p) => `${LIB[p.port] || p.port} toutes les <b style="color:var(--attention)">${dur(p.medianS)}</b> <small>(conseil ≥ ${dur(p.conseilS)})${b.radio && !p.radio ? ' · pas en radio' : ''}</small>`).join('<br>')}</td>
+      <td class="num">${b.paquetsJour}</td>
+      <td>${b.administrable ? (b.radio ? 'programmable' : '—') : '<small>sur place / propriétaire</small>'}</td></tr>`;
+  const ri = r.reinjection;
+  z.innerHTML = `<h2>🚦 Contrôle du trafic</h2>
+    <div class="actions-prop">${[6, 24, 72].map((h) => `<button class="mini ${h === r.heures ? 'actif' : ''}" data-h="${h}">${h} h</button>`).join('')}</div>
+    <p class="note">Intervalles médians mesurés sur ${r.heures} h. Seuils : position ≥ ${dur(r.seuils.positionFixe)} pour un relais ou un point fixe, ≥ ${dur(r.seuils.position)} sinon ; télémétrie ≥ ${dur(r.seuils.telemetrie)} ; fiche ≥ ${dur(r.seuils.nodeinfo)}.</p>
+    <h3>Entendus en radio dans la zone (${radio.length})</h3>
+    ${radio.length ? `<table class="voisins petit"><thead><tr><th></th><th>Nœud</th><th>Trop fréquent</th><th class="num">paquets/j</th><th></th></tr></thead><tbody>${radio.map(ligne).join('')}</tbody></table>
+      <div class="actions-prop"><button class="principal" id="trafic-corriger">Corriger les nœuds cochés</button></div>
+      <p class="note">Correction : position toutes les 12 h pour un relais (position fixe, sans « smart position »), 15 min pour un mobile ; télémétrie 30 min ; fiche 3 h. Programmation à distance avec « Insister 2 h ». Les autres nœuds : prévenez leur propriétaire.</p>` : '<div class="vide">Aucun nœud trop bavard entendu en radio. 👍</div>'}
+    <h3>Réinjection MQTT → radio</h3>
+    <p class="note">Paquets venus d’internet (drapeau « via MQTT ») puis émis en radio par une passerelle dont le canal a la <b>descente MQTT</b> activée : ${ri.total} paquet(s)${ri.partPct != null ? `, soit ${fmt(ri.partPct, 1)} % du trafic radio capté` : ''}.</p>
+    ${ri.injecteurs.length ? `<table class="voisins petit"><thead><tr><th>Passerelle qui réinjecte</th><th class="num">paquets</th><th class="num">émetteurs</th><th>types</th></tr></thead><tbody>${ri.injecteurs.map((x) => `<tr><td>${x.num != null ? `<a href="#" data-noeud="${x.num}">${esc(x.nom)}</a>` : esc(x.nom)}</td><td class="num">${x.nb}</td><td class="num">${x.origines}</td><td>${esc(Object.entries(x.ports).map(([k, v]) => `${k} ${v}`).join(', '))}</td></tr>`).join('')}</tbody></table>
+      <p class="note">À faire sur ces passerelles : couper la <b>descente MQTT</b> (downlink) sur le canal public, ou ne la garder que sur un canal privé. Sur les relais, « Ignorer MQTT » leur fait refuser de relayer ce qui vient d’internet.</p>` : '<div class="vide">Aucune réinjection constatée. 👍</div>'}
+    <h3>« Ignorer MQTT » sur les relais</h3>
+    <p class="note">Réglage LoRa du firmware : le nœud ne relaie plus les paquets arrivés par MQTT. Conseillé sur tous les ROUTER / ROUTER_LATE.</p>
+    <div class="actions-prop"><button id="trafic-ignorer">Activer « Ignorer MQTT » sur les relais programmables…</button></div>
+    ${ailleurs.length ? `<details><summary>Hors radio : seulement reçus par le broker (${ailleurs.length})</summary><p class="note">Ces nœuds ne sont pas entendus par les passerelles de la zone : ils chargent la carte et le broker, pas votre canal radio (sauf réinjection, ci-dessus).</p><table class="voisins petit"><tbody>${ailleurs.slice(0, 40).map(ligne).join('')}</tbody></table></details>` : ''}
+    <p class="erreur" id="trafic-retour"></p>`;
+  z.querySelectorAll('[data-h]').forEach((b) => (b.onclick = () => ficheTrafic(Number(b.dataset.h))));
+  z.querySelectorAll('[data-noeud]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); const n = etat.noeuds.get(Number(a.dataset.noeud)); if (n) ouvrirFiche(n.num); }));
+  const retour = (t) => { $('#trafic-retour').textContent = t; };
+  const bc = $('#trafic-corriger');
+  if (bc) bc.onclick = async () => {
+    const nums = [...z.querySelectorAll('[data-trafic]:checked')].map((c) => Number(c.dataset.trafic));
+    if (!nums.length) return retour('Cochez au moins un nœud.');
+    if (!(await confirmer(`Corriger ${nums.length} nœud(s) à distance ?`))) return;
+    try { const x = await postJson('/api/trafic/corriger', { nums }); retour(`${x.taches.length} programmation(s) lancée(s) (suivi dans Programmer)${x.refus.length ? ` · refusés : ${x.refus.map((y) => y.raison).join(', ')}` : ''}.`); } catch (e) { retour(e.message); }
+  };
+  $('#trafic-ignorer').onclick = async () => {
+    const adm = await api('/api/admin-noeuds').catch(() => null);
+    if (!adm) return retour('Connexion admin requise');
+    const relais = [...etat.noeuds.values()].filter((n) => ['ROUTER', 'ROUTER_LATE'].includes(n.role) && adm.administrables[String(n.num)] && adm.administrables[String(n.num)].ok);
+    if (!relais.length) return retour('Aucun relais programmable à distance par la carte.');
+    if (!(await confirmer(`Activer « Ignorer MQTT » sur ${relais.length} relais ?\n${relais.map((n) => '• ' + (n.nomLong || n.id)).join('\n')}`))) return;
+    try { const x = await postJson('/api/trafic/corriger', { nums: relais.map((n) => n.num), ignorerMqtt: true }); retour(`${x.taches.length} programmation(s) lancée(s)${x.refus.length ? ` · refusés : ${x.refus.length}` : ''}.`); } catch (e) { retour(e.message); }
+  };
+}
+
+// ---- Archive PostgreSQL (console d'administration) -----------------------------------------------------
+async function rendreArchive() {
+  const z = $('#pan-archive');
+  let e;
+  try { e = await api('/api/postgres'); } catch (x) { z.innerHTML = `<div class="vide">${esc(x.message)}</div>`; return; }
+  const r = e.reglages;
+  const go = (o) => (o == null ? '–' : o >= 1024 ** 3 ? fmt(o / 1024 ** 3, 2, ' Go') : fmt(o / 1024 ** 2, 0, ' Mo'));
+  const DUREES = [[0, 'Toujours'], [3650, '10 ans'], [1825, '5 ans'], [730, '2 ans'], [365, '1 an'], [180, '6 mois'], [90, '3 mois'], [30, '1 mois'], [7, '1 semaine']];
+  const TAILLES = [[0, 'Sans limite'], [100, '100 Go'], [50, '50 Go'], [20, '20 Go'], [10, '10 Go'], [5, '5 Go'], [2, '2 Go'], [1, '1 Go']];
+  z.innerHTML = `
+    <p class="note">La carte garde quelques jours d’historique. L’archive PostgreSQL recopie tout le trafic (nœuds, paquets, réceptions, positions, télémétrie, traceroutes, liaisons, Meshtastic et MeshCore) toutes les 20 s, pour des statistiques longues, Grafana ou des requêtes SQL.</p>
+    <div class="grille">
+      <div class="mesure"><span>État</span><b style="color:${!r.actif ? 'inherit' : e.connecte ? 'var(--ok)' : 'var(--attention)'}">${!r.actif ? 'désactivée' : e.connecte ? '● active' : '○ non connectée'}</b></div>
+      <div class="mesure"><span>Taille de la base</span><b>${go(e.tailleOctets)}${r.maxGo ? ` / ${r.maxGo} Go` : ''}</b></div>
+      <div class="mesure"><span>Lignes copiées (depuis le démarrage)</span><b>${(e.total || 0).toLocaleString('fr-FR')}</b></div>
+      <div class="mesure"><span>Dernière copie</span><b>${e.dernierTour ? ilYa(e.dernierTour) : '–'}</b></div>
+    </div>
+    ${e.erreur ? `<p class="erreur">${esc(e.erreur)}</p>` : ''}${e.moduleAbsent ? '<p class="erreur">Module PostgreSQL absent de cette image : mettez la carte à jour.</p>' : ''}
+    <form id="form-archive" class="form-edit">
+      <label class="case"><input type="checkbox" name="actif" ${r.actif ? 'checked' : ''}> Activer l’archive</label>
+      <div class="grille-edit">
+        <label>Serveur <input name="hote" value="${esc(r.hote || '')}" placeholder="postgres (conteneur fourni) ou 192.168.0.10"></label>
+        <label>Port <input name="port" type="number" min="1" max="65535" value="${r.port || 5432}"></label>
+        <label>Base <input name="base" value="${esc(r.base || 'carte')}"></label>
+        <label>Utilisateur <input name="utilisateur" value="${esc(r.utilisateur || '')}" autocomplete="off"></label>
+        <label>Mot de passe <input name="motDePasse" type="password" autocomplete="new-password" placeholder="${r.motDePasseDefini ? '•••••• (inchangé)' : ''}"></label>
+        <label class="case"><input type="checkbox" name="ssl" ${r.ssl ? 'checked' : ''}> Connexion chiffrée (SSL)</label>
+        <label>Conserver <select name="retentionJours">${DUREES.map(([v, t]) => `<option value="${v}" ${Number(r.retentionJours) === v ? 'selected' : ''}>${t}</option>`).join('')}</select><small>les données plus anciennes sont supprimées chaque heure</small></label>
+        <label>Taille maximale <select name="maxGo">${TAILLES.map(([v, t]) => `<option value="${v}" ${Number(r.maxGo) === v ? 'selected' : ''}>${t}</option>`).join('')}</select><small>au-delà, les plus anciennes données partent d’abord</small></label>
+      </div>
+      <div class="actions-prop"><button type="button" id="archive-tester">Tester la connexion</button><button type="submit" class="principal">Enregistrer</button></div>
+      <p class="erreur" id="retour-archive"></p>
+    </form>
+    <details><summary>Avec le conteneur PostgreSQL fourni</summary><p class="note">Dans le <span class="mono">.env</span> : <span class="mono">POSTGRES_MOT_DE_PASSE=…</span>, puis <span class="mono">docker compose --profile postgres up -d</span>. Ici : serveur <b>postgres</b>, port 5432, base <b>carte</b>, utilisateur <b>carte</b> et ce mot de passe. Le conteneur ne peut pas être démarré depuis la carte.</p></details>`;
+  const f = $('#form-archive'), ret = (t, ok) => { const x = $('#retour-archive'); x.textContent = t; x.style.color = ok ? 'var(--ok)' : ''; };
+  const valeurs = () => ({ actif: f.actif.checked, hote: f.hote.value.trim(), port: Number(f.port.value) || 5432, base: f.base.value.trim(), utilisateur: f.utilisateur.value.trim(), motDePasse: f.motDePasse.value || undefined, ssl: f.ssl.checked, retentionJours: Number(f.retentionJours.value), maxGo: Number(f.maxGo.value) });
+  $('#archive-tester').onclick = async () => {
+    ret('Connexion…');
+    try { const t = await postJson('/api/postgres/tester', valeurs()); ret(`✓ ${t.version} · base actuelle ${go(t.tailleOctets)}`, true); } catch (x) { ret(x.message); }
+  };
+  f.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const v = valeurs();
+    if (v.actif && (v.retentionJours || v.maxGo) && !(await confirmer(`Les données plus anciennes que ${v.retentionJours ? DUREES.find((d) => d[0] === v.retentionJours)[1].toLowerCase() : '…'}${v.maxGo ? ` ou au-delà de ${v.maxGo} Go` : ''} seront supprimées de l’archive. Continuer ?`))) return;
+    try { await postJson('/api/postgres', v); ret('Enregistré ✓', true); setTimeout(rendreArchive, 4000); } catch (x) { ret(x.message); }
+  };
+}
+

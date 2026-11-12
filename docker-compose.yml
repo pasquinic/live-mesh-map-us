@@ -1,0 +1,94 @@
+# Live mesh map (world edition) — Docker Compose (Synology Container Manager, Unraid, Linux…)
+# 1. Copy .env.exemple to .env and adapt it.   2. docker compose up -d
+# 3. Open http://SERVER_IP:8095: the wizard creates the admin account.
+
+services:
+  carte-live:
+    image: ghcr.io/sauveteur71/live-mesh-map-world:latest
+    # Pour construire l'image vous-même à partir des sources, remplacez la ligne « image » par :
+    # build: .
+    container_name: live-mesh-map-world
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FICHIER_BASE: /data/carte-live.db
+    ports:
+      - "${CARTE_PORT:-8095}:8095"
+      # Agents (USB node on a PC, node on another network): local network or VPN (Tailscale) only,
+      # NEVER forward this port on your internet router
+      - "${AGENTS_PORT_HOTE:-4404}:4404"
+    volumes:
+      # Base, comptes, réglages et cache du relief : à sauvegarder
+      - donnees:/data
+    mem_limit: 512m
+    # Module Meshtastic ou companion MeshCore branché en USB sur cette machine : retirez le « # » des DEUX lignes
+    # suivantes (au même retrait que mem_limit) et adaptez le port (ls /dev/ttyACM* /dev/ttyUSB* sur la machine),
+    # puis Outils › Connecter un module › USB du serveur
+    # devices: ["/dev/ttyACM0:/dev/ttyACM0"]
+    # group_add: ["dialout"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # Mise à jour en un clic (bouton « Mettre à jour » de la carte, administrateur) : télécharge la nouvelle image
+  # de la carte et recrée son conteneur avec les mêmes réglages ; en cas d'échec, l'ancienne version repart.
+  # Il a accès au moteur Docker (socket) mais aucun port publié : seule la carte peut l'appeler, avec un jeton
+  # créé dans le volume de données. Pour vous en passer : supprimez ce bloc (mise à jour : docker compose pull
+  # && docker compose up -d).
+  maj:
+    image: ghcr.io/sauveteur71/live-mesh-map-world:latest
+    container_name: carte-live-maj
+    command: ["node", "src/majeur.js"]
+    restart: unless-stopped
+    user: "0"
+    environment:
+      MAJ_SERVICE: carte-live
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - donnees:/data
+    healthcheck:
+      disable: true
+    mem_limit: 64m
+
+  # Client officiel Meshtastic (https://github.com/meshtastic/web) : gérer un module en USB, Bluetooth ou HTTP
+  client-meshtastic:
+    image: ghcr.io/meshtastic/web:latest
+    container_name: client-meshtastic
+    restart: unless-stopped
+    ports:
+      - "${CLIENT_PORT:-8096}:8080"
+    mem_limit: 64m
+
+  # Flasheur officiel Meshtastic (https://github.com/meshtastic/web-flasher), construit par ce dépôt
+  flasher-meshtastic:
+    image: ghcr.io/sauveteur71/meshtastic-flasher:latest
+    container_name: flasher-meshtastic
+    restart: unless-stopped
+    ports:
+      - "${FLASHER_PORT:-8097}:8080"
+    mem_limit: 64m
+
+  # Archive PostgreSQL (facultative) : tout le trafic conservé sans limite de durée.
+  # Lancement : docker compose --profile postgres up -d, et dans .env :
+  #   POSTGRES_MOT_DE_PASSE=…   POSTGRES_URL=postgres://carte:…@postgres:5432/carte
+  postgres:
+    image: postgres:16-alpine
+    container_name: carte-live-postgres
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: carte
+      POSTGRES_DB: carte
+      POSTGRES_PASSWORD: ${POSTGRES_MOT_DE_PASSE:-changez-moi}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    # Port publié seulement si vous voulez y brancher un outil (Grafana, DBeaver…) : décommentez
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    mem_limit: 256m
+
+volumes:
+  donnees:
+  postgres:

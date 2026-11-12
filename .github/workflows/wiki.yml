@@ -1,0 +1,41 @@
+# Publie le dossier wiki/ dans le wiki GitHub du dépôt à chaque modification (et à la demande).
+# Le wiki doit avoir été créé une fois à la main (onglet Wiki › Create the first page › Save).
+name: Wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ['wiki/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copier les pages dans le wiki
+        env:
+          JETON: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${JETON}@github.com/${GITHUB_REPOSITORY}.wiki.git" depot-wiki || {
+            echo "::error::Wiki introuvable : créez d'abord une première page (onglet Wiki › Create the first page › Save), puis relancez ce workflow."
+            exit 1
+          }
+          # Édition monde : pages anglaises sous les noms d'origine (liens inchangés), pages françaises en « Français-… »
+          find depot-wiki -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp wiki/en/*.md depot-wiki/
+          for f in wiki/*.md; do
+            n=$(basename "$f" .md)
+            [ "$n" = "_Sidebar" ] && continue
+            sed -E 's/\[\[([^]|]+)\|([^]]+)\]\]/[[\1|Français-\2]]/g; s/\[\[([^]|]+)\]\]/[[\1|Français-\1]]/g' "$f" > "depot-wiki/Français-$n.md"
+          done
+          cd depot-wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "Wiki déjà à jour"; exit 0; }
+          git commit -m "Wiki mis à jour depuis ${GITHUB_SHA::7}"
+          git push

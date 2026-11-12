@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Carte live Meshtastic · MeshCore</title>
+  <meta name="description" content="Carte en temps réel, supervision et administration d’un réseau Meshtastic">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='6' fill='%233ee6c4'/%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%233ee6c4' stroke-width='2' opacity='.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="apple-touch-icon" href="/icone-192.png">
+</head>
+<body>
+  <div id="carte"></div>
+  <div id="bandeau-terrain" hidden></div>
+
+  <header class="barre">
+    <div class="marque">
+      <span class="logo"></span>
+      <div>
+        <div class="nom">Carte live</div>
+        <div class="sous">Carte live · Haute-Loire</div>
+        <a id="version" class="version" target="_blank" rel="noopener" hidden></a>
+      </div>
+      <span id="direct" class="direct" title="État de la connexion au broker">
+        <i></i><b>Connexion…</b>
+      </span>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><b id="k-actifs">–</b><span>nœuds actifs</span></div>
+      <div class="kpi"><b id="k-passerelles">–</b><span>passerelles en ligne</span></div>
+      <div class="kpi"><b id="k-liens">–</b><span>liens 24 h</span></div>
+      <div class="kpi"><b id="k-debit">–</b><span>paquets / min</span></div>
+      <div class="kpi"><b id="k-canal">–</b><span>occupation canal</span></div>
+    </div>
+  </header>
+
+  <div class="outils">
+    <select id="sel-zone" class="vue-zone actif" title="Secteur affiché : votre département, avec ses voisins, ou toute la France"><option value="dep">Haute-Loire</option><option value="voisins">Haute-Loire + voisins</option><option value="france">France</option></select>
+    <label class="choix">Liens
+      <select id="fenetre">
+        <option value="1">1 h</option>
+        <option value="6">6 h</option>
+        <option value="24" selected>24 h</option>
+        <option value="168">7 jours</option>
+      </select>
+    </label>
+    <details class="menu-couches">
+      <summary>Couches ▾</summary>
+      <div class="menu">
+      <button class="bascule actif" data-couche="rf" title="Liens radio directs entendus par les passerelles">Radio</button>
+      <button class="bascule actif" data-couche="voisinage" title="Liens déclarés par le module Voisinage (NeighborInfo)">Voisinage</button>
+      <button class="bascule actif" data-couche="traceroute" title="Liens issus des traceroutes (chemins mesurés)">Chemins mesurés</button>
+      <button class="bascule" data-couche="inactifs" title="Afficher les nœuds non entendus depuis longtemps">Inactifs</button>
+      <button class="bascule actif" data-couche="animations" title="Animer les paquets en direct">Animations</button>
+      <button class="bascule actif" data-couche="sommets" title="Points hauts du relief et meilleurs sites radio">Points hauts</button>
+      <button class="bascule" data-couche="routiers" title="Webcams et stations du Département et de la DIR Massif Central (mât, électricité) : sites possibles pour des relais">Sites routiers</button>
+      <button class="bascule actif" data-couche="federation" title="Relais des bulles voisines (cartes fédérées)">Bulles voisines</button>
+      <button class="bascule actif seul-membre" data-couche="releves" title="Relevés de terrain (photos, notes, mesures)" hidden>Relevés terrain</button>
+      </div>
+    </details>
+    <details class="menu-couches menu-radio" id="menu-radio">
+      <summary>Couverture radio ▾</summary>
+      <div class="menu">
+        <button id="btn-couv-reseau" class="bascule" title="Zone couverte aujourd’hui par les relais et passerelles détectés">📡 Couverture actuelle du réseau</button>
+        <button id="btn-couv-mesuree" class="bascule" title="Couverture réellement mesurée : d’où les passerelles reçoivent vraiment les nœuds (positions + SNR)">📶 Couverture mesurée</button>
+        <button id="btn-couv-ici" class="bascule" title="Cliquez n'importe quel lieu : zone couverte par une antenne placée là (clic droit sur la carte : même menu)">📍 Couverture depuis un point</button>
+        <button id="btn-couvrir" class="bascule" title="Cliquez un lieu sur la carte : la carte propose 4 points hauts capables de le couvrir (puis d’autres points à couvrir avec un seul site)">🎯 Couvrir un ou plusieurs points</button>
+        <button id="btn-relier" class="bascule" title="Cliquez un point de départ puis un point d’arrivée : la carte indique s’il faut des relais, et où les installer">🔗 Relier deux lieux</button>
+        <button id="btn-profil" class="bascule" title="Profil de relief entre deux points : cliquez A puis B (nœud, sommet ou n’importe quel lieu)">⛰️ Profil entre deux points</button>
+        <button id="btn-simulation" class="bascule" title="Et si on retirait ou ajoutait des relais ? Couverture et liaisons entre les villes">🧪 Simulation « et si… »</button>
+        <button id="btn-plan-menu" class="bascule" title="Où poser des relais pour couvrir tout le département, avec l’accès à chaque site">🗺️ Plan pour couvrir le département</button>
+      </div>
+    </details>
+    <button id="btn-rejeu" title="Rejouer les dernières 24 heures">Rejeu</button>
+    <button id="btn-chercher-reglage" class="bouton-cherche" title="Chercher un réglage ou une fonction (Ctrl+K)">⚙️🔎</button>
+    <details class="menu-couches menu-outils">
+      <summary>Outils ▾</summary>
+      <div class="menu">
+        <button id="outil-connecter" class="bascule outil-principal" title="Bluetooth, USB ou adresse IP : Meshtastic ou MeshCore, reconnu tout seul">🔌 Connecter un module…</button>
+        <div class="titre-outils outils-mt">Meshtastic</div>
+        <button id="outil-usb" class="bascule outils-mt" title="Brancher sur la carte le module relié en USB à ce PC (Chrome ou Edge)">🔌 Module USB de ce PC</button>
+        <button id="outil-ble" class="bascule outils-mt" title="Relier à la carte un module Bluetooth proche de ce PC (Chrome ou Edge)">📶 Module Bluetooth</button>
+        <a id="lien-client" class="bascule outils-mt" target="_blank" rel="noopener" title="Client officiel Meshtastic : gérer un module en USB, Bluetooth ou Wi-Fi depuis ce navigateur">📟 Client Meshtastic</a>
+        <a id="lien-flasher" class="bascule outils-mt" target="_blank" rel="noopener" title="Flasheur officiel : installer ou mettre à jour le firmware d'un module branché en USB">⚡ Flasher un module Meshtastic</a>
+        <div class="titre-outils outils-mc" hidden>MeshCore</div>
+        <a class="bascule outils-mc" hidden href="https://flasher.meshcore.co.uk" target="_blank" rel="noopener" title="Flasheur officiel MeshCore : installer le firmware companion, répéteur ou room server sur un module branché en USB (Chrome ou Edge)">⚡ Flasher un module MeshCore</a>
+        <a class="bascule outils-mc" hidden href="https://config.meshcore.dev" target="_blank" rel="noopener" title="Outil officiel : configurer en USB un répéteur ou un room server MeshCore (nom, radio, mot de passe…)">🛠️ Configurer un répéteur MeshCore (USB)</a>
+        <a class="bascule outils-mc" hidden href="https://app.meshcore.nz" target="_blank" rel="noopener" title="Application officielle MeshCore dans le navigateur : utiliser un companion en USB ou Bluetooth">📟 Application MeshCore</a>
+        <button class="bascule outils-mc" hidden id="outil-companion-mc" title="Relier à la carte un companion MeshCore branché sur ce PC (onglet MeshCore → Companion)">🔌 Relier un companion MeshCore</button>
+        <div class="titre-outils">Réseau</div>
+        <a class="bascule outils-mc" hidden href="topologie.html?reseau=mc" title="Graphe des liaisons MeshCore : points de rupture, répéteurs les plus traversés, trafic en direct, simulation de l’inondation">🕸️ Topologie et simulation MeshCore</a>
+        <button id="outil-passerelle" class="bascule" hidden title="Relayer des messages entre un canal Meshtastic et un canal MeshCore (outil d’appoint, administrateurs)">⇄ Passerelle inter-réseaux</button>
+        <button id="outil-trafic" class="bascule outils-mt" title="Nœuds trop bavards (positions, télémétrie) et paquets réinjectés depuis MQTT">🚦 Contrôle du trafic</button>
+        <a class="bascule outils-mt" href="topologie.html" title="Graphe des liaisons radio : points de rupture, relais les plus traversés, distance aux passerelles, et simulation de la propagation d’un paquet">🕸️ Topologie et simulation</a>
+        <div class="titre-outils">Sur le terrain</div>
+        <button id="outil-portee" class="bascule" title="Écouter un nœud en direct : qui l’entend, avec quel signal, par quels relais, et s’il remonte sur MQTT">📶 Test de portée d’un nœud</button>
+        <button id="outil-terrain" class="bascule" title="Relevé GPS avec photo et note, même sans réseau ; préparer la carte hors connexion ; installer l’application sur le téléphone">📍 Mode terrain</button>
+        <div class="titre-outils">Partager</div>
+        <button id="outil-france" class="bascule" hidden title="Télécharger et installer le relief de toute la France (administrateur)">🗺️ Toute la France</button>
+        <button id="outil-signalements" class="bascule seul-membre" hidden title="Événements signalés sur la carte et diffusés en LoRa">🚩 Signalements</button>
+        <button id="outil-rapport" class="bascule seul-membre" hidden title="État du réseau sur 7 jours, imprimable en PDF ; archivé chaque lundi">📄 Rapport hebdomadaire</button>
+        <button id="outil-partager" class="bascule" title="Carte publique à intégrer dans un site, exports GeoJSON / GPX, Grafana, Home Assistant">📤 Carte publique et exports</button>
+        <div class="titre-outils">Affichage</div>
+        <button id="outil-theme" class="bascule" title="Interface claire à fort contraste, lisible en plein soleil">☀️ Thème clair (plein soleil)</button>
+        <button id="outil-affichage" class="bascule" title="Niveau d’affichage (simple, opérateur, expert), grand texte, visite guidée">🎚️ Niveau d’affichage, grand texte…</button>
+        <button id="outil-installer" class="bascule" hidden title="Ajouter la carte sur l'écran d'accueil (plein écran, ouverture même sans réseau)">📲 Installer l'application</button>
+        <small id="note-outils" class="note"></small>
+      </div>
+    </details>
+    <button id="btn-effacer" hidden title="Effacer la couverture affichée">Effacer</button>
+    <button id="btn-admin" class="admin">Connexion</button>
+  </div>
+
+  <div id="consigne-mode" class="consigne-mode" hidden><span></span><button type="button" id="consigne-annuler">Annuler (Échap)</button></div>
+
+  <div class="recherche-lieu" role="search">
+    <input id="recherche-lieu" type="search" placeholder="Rechercher un lieu, un nœud, un sommet ou des coordonnées…" autocomplete="off" aria-label="Rechercher un lieu">
+    <ul id="resultats-lieu" class="resultats-lieu" hidden></ul>
+  </div>
+
+  <aside class="panneau" id="panneau">
+    <nav class="groupes" role="tablist" aria-label="Rubriques">
+      <button data-groupe="reseau" role="tab" class="actif" title="Tableau de bord, nœuds, trafic, statistiques">Réseau</button>
+      <button data-groupe="messages" role="tab" title="Lire et écrire sur les canaux Meshtastic et MeshCore">Messages</button>
+      <button data-groupe="couverture" role="tab" title="Couverture radio, sites, plans">Couverture</button>
+      <button data-groupe="gerer" role="tab" title="Gérer les nœuds à distance : programmation, équipes, clés, firmware">Gérer</button>
+      <button data-groupe="reglages" role="tab" title="Tous les réglages au même endroit">Réglages</button>
+      <button class="aide-onglet" id="btn-aide" title="Aide sur cet écran" aria-label="Aide sur cet écran">?</button>
+    </nav>
+    <nav class="onglets" aria-label="Sous-rubriques">
+      <button data-onglet="reseau" class="actif">Réseau</button>
+      <button data-onglet="noeuds">Nœuds</button>
+      <button data-onglet="trafic">Trafic</button>
+      <button data-onglet="analyse" title="Statistiques du trafic : occupation du canal, émetteurs, ports">Statistiques</button>
+      <button data-onglet="sites" title="Couverture radio : réseau actuel, plan pour le département, meilleurs sites selon le relief">Couverture</button>
+      <button data-onglet="gestion" id="onglet-gestion" hidden title="Programmer les nœuds à distance par LoRa">Programmer</button>
+      <button data-onglet="messages" id="onglet-messages" hidden>Messages</button>
+      <button data-onglet="reglages" hidden>Réglages</button>
+      <button data-onglet="meshcore" class="onglet-mc" hidden title="Réseau MeshCore : nœuds, paquets, companion">MeshCore</button>
+      <button class="replier" id="replier" title="Replier le panneau">‹</button>
+    </nav>
+
+    <section data-vue="reglages" class="vue"><div id="hub-reglages"></div></section>
+
+    <section data-vue="reseau" class="vue actif">
+      <div id="accueil"></div>
+      <div class="tableau" id="tableau-reseau">
+      <div class="mt-seul">
+        <details class="pli-alertes" data-pli="alertes-mt">
+          <summary><h3>Alertes <span class="titre-reseau">Meshtastic</span> <span id="nb-alertes" class="pastille">0</span> <span id="resume-alertes" class="resume-alertes"></span></h3></summary>
+          <div id="alertes" class="liste-alertes"></div>
+        </details>
+      </div>
+      <div class="mc-seul-bloc" hidden>
+        <details class="pli-alertes" data-pli="alertes-mc">
+          <summary><h3>Alertes <span class="titre-reseau">MeshCore</span> <span id="nb-alertes-mc" class="pastille">0</span> <span id="resume-alertes-mc" class="resume-alertes"></span></h3></summary>
+          <div id="alertes-mc" class="liste-alertes"></div>
+        </details>
+        <details class="pli-alertes" data-pli="infra-mc">
+          <summary><h3><span id="titre-infra-mc">Répéteurs</span> <span class="titre-reseau">MeshCore</span> <span id="resume-infra-mc" class="resume-alertes"></span></h3></summary>
+          <div id="infra-mc" class="liste"></div>
+        </details>
+      </div>
+      <details class="pli-alertes" data-pli="mes-noeuds" id="pli-mes-noeuds" hidden>
+        <summary><h3>Mes nœuds <span id="nb-mes-noeuds" class="pastille">0</span> <span id="resume-mes-noeuds" class="resume-alertes"></span></h3></summary>
+        <div id="mes-noeuds" class="liste"></div>
+      </details>
+      <div class="mt-seul">
+        <details class="pli-alertes" data-pli="passerelles">
+          <summary><h3>Passerelles <span class="titre-reseau">Meshtastic</span> <span id="resume-passerelles" class="resume-alertes"></span></h3></summary>
+          <div id="passerelles" class="liste"></div>
+        </details>
+        <details class="pli-alertes" data-pli="nouveaux">
+          <summary><h3>Nouveaux nœuds <span id="nb-nouveaux" class="pastille">0</span> <span id="resume-nouveaux" class="resume-alertes"></span></h3></summary>
+          <div id="nouveaux" class="liste"></div>
+        </details>
+        <details class="pli-alertes" data-pli="asym">
+          <summary><h3>Sens unique <span id="nb-asym" class="pastille">0</span> <span id="resume-asym" class="resume-alertes"></span></h3></summary>
+          <div id="asym" class="liste"></div>
+        </details>
+        <details class="pli-alertes" data-pli="bavards" id="pli-bavards" hidden>
+          <summary><h3>Trop bavards <span id="nb-bavards" class="pastille">0</span> <span id="resume-bavards" class="resume-alertes"></span></h3></summary>
+          <div id="bavards" class="liste"></div>
+        </details>
+        <details class="pli-alertes" data-pli="chemins">
+          <summary><h3>Chemins mesurés <span id="resume-chemins" class="resume-alertes"></span></h3></summary>
+          <div id="chemins"></div>
+        </details>
+        <details class="pli-alertes" data-pli="infra">
+          <summary><h3>Relais <span class="titre-reseau">Meshtastic</span> <span id="resume-infra" class="resume-alertes"></span></h3></summary>
+          <div id="infra" class="liste"></div>
+        </details>
+      </div>
+      <details class="pli-alertes" data-pli="sante" id="bloc-sante" hidden>
+        <summary><h3>Santé de la carte <span id="nb-sante" class="pastille">✓</span> <span id="resume-sante" class="resume-alertes"></span></h3></summary>
+        <div id="sante-carte"></div>
+      </details>
+      <details class="pli-alertes" data-pli="sources">
+        <summary><h3>Sources <span id="nb-sources" class="pastille">–</span> <span id="resume-sources" class="resume-alertes"></span></h3></summary>
+        <div id="sources" class="liste"></div>
+      </details>
+      <details class="pli-alertes mt-seul" data-pli="modules" id="bloc-modules" hidden>
+        <summary><h3>Modules radio <span class="titre-reseau">Meshtastic</span> <span id="nb-modules" class="pastille">–</span> <span id="resume-modules" class="resume-alertes"></span></h3></summary>
+        <div id="modules-radio" class="liste"></div>
+      </details>
+      <details class="pli-alertes mt-seul" data-pli="repartition">
+        <summary><h3>Trafic (1 h) <span class="titre-reseau">Meshtastic</span> <span id="nb-repartition" class="pastille">–</span> <span id="resume-repartition" class="resume-alertes"></span></h3></summary>
+        <div id="repartition" class="repartition"></div>
+      </details>
+      </div>
+    </section>
+    <section data-vue="noeuds" class="vue">
+      <div class="recherche">
+        <input id="recherche" type="search" placeholder="Nom, nom court ou !identifiant…" autocomplete="off">
+        <select id="groupe-noeuds" title="Groupe de nœuds"><option value="">Tous</option><option value="favoris">⭐ Favoris</option><option value="administres">🛠 Mes nœuds</option></select>
+        <select id="tri">
+          <option value="vu">Dernier entendu</option>
+          <option value="nom">Nom</option>
+          <option value="sauts">Sauts</option>
+          <option value="snr">SNR</option>
+        </select>
+        <button type="button" class="mini" id="mt-par-type" title="Ranger la liste par type (relais, clients, traceurs…), chaque groupe se replie">▦ Par type</button>
+      </div>
+      <div id="noeuds" class="liste"></div>
+    </section>
+
+    <section data-vue="trafic" class="vue">
+      <div id="filtres" class="filtres"></div>
+      <div id="flux" class="flux"></div>
+    </section>
+
+    <section data-vue="analyse" class="vue">
+      <div class="bloc-plan raccourci-plan"><b>📡 Couverture radio du département</b><br><small>Ce que couvre le réseau aujourd’hui, et où poser des relais (avec l’accès en voiture, 4×4 ou à pied).</small><div class="actions-prop"><button id="aller-couv-reseau" class="principal">Couverture actuelle</button><button id="aller-plan">Préparer le plan</button></div></div>
+      <details class="pli-alertes" data-pli="historique">
+        <summary><h3>📈 Historique <span id="resume-historique" class="resume-alertes"></span></h3></summary>
+        <div id="historique"></div>
+      </details>
+      <details class="pli-alertes maint" data-pli="m-charge" data-maint="charge"><summary><h3>📶 Charge radio des relais <span class="resume-alertes" id="r-m-charge"></span></h3></summary><div id="m-charge"></div></details>
+      <details class="pli-alertes maint" data-pli="m-autonomie" data-maint="autonomie"><summary><h3>🔋 Autonomie <span class="resume-alertes" id="r-m-autonomie"></span></h3></summary><div id="m-autonomie"></div></details>
+      <details class="pli-alertes maint" data-pli="m-firmwares" data-maint="firmwares"><summary><h3>💾 Firmwares <span class="resume-alertes" id="r-m-firmwares"></span></h3></summary><div id="m-firmwares"></div></details>
+      <details class="pli-alertes maint" data-pli="m-roles" data-maint="roles"><summary><h3>🧭 Rôles des nœuds <span class="resume-alertes" id="r-m-roles"></span></h3></summary><div id="m-roles"></div></details>
+      <h3>Trafic récent</h3>
+      <div class="recherche">
+        <select id="analyse-periode">
+          <option value="6">6 dernières heures</option>
+          <option value="24" selected>24 dernières heures</option>
+          <option value="168">7 jours</option>
+        </select>
+      </div>
+      <div id="analyse"></div>
+    </section>
+
+    <section data-vue="sites" class="vue">
+      <div id="sites"><div class="vide">Chargement du relief…</div></div>
+    </section>
+
+    <section data-vue="gestion" class="vue">
+      <div id="gestion"><div class="vide">Chargement…</div></div>
+    </section>
+
+    <section data-vue="messages" class="vue">
+      <div id="filtre-messages" class="filtre-messages"></div>
+      <form id="form-envoi" class="envoi" hidden>
+        <div class="envoi-ligne">
+          <select name="vers" aria-label="Destinataire"></select>
+          <span class="compteur" id="compteur-envoi">0/200</span>
+        </div>
+        <div class="envoi-ligne">
+          <textarea name="texte" rows="2" maxlength="400" placeholder="Votre message…" required></textarea>
+          <button type="submit" class="principal" title="Envoyer (Entrée)">Envoyer</button>
+        </div>
+        <div class="envoi-ligne"><button type="button" class="mini" id="btn-position-envoi" title="Ajoute au message la position du centre de la carte (« meshand: lat,lon ») ; clic droit sur la carte : n’importe quel point">📍 Joindre le centre de la carte</button></div>
+        <div class="note" id="retour-envoi"></div>
+      </form>
+      <div id="messages" class="flux"></div>
+    </section>
+    <section data-vue="meshcore" class="vue">
+      <nav class="sous-onglets-mc">
+        <button data-mc-vue="noeuds">Nœuds</button><button data-mc-vue="paquets">Paquets</button><button data-mc-vue="analyse">Analyse</button><button data-mc-vue="messages">Messages</button><button data-mc-vue="gestion" hidden title="Administrer les répéteurs et room servers MeshCore : réglages, statut, voisins, CLI">Programmer</button><button data-mc-vue="companion" title="Companion MeshCore relié à la carte, réglages MeshCore">Module MeshCore</button>
+      </nav>
+      <div id="mc-contenu"></div>
+    </section>
+  </aside>
+  <button class="deplier" id="deplier" hidden title="Afficher le panneau">›</button>
+
+  <button id="fab-plus" class="fab-plus" title="Agir sur un point de la carte : signaler, couverture, partager, profil" aria-label="Agir sur un point de la carte">＋</button>
+  <aside class="fiche" id="fiche" hidden>
+    <button class="fermer" id="fermer-fiche" title="Fermer">×</button>
+    <div id="fiche-contenu"></div>
+  </aside>
+
+  <div class="legende" id="legende"></div>
+
+  <div class="rejeu" id="rejeu" hidden>
+    <button id="rejeu-lecture" title="Lecture / pause">▶</button>
+    <input type="range" id="rejeu-curseur" step="60000" aria-label="Instant du rejeu">
+    <b id="rejeu-heure">–</b>
+    <select id="rejeu-vitesse" title="Vitesse">
+      <option value="60">×60</option>
+      <option value="300" selected>×300</option>
+      <option value="1800">×1800</option>
+    </select>
+    <small id="rejeu-info"></small>
+    <button id="rejeu-fermer" title="Fermer le rejeu">×</button>
+  </div>
+
+  <dialog id="dlg-profil" class="large">
+    <button class="fermer" id="fermer-profil" title="Fermer">×</button>
+    <h3>Profil de relief et bilan de liaison</h3>
+    <form id="form-profil" class="parametres">
+      <label title="Hauteur de l’antenne au-dessus du sol">Antenne A (m au-dessus du sol) <input name="ha" type="number" step="0.5" min="0" value="3"></label>
+      <label title="Hauteur de l’antenne au-dessus du sol">Antenne B (m au-dessus du sol) <input name="hb" type="number" step="0.5" min="0" value="3"></label>
+      <label>Puissance (dBm) <input name="ptx" type="number" step="1" min="0" max="30" value="27"></label>
+      <label>Gain antennes (dBi) <input name="ga" type="number" step="0.5" value="2.15"></label>
+      <label>Pertes câbles (dB) <input name="pertes" type="number" step="0.5" min="0" value="1.5"></label>
+      <label>Preset <select name="preset">
+        <option value="LONG_FAST">LongFast</option><option value="LONG_MODERATE">LongModerate</option>
+        <option value="LONG_SLOW">LongSlow</option><option value="MEDIUM_FAST">MediumFast</option>
+        <option value="MEDIUM_SLOW">MediumSlow</option><option value="SHORT_FAST">ShortFast</option>
+        <option value="MESHCORE_FR">MeshCore France (SF8 · 62,5 kHz)</option>
+        <optgroup label="Région EU_N_868 « narrow » (firmware 2.8, en test)"><option value="NARROW_SLOW">NarrowSlow (SF8 · 62,5 kHz)</option><option value="NARROW_FAST">NarrowFast (SF7 · 62,5 kHz)</option></optgroup>
+      </select></label>
+      <button type="submit" class="principal">Recalculer</button>
+    </form>
+    <div id="profil-resultat"></div>
+  </dialog>
+
+  <dialog id="dlg-trames" class="tres-large">
+    <button class="fermer" data-fermer title="Fermer">×</button>
+    <div id="trames-contenu"></div>
+  </dialog>
+  <dialog id="dlg-qr" class="large">
+    <button class="fermer" data-fermer title="Fermer">×</button>
+    <div id="qr-contenu"></div>
+  </dialog>
+  <dialog id="dlg-mqtt" class="large">
+    <button class="fermer" data-fermer title="Fermer">×</button>
+    <div id="mqtt-contenu"></div>
+  </dialog>
+  <dialog id="dlg-trame" class="large">
+    <button class="fermer" data-fermer title="Fermer">×</button>
+    <div id="trame-contenu"></div>
+  </dialog>
+  <dialog id="dlg-signal" class="large">
+    <button class="fermer" data-fermer title="Fermer">×</button>
+    <div id="signal-contenu"></div>
+  </dialog>
+
+  <dialog id="dlg-compte">
+    <button class="fermer" id="fermer-compte" title="Fermer">×</button>
+    <nav class="onglets-dlg">
+      <button data-dlg="connexion" class="actif">Se connecter</button>
+      <button data-dlg="inscription" id="onglet-inscription">S'inscrire</button>
+    </nav>
+    <form id="form-connexion" data-pan="connexion">
+      <label>Identifiant <input name="identifiant" autocomplete="username" required></label>
+      <label>Mot de passe <input name="motDePasse" type="password" autocomplete="current-password" required></label>
+      <label id="champ-code" hidden>Code de l’application d’authentification <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123456"></label>
+      <p class="erreur"></p>
+      <div class="actions"><button type="submit" class="principal">Se connecter</button></div>
+    </form>
+    <form id="form-inscription" data-pan="inscription" hidden>
+      <p class="note" id="note-inscription"></p>
+      <label>Identifiant <input name="identifiant" autocomplete="username" required minlength="3" maxlength="32"></label>
+      <label>Indicatif radio (facultatif) <input name="indicatif" placeholder="F4XXX" maxlength="16"></label>
+      <label>E-mail (facultatif) <input name="email" type="email" autocomplete="email"></label>
+      <label>Mot de passe <input name="motDePasse" type="password" autocomplete="new-password" required minlength="8"></label>
+      <label>Confirmer le mot de passe <input name="confirmation" type="password" autocomplete="new-password" required minlength="8"></label>
+      <p class="erreur"></p>
+      <div class="actions"><button type="submit" class="principal">Créer mon compte</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-passerelle" class="large passerelle">
+    <button class="fermer" id="fermer-passerelle" title="Fermer">×</button>
+    <h2>⇄ Passerelle inter-réseaux</h2>
+    <nav class="onglets-dlg"><button data-pp="bord" class="actif">Tableau de bord</button><button data-pp="regles">🔗 Liaisons (canaux)</button><button data-pp="noire">Liste noire</button><button data-pp="reglages">Réglages</button></nav>
+    <div id="pp-contenu"></div>
+  </dialog>
+  <dialog id="dlg-chercher" class="dlg-chercher">
+    <button class="fermer" id="fermer-chercher" title="Fermer (Échap)">×</button>
+    <input id="chercher-reglage" type="search" placeholder="Chercher un réglage ou une fonction : MQTT, mot de passe, IATA, équipes…" autocomplete="off" aria-label="Chercher un réglage">
+    <div id="resultats-reglage" role="listbox"></div>
+    <p class="note">↑ ↓ pour choisir, Entrée pour y aller, Échap pour fermer · Ctrl+K pour rouvrir</p>
+  </dialog>
+  <dialog id="dlg-gestion" class="large">
+    <button class="fermer" id="fermer-gestion" title="Fermer">×</button>
+    <nav class="onglets-dlg">
+      <button data-dlg="moncompte" class="actif">Mon compte</button>
+      <button data-dlg="comptes" class="seul-admin">Comptes</button>
+      <button data-dlg="reglages" class="seul-admin">Réglages</button>
+      <button data-dlg="sauvegardes" class="seul-admin">Sauvegardes</button>
+      <button data-dlg="archive" class="seul-admin">Archive PostgreSQL</button>
+      <button data-dlg="journal" class="seul-admin">Journal</button>
+    </nav>
+    <section data-pan="moncompte" id="pan-moncompte"></section>
+    <section data-pan="comptes" id="pan-comptes" hidden></section>
+    <section data-pan="reglages" id="pan-reglages" hidden></section>
+    <section data-pan="sauvegardes" id="pan-sauvegardes" hidden></section>
+    <section data-pan="archive" id="pan-archive" hidden></section>
+    <section data-pan="journal" id="pan-journal" hidden></section>
+  </dialog>
+
+  <dialog id="dlg-installation" class="large">
+    <h2>Bienvenue : installation de la carte</h2>
+    <p class="note">Première mise en route. Créez le compte administrateur, puis indiquez votre zone et votre serveur MQTT. Tout reste modifiable ensuite dans <b>Réglages</b>.</p>
+    <form id="form-installation">
+      <h3>1. Compte administrateur</h3>
+      <div class="grille-form">
+        <label>Identifiant <input name="identifiant" required minlength="3" maxlength="32" autocomplete="username"></label>
+        <label>Indicatif radio <input name="indicatif" placeholder="F4XXX" maxlength="16"></label>
+        <label>Mot de passe <input name="motDePasse" type="password" required minlength="8" autocomplete="new-password"></label>
+        <label>Confirmer <input name="confirmation" type="password" required minlength="8" autocomplete="new-password"></label>
+        <label id="champ-code-installation" hidden>Code d'installation <input name="code" type="password" autocomplete="off"><small id="aide-code-installation">Valeur de ADMIN_MOT_DE_PASSE dans le fichier .env</small></label>
+      </div>
+      <h3>2. Votre réseau</h3>
+      <div class="grille-form">
+        <label>Département <select name="departement"></select></label>
+        <label>Nom de la carte <input name="titre" placeholder="Réseau Meshtastic · …" maxlength="80"></label>
+        <label>Serveur MQTT <input name="mqttUrl" placeholder="mqtt://serveur:1883"></label>
+        <label>Sujet racine <input name="mqttRacine" placeholder="msh/EU_868"></label>
+        <label>Utilisateur MQTT <input name="mqttUtilisateur" autocomplete="off"></label>
+        <label>Mot de passe MQTT <input name="mqttMotDePasse" type="password" autocomplete="new-password"></label>
+        <div class="large-col"><button type="button" id="inst-tester-mqtt">🔌 Tester ce serveur MQTT (10 s)</button> <span id="inst-test-mqtt" class="note"></span></div>
+        <label class="large-col">Canaux à déchiffrer <textarea name="canaux" rows="3" placeholder="LongFast=AQ==&#10;MonCanal=clé en base64"></textarea><small>Un canal par ligne : nom=clé (AQ== = clé publique par défaut)</small></label>
+        <label>Inscriptions <select name="inscriptions"><option value="validation">Sur validation de l'admin</option><option value="ouvertes">Ouvertes à tous</option><option value="fermees">Fermées</option></select></label>
+      </div>
+      <p class="erreur"></p>
+      <div class="actions"><button type="submit" class="principal">Terminer l'installation</button></div>
+    </form>
+  </dialog>
+
+  <script src="/langue.js"></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/app.js"></script>
+  <script src="/animations.js"></script>
+  <script src="/meshcore.js"></script>
+  <script src="/ergonomie.js"></script>
+</body>
+</html>
