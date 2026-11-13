@@ -10,6 +10,7 @@
 set -eu
 
 DEPOT="https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main"
+SOURCE_TGZ="https://codeload.github.com/pasquinic/live-mesh-map-us/tar.gz/refs/heads/main"
 DOSSIER="${DOSSIER:-/opt/live-mesh-map-us}"
 CARTE_PORT="${CARTE_PORT:-8095}"
 MISE_A_JOUR="${MISE_A_JOUR:-oui}"
@@ -59,7 +60,25 @@ fi
 
 # 3. Lancement
 info "Downloading images (a few minutes the first time)"
-docker compose pull -q
+docker compose pull -q --ignore-pull-failures || true
+# Prebuilt map image missing or not public: build it here from the source code (5 to 15 minutes)
+IMAGE=$(docker compose config --images 2>/dev/null | grep -m1 'live-mesh-map-us' || echo "ghcr.io/pasquinic/live-mesh-map-us:latest")
+if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+  info "Prebuilt image not available: building it from source (5 to 15 minutes)"
+  rm -rf source && mkdir -p source
+  curl -fsSL "$SOURCE_TGZ" | tar -xz --strip-components=1 -C source || erreur "Could not download the source code ($SOURCE_TGZ)"
+  cat > docker-compose.override.yml <<EOF
+# Created by install.sh: the map image is built locally from ./source (delete this file to use the prebuilt image)
+services:
+  carte-live:
+    build: ./source
+    pull_policy: build
+EOF
+  # The one-click update service uses the same image: don't look for it on the registry
+  if grep -q '^  maj:' docker-compose.yml; then printf '  maj:\n    pull_policy: never\n' >> docker-compose.override.yml; fi
+  docker compose build carte-live || erreur "Image build failed: docker compose build carte-live"
+  ok "Image built"
+fi
 docker compose up -d
 info "Starting the map"
 i=0
