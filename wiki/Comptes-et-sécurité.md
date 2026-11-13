@@ -1,29 +1,29 @@
-# Comptes et sécurité
+# Accounts and security
 
-## Rôles
-- **Administrateur** : tout, y compris le module radio, les réglages et les comptes.
-- **Gestionnaire de secteur** : programme à distance, remplit la fiche d'installation et teste **uniquement les nœuds de son secteur** (*Gestion › Comptes › Secteur…*).
-- **Membre** : voit les messages et les positions exactes.
-- **Public** : sans compte, positions des particuliers arrondies, pas de messages.
+## Roles
+- **Administrator**: everything, including the radio node, settings and accounts.
+- **Area manager**: programs remotely, fills in the installation sheet and tests **only the nodes of their area** (*Manage › Accounts › Area…*).
+- **Member**: sees messages and exact positions.
+- **Public**: no account, private individuals' positions rounded, no messages.
 
-Inscriptions : fermées, sur validation ou ouvertes (*Gestion › Réglages*).
+Registrations: closed, after approval or open (*Manage › Settings*).
 
-## Protéger les comptes
-- **Double authentification** (application TOTP : Google Authenticator, Aegis, 2FAS…) dans *Mon compte*. Recommandée pour tous ceux qui programment des relais.
-- **Déconnecter mes autres appareils** en cas de perte.
-- **Journal d'audit** (*Gestion › Journal*) : connexions, refus, programmation, comptes, réglages. Les mots de passe n'y figurent jamais.
+## Protecting accounts
+- **Two-factor authentication** (TOTP app: Google Authenticator, Aegis, 2FAS…) in *My account*. Recommended for everyone who programs relays.
+- **Disconnect my other devices** in case of loss.
+- **Audit log** (*Manage › Log*): logins, refusals, programming, accounts, settings. Passwords never appear.
 
-## Réseau
-- **Port 4404 (agents)** : jamais ouvert sur Internet ; réseau local ou VPN (Tailscale).
-- Derrière un proxy inversé, une requête n'est jamais considérée comme « locale » : l'installation demande alors toujours un code.
-- Les clés des canaux et les mots de passe MeshCore sont gardés dans des fichiers privés du serveur, et sauvegardés chaque nuit (*Gestion › Sauvegardes*).
+## Network
+- **Port 4404 (agents)**: never open to the internet; local network or VPN (Tailscale).
+- Behind a reverse proxy, a request is never considered “local”: setup then always asks for a code.
+- Channel keys and MeshCore passwords are kept in private files on the server, and backed up every night (*Manage › Backups*).
 
-## Blocage après des échecs de connexion
-La carte étant accessible depuis Internet, les essais de mots de passe sont freinés :
-- **3 échecs en 15 min depuis une même adresse** : l'adresse est bloquée 15 min. Chaque récidive dans les 24 h double la durée (30 min, 1 h… jusqu'à 24 h).
-- **3 échecs en 15 min sur un même compte**, d'où qu'ils viennent : la connexion à ce compte est suspendue 15 min (durée fixe). Depuis le réseau local ou Tailscale, cette suspension ne s'applique pas : l'administrateur peut toujours se connecter de chez lui.
-- Un code de double authentification faux compte comme un échec. Le message indique les essais restants.
-- Les blocages survivent à un redémarrage. *Gestion › Journal* les liste, avec un bouton **Débloquer**. Chaque blocage et déblocage est noté au journal.
-- Les agents (port 4404) sont protégés de la même façon : 3 codes faux en 15 min, adresse refusée 15 min.
+## Blocking after failed logins
+As the map is reachable from the internet, password attempts are slowed down:
+- **3 failures in 15 min from the same address**: the address is blocked for 15 min. Each repeat within 24 h doubles the duration (30 min, 1 h… up to 24 h).
+- **3 failures in 15 min on the same account**, wherever they come from: login to this account is suspended for 15 min (fixed duration). From the local network or Tailscale, this suspension doesn't apply: the administrator can always log in from home.
+- A wrong two-factor code counts as a failure. The message shows the remaining attempts.
+- Blocks survive a restart. *Manage › Log* lists them, with an **Unblock** button. Each block and unblock is written to the log.
+- Agents (port 4404) are protected the same way: 3 wrong codes in 15 min, address refused for 15 min.
 
-Derrière un proxy inversé (Caddy, Nginx…), la carte doit voir la vraie adresse des visiteurs : `PROXY_CONFIANCE` (par défaut : adresses locales et privées) doit inclure l'adresse du proxy, sinon tous les visiteurs partagent l'adresse du proxy et un seul acharné bloquerait tout le monde.
+Behind a reverse proxy (Caddy, Nginx…), the map must see visitors' real address: `PROXY_CONFIANCE` (default: local and private addresses) must include the proxy's address, otherwise all visitors share the proxy's address and a single attacker would block everyone.

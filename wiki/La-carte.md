@@ -1,105 +1,106 @@
-# La carte
+# The map
 
-## S'y retrouver
-- **5 rubriques** en haut du panneau : **Réseau** (vue d'ensemble, nœuds, trafic, statistiques, MeshCore), **Messages** (Meshtastic et MeshCore), **Couverture**, **Gérer** (programmation Meshtastic et MeshCore, équipes, clés, firmware) et **Réglages**. Les sous-rubriques s'affichent juste dessous.
-- **Accueil « Que voulez-vous faire ? »** : de grandes tuiles (voir le réseau, lire et écrire, signaler, étudier la couverture, gérer mes nœuds, régler la carte). Le tableau de bord complet est replié dessous.
-- **Niveau d'affichage** (accueil, ou Réglages) : **Simple** montre l'essentiel, **Opérateur** ajoute la couverture avancée, le trafic et les outils de terrain, **Expert** montre tout. Par défaut : simple pour un visiteur ou un membre, opérateur pour un gestionnaire, expert pour un administrateur. Les droits ne changent pas : seul l'affichage est allégé.
-- **Réglages** : tout est rangé au même endroit (affichage, compte, modules et réseaux, carte, MQTT, comptes, sauvegardes, mise à jour, toute la France, passerelle, équipes).
-- **Une seule recherche** : le champ au-dessus de la carte trouve un lieu, un nœud, des coordonnées… et aussi une **fonction** ou un réglage (« mqtt », « équipes », « mise à jour »). ⚙️🔎 ou Ctrl+K ouvre la recherche des fonctions ; l'étoile ☆ d'un résultat l'ajoute à **⭐ Mes raccourcis** sur l'accueil, et les fonctions récentes sont proposées en premier.
-- **Bouton ＋** sur la carte : touchez ＋ puis un point de la carte pour signaler un événement, voir la couverture depuis ce point, le partager ou tracer un profil (sans clic droit, pratique sur téléphone).
-- **« ? »** à droite des rubriques : l'aide de l'écran affiché s'ouvre dans la carte (pages de ce wiki). **Visite guidée** à la première visite, à revoir dans Réglages.
-- **Confort et accessibilité** : confirmations et messages dans l'interface (plus de fenêtres du navigateur), option **Grand texte**, thème clair, navigation au clavier (Tab, Entrée, Échap), étiquettes pour lecteurs d'écran, boutons plus grands sur écran tactile.
+## Finding your way
+- **5 sections** at the top of the panel: **Network** (overview, nodes, traffic, statistics, MeshCore), **Messages** (Meshtastic and MeshCore), **Coverage**, **Manage** (Meshtastic and MeshCore programming, teams, keys, firmware) and **Settings**. Sub-sections show just below.
+- **“What do you want to do?” home**: large tiles (see the network, read and write, report, study coverage, manage my nodes, set up the map). The full dashboard is folded below.
+- **Display level** (home, or Settings): **Simple** shows the essentials, **Operator** adds advanced coverage, traffic and field tools, **Expert** shows everything. By default: simple for a visitor or member, operator for a manager, expert for an administrator. Permissions don't change: only the display is lighter.
+- **Language**: *Settings › Display › 🌐 Language* (or at the bottom of the home screen): English (default) or French. *📏 Units* next to it: imperial (default) or metric.
+- **Settings**: everything is in one place (display, account, nodes and networks, map, MQTT, accounts, backups, update, whole state, bridge, teams).
+- **A single search**: the field above the map finds a place, a node, coordinates… and also a **feature** or a setting (“mqtt”, “teams”, “update”). ⚙️🔎 or Ctrl+K opens the feature search; the ☆ star of a result adds it to **⭐ My shortcuts** on the home screen, and recent features are offered first.
+- **＋ button** on the map: tap ＋ then a point on the map to report an event, see the coverage from this point, share it or draw a profile (no right-click needed, handy on a phone).
+- **“?”** to the right of the sections: help for the current screen opens in the map (pages of this wiki). **Guided tour** on the first visit, to take again from Settings.
+- **Comfort and accessibility**: confirmations and messages inside the interface (no more browser pop-ups), **Large text** option, light theme, keyboard navigation (Tab, Enter, Esc), labels for screen readers, larger buttons on touch screens.
 
-![Vue d’ensemble](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-carte.jpg)
+![Overview](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-carte.jpg)
 
-## Nœuds et réseaux
-- Sélecteur **Meshtastic / MeshCore / Les deux** en haut du panneau. En changeant de réseau, les traces de l'autre réseau sont effacées.
-- **Légende et filtres** : relais, clients, clients muets, traceurs, inconnus, inactifs, passerelles MQTT en ligne, nœuds en alerte.
-- Secteur affiché (menu en haut) : le département, le département et ses voisins, une **région de France** ou toute la France. Le choix est gardé d’une visite à l’autre. On ne voit que ce que la carte reçoit : la portée de votre broker MQTT et, pour MeshCore, le réglage « Paquets conservés » (département, voisins ou national).
-- Clic sur un nœud : **fiche détaillée** (informations, télémétrie, voisins, « entendu par », trames, configuration déduite, test de portée).
+## Nodes and networks
+- **Meshtastic / MeshCore / Both** selector at the top of the panel. When switching network, the other network's traces are cleared.
+- **Legend and filters**: relays, clients, mute clients, trackers, unknown, inactive, MQTT gateways online, nodes in alert.
+- Area shown (menu at the top): the county, the county and its neighbours, a **state** or the whole map. The choice is kept between visits. You only see what the map receives: your MQTT broker's reach and, for MeshCore, the “Packets kept” setting (department, neighbours or national).
+- Click on a node: **detailed sheet** (info, telemetry, neighbours, “heard by”, frames, inferred configuration, range test).
 
-## Liaisons
-- **Mesurées** : SNR reçu par les passerelles, voisinage (NeighborInfo), traceroutes. Couleur selon le SNR, période réglable (*Liens 24 h*).
-- **Liaisons à sens unique** et **relais sourds** (*Réseau › Liaisons*) : un relais qui émet bien mais entend mal, avec l'écart estimé en dB.
-- **Chemins mesurés** : traceroutes automatiques, avec le SNR de chaque saut.
+## Links
+- **Measured**: SNR received by gateways, neighbor info (NeighborInfo), traceroutes. Colour by SNR, adjustable period (*Links 24 h*).
+- **One-way links** and **deaf relays** (*Network › Links*): a relay that transmits well but hears badly, with the estimated gap in dB.
+- **Measured paths**: automatic traceroutes, with the SNR of each hop.
 
-## Trafic en direct
-Chaque paquet est animé : une comète parcourt le trajet saut par saut, les liaisons empruntées s'allument et les axes les plus utilisés depuis 10 min sont soulignés. Quand les relais intermédiaires ne sont pas connus, le trajet le plus probable est tracé en pointillé.
+## Live traffic
+Each packet is animated: a comet travels the route hop by hop, the links used light up and the paths most used in the last 10 min are underlined. When intermediate relays are not known, the most probable route is drawn dotted.
 
-## Parcours d'un message
-Dans *Messages*, un clic sur l'origine d'un message (📡 / 🌐) affiche son **parcours** :
-- les autres liaisons et axes sont **masqués** pour ne voir que le trajet ;
-- trait épais bordé de noir, **flèche** de sens sur chaque saut, **SNR** du dernier saut vers chaque récepteur ;
-- la fiche liste chaque réception (passerelle, sauts, SNR, dernier relais) ;
-- **✕ Effacer le parcours** remet les liaisons.
+## A message's route
+In *Messages*, clicking a message's origin (📡 / 🌐) shows its **route**:
+- other links and paths are **hidden** to see only the route;
+- thick line outlined in black, direction **arrow** on each hop, **SNR** of the last hop to each receiver;
+- the sheet lists each reception (gateway, hops, SNR, last relay);
+- **✕ Clear the route** brings the links back.
 
-## Alertes, maintenance, historique
-- **Alertes** : nœud muet, batterie faible, canal saturé, passerelle hors ligne.
-- **Statistiques › Maintenance** : charge radio des relais, autonomie, firmwares, conseils de rôles.
-- **Historique** sur plus d'un an, **rejeu** des 24 dernières heures, **rapport hebdomadaire** (*Outils*).
-- **Santé de la carte** (*Réseau*) : processeur, mémoire, disque, base, MQTT.
+## Alerts, maintenance, history
+- **Alerts**: silent node, low battery, saturated channel, gateway offline.
+- **Statistics › Maintenance**: relays' radio load, runtime, firmware, role advice.
+- **History** over more than a year, **replay** of the last 24 hours, **weekly report** (*Tools*).
+- **Map health** (*Network*): processor, memory, disk, database, MQTT.
 
-## Mode terrain et application
-*Outils › Mode terrain* : relevés GPS avec mesure radio et photo, même sans réseau. La carte s'installe comme une application (« Ajouter à l'écran d'accueil », HTTPS requis).
+## Field mode and app
+*Tools › Field mode*: GPS surveys with radio measurement and photo, even without network. The map installs like an app (“Add to home screen”, HTTPS required).
 
-## Page publique
+## Public page
 
-![La carte publique](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-publique.jpg)
+![The public map](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-publique.jpg)
 
-Une page publique (sans messages ni position exacte des particuliers) peut être partagée : *Outils › Partager*. Elle sert à consulter le réseau, sans rien pouvoir modifier.
-- Chaque visiteur choisit le **secteur** affiché : département de la carte, avec ses voisins, une région, n'importe quel département ou la France entière. Nœuds, liaisons, chiffres et animations suivent. Par défaut, les calculs de couverture (couverture, où poser des relais, couverture d'un point) restent sur le département de la carte : ailleurs, la carte publique est une carte légère du réseau. L'administrateur peut les ouvrir à **tous les départements** (*Gestion › Réglages › Carte publique et relief*) : le relief d'un département est alors chargé au premier calcul, ou à l'avance avec **Outils › 🗺️ Toute la France › ⬇ Télécharger et installer** (arrêt possible à tout moment, ≈ 250 Mo sur le disque). La préparation installe d'abord le paquet « relief France » publié sur GitHub (version `relief-france`, ≈ 110 Mo), puis complète département par département. **📦 Fabriquer le paquet** produit ce fichier depuis une carte qui a tout préparé. Sources : relief IGN RGE ALTI (Licence Ouverte Etalab), points hauts, accès et sites © contributeurs OpenStreetMap (ODbL).
-- Le titre suit le réseau et le secteur choisis. Le lien vers la carte complète n'apparaît qu'aux administrateurs connectés.
+A public page (no messages or exact positions of private individuals) can be shared: *Tools › Share*. It is for viewing the network, without being able to change anything.
+- Each visitor chooses the **area** shown: the map's county, with its neighbours, a state, any county of the state or the whole map. Nodes, links, figures and animations follow. By default, coverage computations (coverage, where to place relays, point coverage) stay on the map's department: elsewhere, the public map is a light network map. The administrator can open them to **all departments** (*Manage › Settings › Public map and terrain*): a department's terrain is then loaded at the first computation, or in advance with **Tools › 🗺️ Whole of France › ⬇ Download and install** (can be stopped at any time, ≈ 250 MB on disk). Preparation first installs the “France terrain” package published on GitHub (`relief-france` release, ≈ 110 MB), then completes department by department. **📦 Build the package** produces this file from a map that has prepared everything. Sources: IGN RGE ALTI terrain (Licence Ouverte Etalab), high points, access and sites © OpenStreetMap contributors (ODbL).
+- The title follows the chosen network and area. The link to the full map only appears to logged-in administrators.
 
-## Favoris et « Mes nœuds »
-Dans la fiche d'un nœud, Meshtastic ou MeshCore (compte connecté) :
-- **☆ Favori** : le nœud passe en tête des listes, avec une ⭐ ;
-- **🛠 J'administre** : le nœud entre dans le groupe **Mes nœuds**.
+## Favorites and “My nodes”
+In a node's sheet, Meshtastic or MeshCore (logged-in account):
+- **☆ Favorite**: the node moves to the top of the lists, with a ⭐;
+- **🛠 I administer**: the node joins the **My nodes** group.
 
-Les nœuds que vous pouvez programmer y figurent d'office :
-- pour un administrateur, les nœuds Meshtastic qui acceptent le module de la carte et les répéteurs MeshCore dont le mot de passe est mémorisé ;
-- pour un gestionnaire, les nœuds de son secteur.
+Nodes you can program are included automatically:
+- for an administrator, Meshtastic nodes accepting the map's node and MeshCore repeaters whose password is remembered;
+- for a manager, the nodes of their area.
 
-Un clic sur « 🛠 Mes nœuds ✓ » en retire un, et il ne revient plus d'office.
+Clicking “🛠 My nodes ✓” removes one, and it no longer comes back automatically.
 
-Le panneau **Réseau** a une section **Mes nœuds** : administrés d'abord (les muets en premier), puis favoris, avec l'état, la batterie et le dernier contact. Les listes *Nœuds* (Meshtastic et MeshCore) ont un choix **Tous / ⭐ Favoris / 🛠 Mes nœuds**. Les choix sont propres à chaque compte et suivent d'un appareil à l'autre.
+The **Network** panel has a **My nodes** section: administered first (silent ones first), then favorites, with status, battery and last contact. The *Nodes* lists (Meshtastic and MeshCore) have an **All / ⭐ Favorites / 🛠 My nodes** choice. Choices belong to each account and follow from one device to another.
 
-**Alerte « nœud muet »** : dans la tuile *Mes nœuds*, cochez « 🔔 Me prévenir quand un de mes nœuds se tait depuis… » et choisissez le délai (1 à 24 h). La carte ouverte (PC ou téléphone) affiche alors une notification et un encadré, une seule fois par silence. Si le nœud revient puis se tait de nouveau, vous êtes prévenu de nouveau.
+**“Silent node” alert**: in the *My nodes* tile, tick “🔔 Notify me when one of my nodes has been silent for…” and choose the delay (1 to 24 h). With the map open (PC or phone), a notification and a box are then shown, once per silence. If the node comes back then goes silent again, you are notified again.
 
-## GPS figé
-La carte signale dans les alertes un nœud qui continue d'envoyer sa position alors que la mesure GPS qu'il annonce date de plus de 30 min : GPS sans signal, antenne débranchée ou module en panne. Un relais à position fixe, qui n'a jamais bougé, n'est pas concerné.
+## Frozen GPS
+The map flags in the alerts a node that keeps sending its position while the GPS fix it announces is more than 30 min old: GPS without signal, unplugged antenna or broken module. A fixed-position relay that has never moved is not concerned.
 
-## Clic droit sur un nœud
-Un clic droit (ou un appui long sur téléphone) sur un nœud, dans une liste ou sur la carte, ouvre un menu :
-- ouvrir la fiche, centrer la carte ;
-- ☆ ajouter aux favoris, 🛠 ajouter à « Mes nœuds » (ou les retirer) ;
-- ✉️ message direct, 📶 écouter en direct (Meshtastic), 📡 couverture depuis ce nœud ;
-- 📍 partager sa position dans un message ;
-- 📍 **demander sa position** (gestionnaire, Meshtastic) : le nœud renvoie sa position, la réponse s'affiche en bas de l'écran ;
-- 📋 copier l'identifiant ;
-- 🧭 chemin depuis le companion (MeshCore, membre) : voir [[MeshCore]] ;
-- 🗑 **supprimer ce nœud** (administrateur) : pour un nœud qui n'existe plus. Il disparaît de la carte et de la base (positions, télémétrie, liaisons) ; un nœud MeshCore est aussi retiré des contacts du companion. S'il émet encore, il réapparaîtra à sa prochaine annonce.
+## Right-click on a node
+A right-click (or long press on a phone) on a node, in a list or on the map, opens a menu:
+- open the sheet, centre the map;
+- ☆ add to favorites, 🛠 add to “My nodes” (or remove them);
+- ✉️ direct message, 📶 listen live (Meshtastic), 📡 coverage from this node;
+- 📍 share its position in a message;
+- 📍 **request its position** (manager, Meshtastic): the node sends back its position, the answer shows at the bottom of the screen;
+- 📋 copy the ID;
+- 🧭 path from the companion (MeshCore, member): see [[MeshCore]];
+- 🗑 **delete this node** (administrator): for a node that no longer exists. It disappears from the map and the database (positions, telemetry, links); a MeshCore node is also removed from the companion's contacts. If it still transmits, it will reappear at its next advert.
 
-Le clic droit ailleurs sur la carte garde son menu habituel : couverture, profil, partage du point…
+Right-clicking elsewhere on the map keeps its usual menu: coverage, profile, sharing the point…
 
-## Liste des nœuds
-La liste Meshtastic, comme celle de MeshCore, peut être rangée **par type** (▦ Par type) : relais, clients, clients muets, traceurs, inconnus, chaque groupe se repliant d'un clic. L'état est gardé dans le navigateur.
+## Node list
+The Meshtastic list, like the MeshCore one, can be sorted **by type** (▦ By type): relays, clients, mute clients, trackers, unknown, each group folding in one click. The state is kept in the browser.
 
-## Sur téléphone et tablette
+## On phones and tablets
 
-![Sur téléphone](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-telephone.jpg)
+![On a phone](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-telephone.jpg)
 
-- **Panneau en tiroir** (téléphone, tablette en hauteur) : poignée à tirer ou à toucher, trois hauteurs (onglets seuls, moitié, plein). En paysage, le panneau passe sur le côté.
-- **Fiche d'un nœud en tiroir** : toucher la poignée pour l'agrandir, la glisser vers le bas pour la fermer.
-- **◎ Ma position** (en haut à droite de la carte) : point bleu et précision, suivi tant que le bouton est allumé (la carte doit être en HTTPS).
-- **Appui long sur la carte** : couverture depuis ce point, relier, profil, partager le point, copier les coordonnées.
-- Barre d'outils sur une ligne qui défile au doigt, boutons et menus agrandis pour le doigt.
-- Noms des nœuds affichés seulement en zoomant ; aux faibles zooms, les nœuds proches (hors relais et passerelles) sont **regroupés** en une pastille « 12 » qu'un toucher agrandit.
-- **☀️ Thème clair** (Outils › Affichage) : interface claire à fort contraste pour le plein soleil.
-- **📲 Installer l'application** (Outils, quand le navigateur le propose) : icône sur l'écran d'accueil, plein écran, dernière carte connue affichée sans réseau (nœuds, liaisons, MeshCore).
-- **Économie** : animations coupées par défaut sur mobile et en mode économie de données ; flux en direct mis en pause après 2 min en arrière-plan, repris au retour ; lignes dessinées en canevas.
+- **Drawer panel** (phone, tablet upright): handle to pull or tap, three heights (tabs only, half, full). In landscape, the panel moves to the side.
+- **Node sheet as a drawer**: tap the handle to enlarge it, swipe it down to close it.
+- **◎ My position** (top right of the map): blue dot and precision, followed while the button is on (the map must be on HTTPS).
+- **Long press on the map**: coverage from this point, connect, profile, share the point, copy the coordinates.
+- Toolbar on one line that scrolls with the finger, buttons and menus enlarged for fingers.
+- Node names shown only when zooming in; at low zoom, nearby nodes (except relays and gateways) are **grouped** into a “12” bubble that a tap enlarges.
+- **☀️ Light theme** (Tools › Display): light high-contrast interface for full sunlight.
+- **📲 Install the app** (Tools, when the browser offers it): icon on the home screen, full screen, last known map shown without network (nodes, links, MeshCore).
+- **Saving**: animations off by default on mobile and in data-saving mode; live feed paused after 2 min in the background, resumed on return; lines drawn on canvas.
 
-## Chercher un réglage
+## Searching for a setting
 
-![Recherche d’un réglage (Ctrl+K)](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-recherche.jpg)
+![Searching for a setting (Ctrl+K)](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-recherche.jpg)
 
-Le bouton **⚙️🔎** en haut (ou **Ctrl+K**) ouvre une recherche dans les réglages et fonctions de la carte : tapez « MQTT », « mot de passe », « IATA », « équipes », « firmware »… puis Entrée. La carte ouvre le bon onglet ou la bonne fenêtre et met le réglage en évidence. Seuls les réglages permis par votre compte sont proposés.
+The **⚙️🔎** button at the top (or **Ctrl+K**) opens a search through the map's settings and features: type “MQTT”, “password”, “IATA”, “teams”, “firmware”… then Enter. The map opens the right tab or window and highlights the setting. Only the settings allowed for your account are offered.

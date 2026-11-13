@@ -50,7 +50,7 @@ const { creerSourceMeshMonitor } = require('./meshmonitor');
 const { creerSourceRadio } = require('./radio');
 const { creerAnalyse } = require('./analyse');
 const { creerRelief, contourDepartement } = require('./relief');
-const { estCodeMonde, codeMonde, nomMonde, lieuxMonde } = require('./monde');
+const { estCodeMonde, codeMonde, nomMonde, lieuxMonde, lieuxRectangle } = require('./monde');
 const { creerComptes } = require('./comptes');
 const { creerAdministration } = require('./administration');
 const { creerAgents } = require('./agents');
@@ -165,7 +165,7 @@ app.get('/publique.html', envoyerPage('publique.html'));
 app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '5m', index: false }));
 
 // Version installée et dernière version publiée sur GitHub (vérifiée toutes les heures, et à l'ouverture de la mise à jour)
-const DEPOT = process.env.DEPOT_GITHUB || 'sauveteur71/live-mesh-map-world';
+const DEPOT = process.env.DEPOT_GITHUB || 'pasquinic/live-mesh-map-us';
 const majDispo = { version: null, url: null, verifie: 0, erreur: null };
 const comparerVersions = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); } return 0; };
 async function verifierDerniereVersion() {
@@ -194,7 +194,8 @@ app.get('/api/aide/:page', (req, res) => {
   // Version anglaise (wiki/en/<même nom>.md) quand elle existe
   const en = req.query.langue === 'en' ? path.join(DOSSIER_AIDE, 'en', f) : null;
   if (en && fs.existsSync(en)) return res.set('Cache-Control', 'max-age=300').json({ page: nom, langue: 'en', texte: fs.readFileSync(en, 'utf8') });
-  res.set('Cache-Control', 'max-age=300').json({ page: nom, langue: 'fr', texte: fs.readFileSync(path.join(DOSSIER_AIDE, f), 'utf8') });
+  // US edition: the wiki folder itself is in English
+  res.set('Cache-Control', 'max-age=300').json({ page: nom, langue: 'en', texte: fs.readFileSync(path.join(DOSSIER_AIDE, f), 'utf8') });
 });
 
 app.get('/api/config', (req, res) => {
@@ -323,19 +324,20 @@ const optsRelief = (q) => {
 };
 // Relief d'un autre département (?dep=25) : instance séparée, créée à la demande (2 au plus en mémoire)
 const reliefsEtude = new Map();
-// Couverture de la carte publique : département de la carte seulement, ou toute la France (choix de l'admin).
-// « Préparer toute la France » télécharge à l'avance le relief et les points hauts de chaque département (sur disque),
-// pour que le premier calcul d'un département soit rapide.
+// Public map coverage: the map's county only, or any US county (admin's choice; internal value 'france' kept from
+// the French edition). "Prepare the whole state" downloads ahead the terrain and high points of every county of the
+// map's state (on disk), so that the first computation in a county is fast.
 const fReliefPublic = path.join(path.dirname(config.fichierBase), 'relief-public.json');
 let reliefPublic = { couverture: 'departement' };
 try { reliefPublic = { ...reliefPublic, ...JSON.parse(fs.readFileSync(fReliefPublic, 'utf8')) }; } catch { /* défaut */ }
 const franceOuverte = () => reliefPublic.couverture === 'france';
 const precharge = { enCours: false, arret: false, total: 0, faits: 0, deja: 0, erreurs: [], courant: null, etape: null, aCompleter: [], instance: null, debut: null, fin: null };
 const reliefSurDisque = (code) => ['mnt-' + code + '.bin', 'sommets-osm-' + code + '.json'].every((f) => fs.existsSync(path.join(path.dirname(config.fichierBase), f)));
-// Paquet « relief France » : relief IGN, points hauts, accès, sites et communes de chaque département, en un fichier
+// Terrain package: terrain, high points, access, sites and towns of each county, in one file
 // tar.gz. Fabriqué depuis une carte qui a tout préparé (Gestion › Réglages), publié sur GitHub, installé par les autres.
-const RE_FICHIER_PAQUET = /^((mnt|sommets-osm|acces-sommets|realisme)-(\d{2}|2A|2B)\.(bin|json)|communes-sommets\.json)$/;
-const URL_PAQUET_FRANCE = process.env.RELIEF_FRANCE_URL || 'https://github.com/sauveteur71/carte-live-meshtastic/releases/download/relief-france/relief-france.tar.gz';
+const RE_FICHIER_PAQUET = /^((mnt|sommets-osm|acces-sommets|realisme)-(\d{5})\.(bin|json)|communes-sommets\.json)$/;
+// Optional: URL of a terrain package made by another map of the same state (Settings › download package). No default.
+const URL_PAQUET_FRANCE = process.env.RELIEF_PAQUET_URL || process.env.RELIEF_FRANCE_URL || '';
 function fichiersPaquet() {
   const d = path.dirname(config.fichierBase), code = String(config.departement.code).toUpperCase();
   const l = fs.readdirSync(d).filter((f) => RE_FICHIER_PAQUET.test(f) && fs.statSync(path.join(d, f)).isFile());
@@ -348,11 +350,12 @@ function exporterPaquetFrance(res) {
   const { spawn } = require('child_process');
   const args = ['-czf', '-', '-C', d, ...propres.map((f) => `--transform=s/^${f.replace('.', '\\.')}$/${f.replace(/\.(bin|json)$/, `-${code}.$1`)}/`), ...propres, ...l];
   const t = spawn('tar', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  res.set('Content-Type', 'application/gzip').set('Content-Disposition', 'attachment; filename="relief-france.tar.gz"');
+  res.set('Content-Type', 'application/gzip').set('Content-Disposition', 'attachment; filename="terrain-package.tar.gz"');
   t.stdout.pipe(res);
   t.stderr.on('data', (x) => journal('[Relief] paquet :', String(x).trim()));
 }
 async function importerPaquetFrance() {
+  if (!URL_PAQUET_FRANCE) throw new Error('HTTP 404 (no RELIEF_PAQUET_URL)');
   const d = path.dirname(config.fichierBase), tmp = path.join(d, 'relief-france.tar.gz.part');
   const r = await fetch(URL_PAQUET_FRANCE, { signal: AbortSignal.timeout(30 * 60000) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -371,22 +374,24 @@ async function importerPaquetFrance() {
 }
 async function prechargerFrance() {
   if (precharge.enCours) return;
-  const codes = listeDepartements.map((d) => d.code).filter((c) => c !== String(config.departement.code).toUpperCase());
+  // US edition: every county of the map's state (the whole country, ~3,200 counties, would be far too heavy)
+  const etatCarte = String(config.departement.code).slice(0, 2);
+  const codes = listeDepartements.filter((d) => /^\d{5}$/.test(config.departement.code) ? d.etat === etatCarte : true).map((d) => d.code).filter((c) => c !== String(config.departement.code).toUpperCase());
   // Gardé sur disque : après un redémarrage de la carte (mise à jour), la préparation reprend où elle en était
   reliefPublic.preparation = true; try { fs.writeFileSync(fReliefPublic, JSON.stringify(reliefPublic)); } catch { /* lecture seule */ }
   Object.assign(precharge, { enCours: true, arret: false, total: codes.length, faits: 0, deja: 0, erreurs: [], courant: null, etape: null, aCompleter: [], debut: Date.now(), fin: null });
-  journal(`[Relief] préparation de toute la France : ${codes.length} départements`);
+  journal(`[Relief] préparation de tout l’État : ${codes.length} comtés`);
   // D'abord le paquet « relief France » publié sur GitHub (un seul téléchargement), s'il manque des départements
   if (codes.some((c) => !reliefSurDisque(c))) {
     precharge.courant = 'paquet';
-    try { const n = await importerPaquetFrance(); journal(`[Relief] paquet France : ${n} fichier(s) installé(s)`); } catch (e) { journal(`[Relief] paquet France indisponible (${e.message}) : téléchargement département par département`); if (!/HTTP 404/.test(e.message)) precharge.erreurs.push({ code: 'paquet', erreur: e.message }); }
+    try { const n = await importerPaquetFrance(); journal(`[Relief] paquet de relief : ${n} fichier(s) installé(s)`); } catch (e) { journal(`[Relief] paquet de relief indisponible (${e.message}) : téléchargement comté par comté`); if (!/HTTP 404/.test(e.message)) precharge.erreurs.push({ code: 'paquet', erreur: e.message }); }
   }
   // Premier passage sur tous les départements, puis un second (15 min plus tard) pour ceux où OpenStreetMap a manqué
   for (let passage = 1; passage <= 2 && !precharge.arret; passage++) {
   const liste = passage === 1 ? codes : codes.filter((c) => !reliefSurDisque(c));
   if (passage === 2) {
     if (!liste.length) break;
-    precharge.courant = null; precharge.etape = `${liste.length} département(s) à compléter (OpenStreetMap saturé) : nouvel essai dans 15 min`;
+    precharge.courant = null; precharge.etape = `${liste.length} comté(s) à compléter (OpenStreetMap saturé) : nouvel essai dans 15 min`;
     journal(`[Relief] ${precharge.etape}`);
     for (let t = 0; t < 180 && !precharge.arret; t++) await new Promise((ok) => setTimeout(ok, 5000));
     precharge.faits -= liste.length;
@@ -405,7 +410,7 @@ async function prechargerFrance() {
         if (e.mnt === 'erreur') throw new Error(e.erreur || 'relief indisponible');
         // … et voies d'accès des points hauts évaluées (OpenStreetMap), pour le choix voiture / 4×4 / à pied
         const a = r.accesEtat ? r.accesEtat() : null;
-        precharge.etape = e.mnt !== 'pret' ? `relief IGN ${e.progression || 0} %` : e.classement !== 'pret' ? 'points hauts et classement' : a && a.total ? `voies d'accès ${a.faits}/${a.total}` : 'voies d’accès';
+        precharge.etape = e.mnt !== 'pret' ? `relief USGS ${e.progression || 0} %` : e.classement !== 'pret' ? 'points hauts et classement' : a && a.total ? `voies d'accès ${a.faits}/${a.total}` : 'voies d’accès';
         if (e.mnt === 'pret' && ['pret', 'erreur'].includes(e.classement) && (!a || (!a.enCours && ((a.total > 0 && a.faits >= a.total) || a.erreur || Date.now() - debut > 5 * 60000)))) break;
         await new Promise((ok) => setTimeout(ok, 5000));
       }
@@ -421,16 +426,16 @@ async function prechargerFrance() {
   if (!precharge.arret && reliefPublic.activerFrance) {
     reliefPublic.couverture = 'france'; reliefPublic.activerFrance = false;
     try { fs.writeFileSync(fReliefPublic, JSON.stringify(reliefPublic)); } catch { /* lecture seule */ }
-    journal('[Relief] toute la France prête : la carte publique calcule maintenant dans tous les départements');
+    journal('[Relief] tout l’État est prêt : la carte publique calcule maintenant dans tous les comtés');
   }
-  journal(`[Relief] préparation de la France ${precharge.arret ? 'arrêtée' : 'terminée'} : ${precharge.faits}/${precharge.total} (${precharge.erreurs.length} erreur(s))`);
+  journal(`[Relief] préparation de l’État ${precharge.arret ? 'arrêtée' : 'terminée'} : ${precharge.faits}/${precharge.total} (${precharge.erreurs.length} erreur(s))`);
   Object.assign(precharge, { enCours: false, courant: null, fin: Date.now() });
   if (!redemarrageEnCours) { reliefPublic.preparation = false; try { fs.writeFileSync(fReliefPublic, JSON.stringify(reliefPublic)); } catch { /* lecture seule */ } }
 }
 let redemarrageEnCours = false;
 process.once('SIGTERM', () => { redemarrageEnCours = true; });
 // Reprise d'une préparation interrompue par un redémarrage (1 min après le démarrage, le temps que la carte s'installe)
-if (reliefPublic.preparation) setTimeout(() => { journal('[Relief] reprise de la préparation de toute la France'); prechargerFrance(); }, 60000).unref();
+if (reliefPublic.preparation) setTimeout(() => { journal('[Relief] reprise de la préparation de tout l’État'); prechargerFrance(); }, 60000).unref();
 function R(req, ...pts) {
   const r = Rdep(req);
   // Un point hors du département étudié mais dans celui de la carte : on garde le relief de la carte
@@ -473,25 +478,26 @@ function meilleurDepartement(lat, lon, rayonKm) {
     if (!c.rect) {
       let s = 90, o = 180, n = -90, e = -180;
       for (const pg of c.poly) for (const [x, y] of pg[0]) { s = Math.min(s, y); n = Math.max(n, y); o = Math.min(o, x); e = Math.max(e, x); }
-      c.rect = { s: s - 0.2, o: o - 0.2, n: n + 0.2, e: e + 0.2 };
+      // Counties crossing the antimeridian (Aleutians): no box, the point-in-polygon test handles them
+      c.rect = e - o > 180 ? { s: 1, o: 1, n: 0, e: 0 } : { s: s - 0.25, o: o - 0.25, n: n + 0.25, e: e + 0.25 };
     }
     const r = c.rect;
     if (lat < r.s || lat > r.n || lon < r.o || lon > r.e) continue;
     const part = Math.max(0, Math.min(r.n, lat + dLat) - Math.max(r.s, lat - dLat)) * Math.max(0, Math.min(r.e, lon + dLon) - Math.max(r.o, lon - dLon));
     if (part > max + 1e-9) { max = part; meilleur = String(c.code).toUpperCase(); }
   }
-  // Hors de France : carré mondial de 1° (relief Copernicus)
+  // Outside the US: 1° world square (Copernicus terrain)
   return meilleur || departementDuPoint(lat, lon) || codeMonde(lat, lon);
 }
 function Rdep(req, depForce) {
-  // Relief d'un autre département : chargement lourd (IGN, quelques minutes), réservé aux comptes connectés
+  // Terrain of another county: heavy load (USGS 3DEP, a few minutes), signed-in accounts only
   const dep = String(depForce || (estMembre(req) || franceOuverte() ? req.query.dep || (req.body && req.body.dep) : '') || '').toUpperCase();
-  if (!dep || dep === String(config.departement.code).toUpperCase() || !(/^(\d{2}|2A|2B)$/.test(dep) || estCodeMonde(dep))) return relief;
+  if (!dep || dep === String(config.departement.code).toUpperCase() || !(/^\d{5}$/.test(dep) || estCodeMonde(dep))) return relief;
   if (precharge.instance && precharge.courant === dep) return precharge.instance;
   if (!reliefsEtude.has(dep)) {
     if (!estCodeMonde(dep) && !listeDepartements.some((d) => d.code === dep)) return relief;
     if (reliefsEtude.size >= 2) { const [k, v] = reliefsEtude.entries().next().value; v.arreter(); reliefsEtude.delete(k); }
-    journal(`[Relief] étude de la zone ${dep} : chargement du relief ${estCodeMonde(dep) ? 'Copernicus' : 'IGN'} et des points hauts`);
+    journal(`[Relief] étude de la zone ${dep} : chargement du relief ${estCodeMonde(dep) ? 'Copernicus' : 'USGS 3DEP'} et des points hauts`);
     reliefsEtude.set(dep, creerRelief(config, journal, { ...fournisseursRelief, envDefaut: () => { const c = relief.calibration(); return c && c.perteEnvironnementDb != null ? c.perteEnvironnementDb : null; } }, { code: dep }));
   } else { const v = reliefsEtude.get(dep); reliefsEtude.delete(dep); reliefsEtude.set(dep, v); }
   return reliefsEtude.get(dep);
@@ -499,12 +505,15 @@ function Rdep(req, depForce) {
 
 app.get('/api/relief/france', (req, res) => {
   if (!estAdmin(req)) return res.status(401).json({ erreur: 'Connexion admin requise' });
-  const surDisque = listeDepartements.filter((d) => d.code === String(config.departement.code).toUpperCase() || reliefSurDisque(d.code)).length;
-  res.set('Cache-Control', 'no-store').json({ couverture: reliefPublic.couverture, surDisque, total: listeDepartements.length, precharge: { ...precharge, instance: undefined } });
+  // US edition: counted over the counties of the map's state
+  const etatCarte = String(config.departement.code).slice(0, 2), duEtat = listeDepartements.filter((d) => !/^\d{5}$/.test(config.departement.code) || d.etat === etatCarte);
+  const surDisque = duEtat.filter((d) => d.code === String(config.departement.code).toUpperCase() || reliefSurDisque(d.code)).length;
+  const etatNom = (calculerRegions().find((x) => x.code === etatCarte) || {}).nom || null;
+  res.set('Cache-Control', 'no-store').json({ couverture: reliefPublic.couverture, surDisque, total: duEtat.length, etatNom, paquet: !!URL_PAQUET_FRANCE, precharge: { ...precharge, instance: undefined } });
 });
 app.get('/api/relief/france/paquet', (req, res) => {
   if (!estAdmin(req)) return res.status(401).json({ erreur: 'Connexion admin requise' });
-  journal(`[Relief] paquet France téléchargé par ${utilisateur(req).identifiant}`);
+  journal(`[Relief] paquet de relief téléchargé par ${utilisateur(req).identifiant}`);
   exporterPaquetFrance(res);
 });
 app.post('/api/relief/france', (req, res) => {
@@ -514,7 +523,7 @@ app.post('/api/relief/france', (req, res) => {
     if (!['departement', 'france'].includes(b.couverture)) return res.status(400).json({ erreur: 'choix invalide' });
     reliefPublic.couverture = b.couverture;
     try { fs.writeFileSync(fReliefPublic, JSON.stringify(reliefPublic)); } catch (e) { return res.status(500).json({ erreur: e.message }); }
-    journal(`[Relief] couverture de la carte publique : ${b.couverture === 'france' ? 'toute la France' : 'département de la carte'} (${utilisateur(req).identifiant})`);
+    journal(`[Relief] couverture de la carte publique : ${b.couverture === 'france' ? 'tous les comtés' : 'comté de la carte'} (${utilisateur(req).identifiant})`);
   }
   if (b.precharger === true) {
     if (b.activer) { reliefPublic.activerFrance = true; try { fs.writeFileSync(fReliefPublic, JSON.stringify(reliefPublic)); } catch { /* lecture seule */ } }
@@ -541,7 +550,7 @@ app.get('/api/relief/couvrir', (req, res) => {
   const lat = Number(req.query.lat), lon = Number(req.query.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ erreur: 'Point invalide' });
   const o = optsRelief(req.query);
-  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_FR'; }
+  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_US'; }
   try { res.json(R(req, { lat, lon }).couvrirPoint({ lat, lon }, o)); } catch (e) { res.status(503).json({ erreur: e.message }); }
 });
 // Un seul site pour plusieurs points : ?pts=lat,lon;lat,lon;…
@@ -549,7 +558,7 @@ app.get('/api/relief/couvrir-points', (req, res) => {
   const cibles = String(req.query.pts || '').split(';').map((x) => x.split(',').map(Number)).filter((x) => x.length === 2 && x.every(Number.isFinite)).slice(0, 5).map(([lat, lon], i) => ({ lat, lon, nom: `Point ${i + 1}` }));
   if (cibles.length < 2) return res.status(400).json({ erreur: 'Indiquer au moins deux points' });
   const o = optsRelief(req.query);
-  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_FR'; }
+  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_US'; }
   try { res.json(R(req, ...cibles).couvrirPoints(cibles, o)); } catch (e) { res.status(503).json({ erreur: e.message }); }
 });
 // Répéteurs MeshCore positionnés et entendus depuis 24 h (relais existants pour « Relier » et « Couvrir »)
@@ -561,7 +570,7 @@ app.get('/api/relief/relier', (req, res) => {
   const o = optsRelief(q);
   if (q.hA) o.hauteurA = Math.min(Math.max(Number(q.hA) || 2, 0.5), 60);
   if (q.hB) o.hauteurB = Math.min(Math.max(Number(q.hB) || 2, 0.5), 60);
-  if (q.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_FR'; }
+  if (q.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_US'; }
   try { res.json(R(req, a, b).relierPoints(a, b, o)); } catch (e) { res.status(503).json({ erreur: e.message }); }
 });
 const cacheCouverture = new Map();
@@ -628,7 +637,7 @@ app.get('/api/relief/couverture-reseau', (req, res) => {
   const RR = R(req);
   if (!RR.pret()) return res.status(503).json({ erreur: 'Le modèle de terrain est en cours de chargement' });
   const o = optsRelief(req.query);
-  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_FR'; }
+  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_US'; }
   if (req.query.hn) o.hn = Math.min(Math.max(Number(req.query.hn) || 6, 0.5), 60);
   // La calibration (pertes d'environnement) fait partie de la clé : un calcul fait avant elle serait trop optimiste
   let r;
@@ -637,17 +646,25 @@ app.get('/api/relief/couverture-reseau', (req, res) => {
   const { image, ...reste } = r;
   res.json({ ...reste, image: `/api/relief/couverture/${r.id}.png`, emprise: RR.emprise() });
 });
-// Principales villes d'un département (API Géo de l'État), gardées sur le disque
+// Towns of a county (OpenStreetMap places with a population tag, mostly from the US Census), inside the county
+// outline; kept on disk. Outside the US: towns of the 1° world square.
+async function lieuxDuComte(code) {
+  if (estCodeMonde(code)) return lieuxMonde(code);
+  const g = contourDepartement(code);
+  if (!g) throw new Error(`county ${code} unknown`);
+  const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+  let s = 90, o = 180, n = -90, e = -180;
+  for (const pg of polys) for (const [x, y] of pg[0]) { s = Math.min(s, y); n = Math.max(n, y); o = Math.min(o, x); e = Math.max(e, x); }
+  const dansAnneau = (a, lat, lon) => { let d = false; for (let i = 0, j = a.length - 1; i < a.length; j = i++) { const [xi, yi] = a[i], [xj, yj] = a[j]; if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) d = !d; } return d; };
+  const l = await lieuxRectangle([s, o, n, e].map((v) => Math.round(v * 1000) / 1000));
+  return l.filter((x) => polys.some((pg) => dansAnneau(pg[0], x.lat, x.lon)));
+}
 async function villesDepartement(code) {
   const f = path.join(path.dirname(config.fichierBase), `villes-${code}.json`);
   try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { /* à télécharger */ }
-  if (estCodeMonde(code)) { const l = await lieuxMonde(code); const res = l.sort((a, b) => b.population - a.population).slice(0, 20); fs.writeFileSync(f, JSON.stringify(res)); return res; }
-  const r = await fetch(`https://geo.api.gouv.fr/departements/${encodeURIComponent(code)}/communes?fields=nom,centre,population&format=json`, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error('API Géo : HTTP ' + r.status);
-  const l = (await r.json()).filter((c) => c.centre && c.population).sort((a, b) => b.population - a.population).slice(0, 20)
-    .map((c) => ({ nom: c.nom, lat: c.centre.coordinates[1], lon: c.centre.coordinates[0], population: c.population }));
-  fs.writeFileSync(f, JSON.stringify(l));
-  return l;
+  const res = (await lieuxDuComte(code)).sort((a, b) => b.population - a.population).slice(0, 20);
+  fs.writeFileSync(f, JSON.stringify(res));
+  return res;
 }
 // Déplacer des relais existants : calcul en arrière-plan (1 à 3 min), résultat gardé jusqu'au prochain classement
 const optimisations = new Map(); // clé -> { etat, progression, resultat, erreur }
@@ -668,7 +685,7 @@ app.get('/api/relief/optimisation', (req, res) => {
   }
   res.set('Cache-Control', 'no-store').json({ etat: o.etat, progression: o.progression, erreur: o.erreur, ...(o.resultat || {}) });
 });
-// Sites routiers (webcams du Département et de la DIR Massif Central) et leur intérêt comme sites de relais
+// Tall structures (OpenStreetMap towers and water towers) and how useful they would be as relay sites
 const sitesRoutiers = creerSitesRoutiers(config, journal);
 app.get('/api/sites-routiers', async (req, res) => { res.set('Cache-Control', 'public, max-age=3600').json(await sitesRoutiers.charger()); });
 const evaluationsRoutiers = new Map();
@@ -689,16 +706,13 @@ app.get('/api/relief/sites-routiers', async (req, res) => {
   }
   res.set('Cache-Control', 'no-store').json({ etat: o.etat, progression: o.progression, erreur: o.erreur, ...(o.resultat || {}) });
 });
-// Toutes les communes d'un département (centre, population), pour les habitants couverts
+// All towns of a county (centre, population), for the people covered
 async function communesDepartement(code) {
   const f = path.join(path.dirname(config.fichierBase), `communes-${code}.json`);
   try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { /* à télécharger */ }
-  if (estCodeMonde(code)) { const l = await lieuxMonde(code); const res = l; fs.writeFileSync(f, JSON.stringify(res)); return res; }
-  const r = await fetch(`https://geo.api.gouv.fr/departements/${encodeURIComponent(code)}/communes?fields=nom,centre,population&format=json`, { signal: AbortSignal.timeout(20000) });
-  if (!r.ok) throw new Error('API Géo : HTTP ' + r.status);
-  const l = (await r.json()).filter((c) => c.centre && c.population).map((c) => ({ nom: c.nom, lat: c.centre.coordinates[1], lon: c.centre.coordinates[0], population: c.population }));
-  fs.writeFileSync(f, JSON.stringify(l));
-  return l;
+  const res = await lieuxDuComte(code);
+  fs.writeFileSync(f, JSON.stringify(res));
+  return res;
 }
 // Plan à budget : n relais, coûts unitaires (€) facultatifs
 app.get('/api/relief/budget', async (req, res) => {
@@ -718,7 +732,7 @@ app.post('/api/relief/simulation', async (req, res) => {
   if (!RR.pret()) return res.status(503).json({ erreur: 'Le modèle de terrain est en cours de chargement' });
   const b = req.body || {};
   const o = optsRelief(req.query);
-  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_FR'; }
+  if (req.query.reseau === 'meshcore') { o.noeuds = repeteursMc(); o.preset = o.preset || 'MESHCORE_US'; }
   if (b.hn) o.hn = Math.min(Math.max(Number(b.hn) || 6, 0.5), 60);
   let villes = [];
   try { villes = await villesDepartement(RR.code); } catch (e) { journal('[Simulation] villes :', e.message); }
@@ -773,7 +787,7 @@ app.get('/api/relief/couverture/:id.png', (req, res) => {
   res.end(r.image);
 });
 
-// ---- Recherche de lieux (OpenStreetMap via Photon + adresses IGN), avec cache ---------------
+// ---- Place search (OpenStreetMap via Photon + US Census address geocoder), with cache ---------------
 const cacheRecherche = new Map();
 const sansAccents = (t) => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[-']/g, ' ');
 let reperes = [];
@@ -787,16 +801,18 @@ app.get('/api/recherche', async (req, res) => {
   const cle = q.toLowerCase() + '|' + lat.toFixed(1) + '|' + lon.toFixed(1);
   const c = cacheRecherche.get(cle);
   if (c && Date.now() - c.t < 3600000) return res.json(c.r);
-  // Points de repère locaux (avec noms usuels : « la Vierge », « le Mézenc »…)
+  // Local landmarks (optional donnees-ref/reperes-<county>.json, with aliases)
   const mots = sansAccents(q).split(/\s+/).filter((m) => m.length > 2 && !['les', 'des', 'puy', 'sur', 'statue'].includes(m));
   const locaux = reperes.filter((r) => [r.nom, ...(r.alias || [])].some((n) => { const t = sansAccents(n); return t.includes(sansAccents(q)) || (mots.length && mots.every((m) => t.includes(m))); }))
     .map((r) => ({ type: 'Repère', nom: r.nom, detail: r.detail, lat: r.lat, lon: r.lon, alt: r.alt, zoom: 16 }));
-  const ua = { 'User-Agent': 'live-mesh-map-world/1.0 (+https://github.com/sauveteur71/live-mesh-map-world)' };
-  const [osm, ign] = await Promise.all([
-    fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&lat=${lat}&lon=${lon}&limit=8&lang=fr`, { headers: ua, signal: AbortSignal.timeout(6000) }).then((r) => r.json()).catch(() => null),
-    fetch(`https://data.geopf.fr/geocodage/search?q=${encodeURIComponent(q)}&lat=${lat}&lon=${lon}&limit=5&index=address`, { headers: ua, signal: AbortSignal.timeout(6000) }).then((r) => r.json()).catch(() => null),
+  const ua = { 'User-Agent': 'live-mesh-map-us/1.0 (+https://github.com/pasquinic/live-mesh-map-us)' };
+  // Street addresses ("1600 Pennsylvania Ave NW, Washington DC"): US Census geocoder, public and keyless
+  const adresse = /^\d+[a-z]?\s+\S/i.test(q);
+  const [osm, census] = await Promise.all([
+    fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&lat=${lat}&lon=${lon}&limit=8&lang=en`, { headers: ua, signal: AbortSignal.timeout(6000) }).then((r) => r.json()).catch(() => null),
+    adresse ? fetch(`https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=Public_AR_Current&format=json`, { headers: ua, signal: AbortSignal.timeout(8000) }).then((r) => r.json()).catch(() => null) : null,
   ]);
-  const TYPES = { place: 'Lieu-dit', highway: 'Rue', building: 'Bâtiment', amenity: 'Service', tourism: 'Tourisme', historic: 'Monument', natural: 'Nature', leisure: 'Loisir', shop: 'Commerce', man_made: 'Ouvrage', boundary: 'Commune', railway: 'Gare', waterway: 'Cours d’eau', landuse: 'Zone' };
+  const TYPES = { place: 'Lieu-dit', highway: 'Rue', building: 'Bâtiment', amenity: 'Service', tourism: 'Tourisme', historic: 'Monument', natural: 'Nature', leisure: 'Loisir', shop: 'Commerce', man_made: 'Ouvrage', boundary: 'Localité', railway: 'Gare', waterway: 'Cours d’eau', landuse: 'Zone' };
   const sortie = [];
   for (const f of (osm && osm.features) || []) {
     const p = f.properties || {};
@@ -805,11 +821,11 @@ app.get('/api/recherche', async (req, res) => {
     if (!nom) continue;
     sortie.push({ type: TYPES[p.osm_key] || 'Lieu', nom, detail: [p.city && p.city !== nom ? p.city : null, p.county].filter(Boolean).join(' · '), lat: y, lon: x, zoom: p.osm_key === 'boundary' || p.osm_value === 'city' ? 13 : 17 });
   }
-  for (const f of (ign && ign.features) || []) {
-    const p = f.properties || {};
-    const [x, y] = f.geometry.coordinates;
+  for (const m of (census && census.result && census.result.addressMatches) || []) {
+    const x = m.coordinates && m.coordinates.x, y = m.coordinates && m.coordinates.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     if (sortie.some((o) => Math.abs(o.lat - y) < 0.0005 && Math.abs(o.lon - x) < 0.0005)) continue;
-    sortie.push({ type: p.type === 'municipality' ? 'Commune' : 'Adresse', nom: p.label || p.name, detail: p.context || '', lat: y, lon: x, zoom: p.type === 'municipality' ? 13 : 17 });
+    sortie.unshift({ type: 'Adresse', nom: m.matchedAddress, detail: 'US Census', lat: y, lon: x, zoom: 17 });
   }
   // Les résultats proches (≤ 100 km) passent devant
   const centre = { lat, lon };
@@ -1616,7 +1632,7 @@ app.get('/api/mc/topologie', (req, res) => {
     };
   });
   const liens = liensCle.filter((p) => num.has(p.a) && num.has(p.b)).map((p) => { const [a, b] = [num.get(p.a), num.get(p.b)]; return a < b ? { a, b, ab: p.ab, ba: p.ba } : { a: b, b: a, ab: p.ba, ba: p.ab }; });
-  res.set('Cache-Control', 'no-store').json({ reseau: 'meshcore', heures, sources, preset: 'MESHCORE_FR', hopLimit: 64, zoneNom: config.zoneNom, noeuds, liens, genere: Date.now() });
+  res.set('Cache-Control', 'no-store').json({ reseau: 'meshcore', heures, sources, preset: 'MESHCORE_US', hopLimit: 64, zoneNom: config.zoneNom, noeuds, liens, genere: Date.now() });
 });
 
 app.get('/api/paquets', (req, res) => {
@@ -1647,7 +1663,7 @@ app.get('/api/messages', (req, res) => {
 
 // Blocage après 3 échecs (adresse et compte), voir blocages.js
 const blocages = require('./blocages').creerBlocages(config, journal);
-const heureBlocage = (t) => new Date(t).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
+const heureBlocage = (t) => new Date(t).toLocaleTimeString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', minute: '2-digit' });
 app.post('/api/connexion', (req, res) => {
   const b0 = req.body || {};
   const bl = blocages.bloque(req.ip, b0.identifiant);
@@ -1791,7 +1807,7 @@ app.delete('/api/comptes/:id', (req, res) => {
 let listeDepartements = [];
 try {
   listeDepartements = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8')).features
-    .map((f) => ({ code: f.properties.code, nom: f.properties.nom, bbox: emprise(f.geometry) })).sort((a, b) => a.code.localeCompare(b.code));
+    .map((f) => ({ code: f.properties.code, nom: f.properties.nom, etat: f.properties.etat, etatNom: f.properties.etatNom, bbox: emprise(f.geometry) })).sort((a, b) => a.code.localeCompare(b.code));
 } catch { /* liste indisponible */ }
 app.get('/api/departements', (req, res) => res.json(listeDepartements));
 
@@ -1809,16 +1825,16 @@ function preparerReglages(b, existants = {}) {
   if (txt(b.titre)) r.titre = txt(b.titre, 80);
   if (b.departement) {
     const d = estCodeMonde(b.departement) ? { code: String(b.departement).toUpperCase(), nom: nomMonde(String(b.departement).toUpperCase()) } : listeDepartements.find((x) => x.code === String(b.departement));
-    if (!d) throw new Error('Département inconnu');
+    if (!d) throw new Error('Unknown county');
     const geom = contourDepartement(d.code);
-    if (!geom) throw new Error('Contour du département introuvable');
+    if (!geom) throw new Error('County outline not found');
     const z = emprise(geom);
-    r.departement = d;
+    r.departement = { code: d.code, nom: d.nom };
     r.zone = z;
     r.zoneNom = d.nom;
     r.centre = [+((z[0] + z[2]) / 2).toFixed(4), +((z[1] + z[3]) / 2).toFixed(4)];
     r.zoom = 9;
-    if (!txt(b.titre) && !existants.titre) r.titre = estCodeMonde(d.code) ? 'Live mesh map' : `Réseau Meshtastic · ${d.nom}`;
+    if (!txt(b.titre) && !existants.titre) r.titre = estCodeMonde(d.code) ? 'Live mesh map' : `Mesh network · ${d.nom}`;
   }
   if (b.mqtt) {
     const m = { ...(existants.mqtt || {}) };
@@ -2397,7 +2413,7 @@ app.post('/api/mc/reglages', (req, res) => {
   const u = utilisateur(req);
   if (!u || u.role !== 'admin') return res.status(401).json({ erreur: 'Connexion admin requise' });
   const b = req.body || {}, m = { ...((config.reglages || {}).meshcore || {}) };
-  if (b.iata !== undefined) { if (!/^[A-Z0-9]{2,8}$/i.test(String(b.iata))) return res.status(400).json({ erreur: 'Code de zone : 2 à 8 lettres ou chiffres (ex. LPY)' }); m.iata = String(b.iata).toUpperCase(); }
+  if (b.iata !== undefined) { if (!/^[A-Z0-9]{2,8}$/i.test(String(b.iata))) return res.status(400).json({ erreur: 'Code de zone : 2 à 8 lettres ou chiffres (e.g. PHX)' }); m.iata = String(b.iata).toUpperCase(); }
   if (b.racine !== undefined) { if (!/^[A-Za-z0-9_\-/]{1,60}$/.test(String(b.racine))) return res.status(400).json({ erreur: 'Racine invalide' }); m.racine = String(b.racine); }
   if (typeof b.republier === 'boolean') m.republier = b.republier;
   if (typeof b.actif === 'boolean') m.actif = b.actif;
@@ -2988,7 +3004,7 @@ app.post('/api/maj/auto', (req, res) => {
 let dernierEssaiMajAuto = 0;
 setInterval(async () => {
   if (!majAuto.actif || Date.now() - dernierEssaiMajAuto < 20 * 3600000) return;
-  const h = Number(new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }));
+  const h = Number(new Date().toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }));
   if (h !== majAuto.heure) return;
   await verifierDerniereVersion();
   if (!infosVersion().majDisponible) return;
@@ -3020,7 +3036,7 @@ app.get('/api/signalements/publics', (req, res) => {
 app.get('/main-courante', (req, res) => {
   if (!estMembre(req)) return res.status(401).send('Connexion requise');
   const e = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const h = (t) => new Date(t).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const h = (t) => new Date(t).toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   const lignes = [];
   for (const x of signalements.lister()) {
     lignes.push([x.cree, `${x.icone} ${e(x.titre)}`, e(x.details), `${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}`, e(x.auteur) + (x.source === 'radio' ? ' (reçu par radio)' : ''), [...(x.envois.mt || []).map((v) => `Meshtastic canal ${v.canal} : ${v.statut === 'envoye' ? 'envoyé' : 'échec'}`), x.envois.mc ? `MeshCore : ${x.envois.mc.statut === 'envoye' ? 'envoyé' : 'échec'}` : ''].filter(Boolean).join(' · ')]);

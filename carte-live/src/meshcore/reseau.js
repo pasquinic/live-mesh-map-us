@@ -494,7 +494,7 @@ function creerReseauMc(db, config, canauxInitiaux, journal = () => {}) {
     const filtre = zone ? ` AND p.rowid IN (SELECT r.paquet FROM mc_receptions r JOIN mc_noeuds o ON o.cle = r.observateur WHERE r.heure >= @d AND o.lat BETWEEN ${z[0]} AND ${z[2]} AND o.lon BETWEEN ${z[1]} AND ${z[3]})` : '';
     const P = { d: depuis };
     const parType = db.prepare(`SELECT p.type, COUNT(*) AS nb, SUM(p.taille) AS octets, SUM(p.nb_receptions) AS receptions FROM mc_paquets p WHERE p.heure >= @d${filtre} GROUP BY p.type ORDER BY nb DESC`).all(P)
-      .map((r) => ({ ...r, airtimeS: Math.round(r.nb * tempsEmission(Math.round((r.octets || 0) / Math.max(r.nb, 1)), 'MESHCORE_FR') * 10) / 10 }));
+      .map((r) => ({ ...r, airtimeS: Math.round(r.nb * tempsEmission(Math.round((r.octets || 0) / Math.max(r.nb, 1)), 'MESHCORE_US') * 10) / 10 }));
     const emetteurs = db.prepare(`SELECT p.de, n.nom, n.role, COUNT(*) AS nb, SUM(p.taille) AS octets, MIN(p.sauts) AS sauts_min,
         SUM(CASE WHEN p.type = 'ADVERT' THEN 1 ELSE 0 END) AS annonces
         FROM mc_paquets p LEFT JOIN mc_noeuds n ON n.cle = p.de WHERE p.heure >= @d AND p.de IS NOT NULL${filtre} GROUP BY p.de ORDER BY nb DESC LIMIT 40`).all(P);

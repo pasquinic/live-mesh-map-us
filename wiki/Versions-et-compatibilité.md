@@ -1,24 +1,24 @@
-# Versions et compatibilité
+# Versions and compatibility
 
-La carte suit les **versions stables** des firmwares. Les versions de test (alpha) sont décodées dès que possible, mais ne sont pas conseillées sur un réseau en service.
+The map follows the **stable versions** of the firmware. Test versions (alpha) are decoded as soon as possible, but are not recommended on a network in service.
 
 ## Meshtastic
-- **Conseillé : la dernière 2.7 stable** (2.7.26 en novembre 2026). Firmware 2.5 au moins pour l'administration à distance chiffrée (clés d'administration, équipes) ; 2.7.11 au moins pour les **favoris entre relais** (sauts gratuits, « Zero-Cost Hops »).
-- **Série 2.8 (alpha, en test)** : la carte la reconnaît déjà.
-  - **Paquets signés** : quand la passerelle qui reçoit un paquet a vérifié la signature de l'expéditeur, le paquet porte le badge **✍ signé** dans le trafic et dans son détail.
-  - **Position privée par défaut** : un nœud passé en 2.8 sans réglage de sa position peut ne plus apparaître à sa place sur la carte. Ce n'est pas une panne de la carte : il faut rendre la position publique sur le nœud (canal principal, précision de position).
-  - **Nouveaux presets** connus de la carte (noms, calculs de portée et de temps d'antenne) : MediumTurbo (hors bande EU_868), presets *Lite* de la région EU_866 et *Narrow* (62,5 kHz) de la région **EU_N_868**. NarrowSlow et NarrowFast sont proposés dans l'étude de couverture.
-  - *Gérer › Firmware* liste à part les relais déjà en 2.8, et ne propose que la dernière version **stable** par défaut.
-  - La 2.8.0 a été retirée par Meshtastic (défaut de signature) : ne pas l'installer, passer à 2.8.1 ou plus si vous testez la série 2.8.
-- Les définitions de messages (protobufs) de la carte sont alignées sur celles de Meshtastic de novembre 2026 : les champs nouveaux sont lus, les anciens firmwares restent compris.
+- **Recommended: the latest stable 2.7** (2.7.26 in November 2026). Firmware 2.5 at least for encrypted remote administration (admin keys, teams); 2.7.11 at least for **favorites between relays** (free hops, “Zero-Cost Hops”).
+- **2.8 series (alpha, in test)**: the map already recognises it.
+  - **Signed packets**: when the gateway receiving a packet has verified the sender's signature, the packet carries the **✍ signed** badge in the traffic list and in its details.
+  - **Position private by default**: a node moved to 2.8 without setting its position may no longer appear in its place on the map. This is not a map failure: the position must be made public on the node (primary channel, position precision).
+  - **New presets** known to the map (names, range and airtime computations): MediumTurbo (outside the EU_868 band), *Lite* presets of the EU_866 region and *Narrow* (62.5 kHz) of the **EU_N_868** region. NarrowSlow and NarrowFast are offered in the coverage study.
+  - *Manage › Firmware* lists relays already on 2.8 separately, and only suggests the latest **stable** version by default.
+  - 2.8.0 was withdrawn by Meshtastic (signing bug): don't install it, move to 2.8.1 or later if you are testing the 2.8 series.
+- The map's message definitions (protobufs) are aligned with Meshtastic's of November 2026: new fields are read, old firmware is still understood.
 
 ## MeshCore
-- La carte lit le protocole radio et le protocole companion de MeshCore (répéteurs, room servers, capteurs) et suit les firmwares **1.x** stables. Les versions 1.16 à 1.18 (contrôle du flood en Europe, nouvelle écoute avant émission, configuration en JSON, nœuds capteurs) ne changent pas ce que la carte utilise. Elles n'ont pas encore été essayées une à une avec l'administration à distance de la carte : en cas d'écart, le journal de l'opération montre la réponse du répéteur.
-- Réglage français conservé : 869,618 MHz, 62,5 kHz, SF8, CR8 (étude de couverture : « MeshCore France »).
+- The map reads MeshCore's radio protocol and companion protocol (repeaters, room servers, sensors) and follows stable **1.x** firmware. Versions 1.16 to 1.18 (flood control in Europe, new listen before talk, JSON configuration, sensor nodes) don't change what the map uses. They have not yet been tried one by one with the map's remote administration: if something differs, the operation log shows the repeater's answer.
+- US/Canada recommended setting by default: 910.525 MHz, 62.5 kHz, SF7, CR5 (coverage study: “MeshCore US/Canada”); the EU narrow setting (869.618 MHz, SF8, CR8) is still offered.
 
-## Ce qui est suivi, pas encore utilisé
-- Intégration TAK (ATAK / iTAK) de l'appli Meshtastic iOS.
-- pyMC (MeshCore en Python sous Linux), modem KISS, mode « Companion Repeat ».
-- Interface embarquée BaseUI des nœuds à écran.
+## Followed, not used yet
+- TAK integration (ATAK / iTAK) of the Meshtastic iOS app.
+- pyMC (MeshCore in Python on Linux), KISS modem, “Companion Repeat” mode.
+- BaseUI on-device interface for nodes with a screen.
 
-Elles seront prises en compte quand elles seront stables et utiles à la carte.
+They will be taken into account when they are stable and useful to the map.

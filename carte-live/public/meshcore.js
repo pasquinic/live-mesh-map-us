@@ -487,7 +487,7 @@ function mcLigneMessage(m) {
   const lieu = m.genre === 'direct' ? 'Direct' : m.canal || '';
   const nouv = typeof msgNouveaux !== 'undefined' && msgNouveaux.has('mc' + (m.id != null ? m.id : m.heure + (m.nomDe || '')));
   return `<div class="paquet mc message-mc ${m.sens}${nouv ? ' nouveau' : ''}" ${m.genre === 'direct' && m.sens === 'recu' && m.de ? `data-mc-repondre="${m.de}"` : m.genre === 'canal' && m.indexCanal != null ? `data-mc-canal="${m.indexCanal}"` : ''}>
-    <div class="entete"><span class="heure">${new Date(m.heure).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><span class="tag canal-msg${m.genre === 'direct' ? ' direct' : ''}" ${m.genre !== 'direct' && typeof couleurCanal === 'function' ? `style="--coul:${couleurCanal(m.canal)}"` : ''}><i style="background:${m.genre === 'direct' ? MC_TYPES.message.hex : MC_TYPES.canal.hex}"></i>${esc(lieu)}</span>${nouv ? '<span class="etiquette-nouveau">nouveau</span>' : ''}${mcTagRegion(m.region)}${estRelaye(m.texte) ? '<span class="badge-passerelle" title="Relayé par une passerelle inter-réseaux">⇄ passerelle</span>' : ''}
+    <div class="entete"><span class="heure">${new Date(m.heure).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><span class="tag canal-msg${m.genre === 'direct' ? ' direct' : ''}" ${m.genre !== 'direct' && typeof couleurCanal === 'function' ? `style="--coul:${couleurCanal(m.canal)}"` : ''}><i style="background:${m.genre === 'direct' ? MC_TYPES.message.hex : MC_TYPES.canal.hex}"></i>${esc(lieu)}</span>${nouv ? '<span class="etiquette-nouveau">nouveau</span>' : ''}${mcTagRegion(m.region)}${estRelaye(m.texte) ? '<span class="badge-passerelle" title="Relayé par une passerelle inter-réseaux">⇄ passerelle</span>' : ''}
     ${m.sauts != null ? `<span>${m.sauts === 0 ? 'direct' : m.sauts + ' saut' + (m.sauts > 1 ? 's' : '')}</span>` : ''}${m.sens === 'envoye' ? `<span class="statut-msg ${m.statut || ''}">${STATUTS_MSG[m.statut] || ''}${m.relais > 1 ? ' ×' + m.relais : ''}</span>` : ''}</div>
     <div class="corps">${qui} : <span translate="no">${texteMessageHtml(m.texte, m.sens === 'envoye' ? m.nomDe || 'moi' : m.nomDe, m.heure)}</span></div></div>`;
 }
@@ -514,7 +514,7 @@ async function mcRendreAnalyse() {
     <h4>Par type</h4><div class="repartition">
     ${a.parType.map((t) => { const x = mcType(t.type); return `<div class="barre-port"><span>${esc(x.nom)}</span><div class="piste"><i style="width:${(t.nb / max) * 100}%;background:${x.hex}"></i></div><span class="nb">${t.nb}</span></div>`; }).join('') || '<div class="vide">Aucun paquet.</div>'}</div>
     <h4>Activité par heure</h4>
-    <div class="histo-mc">${a.parHeure.map((x) => `<i style="height:${Math.max(4, (x.nb / maxH) * 100)}%" title="${new Date(x.h).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit' })} h : ${x.nb} paquets"></i>`).join('')}</div>
+    <div class="histo-mc">${a.parHeure.map((x) => `<i style="height:${Math.max(4, (x.nb / maxH) * 100)}%" title="${new Date(x.h).toLocaleString('en-US', { weekday: 'short', hour: '2-digit' })} h : ${x.nb} paquets"></i>`).join('')}</div>
     <h4>Nombre de sauts (paquets en inondation)</h4><div class="repartition">
     ${a.sauts.map((x) => `<div class="barre-port"><span>${x.sauts === 0 ? 'direct' : x.sauts + ' saut' + (x.sauts > 1 ? 's' : '')}</span><div class="piste"><i style="width:${(x.nb / maxS) * 100}%;background:#fb923c"></i></div><span class="nb">${x.nb}</span></div>`).join('')}</div>
     <h4>Émetteurs identifiés les plus actifs</h4>
@@ -560,7 +560,7 @@ async function mcFicheMaintenance() {
       <label class="case"><input type="checkbox" name="actif" ${c.actif ? 'checked' : ''}> Vérifier chaque nuit vers 3 h les répéteurs à mot de passe mémorisé (${memo.length})</label>
       <div class="actions-prop"><button type="submit" class="principal">Enregistrer</button><button type="button" id="mc-conf-maintenant">Vérifier maintenant</button></div>
       <p class="erreur" id="mc-conf-retour"></p></form>` : ''}
-    ${d ? `<p>Dernière vérification le ${new Date(d.date).toLocaleString('fr-FR')} : <b>${d.conformes.length} conforme(s)</b>, ${d.ecarts.length} avec écarts, ${d.nonLus.length} non lu(s).</p>${d.ecarts.map((e) => `<div class="alerte attention">${esc(e.nom)} : ${esc(e.ecarts.map((x) => `${x.element} = ${x.valeur} au lieu de ${x.reference}`).join(' ; '))}</div>`).join('')}${d.nonLus.length ? `<p class="note">Non lus : ${esc(d.nonLus.map((x) => x.nom).join(', '))}</p>` : ''}` : '<p class="note">Pas encore de vérification automatique.</p>'}`;
+    ${d ? `<p>Dernière vérification le ${new Date(d.date).toLocaleString('en-US')} : <b>${d.conformes.length} conforme(s)</b>, ${d.ecarts.length} avec écarts, ${d.nonLus.length} non lu(s).</p>${d.ecarts.map((e) => `<div class="alerte attention">${esc(e.nom)} : ${esc(e.ecarts.map((x) => `${x.element} = ${x.valeur} au lieu de ${x.reference}`).join(' ; '))}</div>`).join('')}${d.nonLus.length ? `<p class="note">Non lus : ${esc(d.nonLus.map((x) => x.nom).join(', '))}</p>` : ''}` : '<p class="note">Pas encore de vérification automatique.</p>'}`;
   const f = $('#f-mc-conf');
   if (!f) return;
   const valeurs = () => ({ reference: f.reference.value || null, actif: f.actif.checked, elements: [...f.querySelectorAll('input[name="el"]:checked')].map((x) => x.value) });
@@ -759,11 +759,11 @@ Notez-le : sans lui, il faudra repasser par l’USB.`))) return;
     zone.innerHTML = `<form class="form-edit outil-mc"><h4>🗺️ Régions · ${esc(noms.join(', '))}</h4>
       ${rg ? `<p class="note">Lu ${ilYa(rg.heure)} · attache : <b>${esc(rg.home || '?')}</b> · envois limités à : <b>${esc(rg.defaut || '?')}</b></p><pre class="cli-mc">${esc(rg.arbre || '(aucune région)')}</pre>` : '<p class="note">Régions jamais lues sur ce nœud : « Lire » d’abord.</p>'}
       <p class="note">Une action par ligne (firmware répéteur 1.10 et plus) :<br>
-        <span class="mono">put haute-loire</span> créer (parent facultatif : <span class="mono">put lpy haute-loire</span>) ·
-        <span class="mono">allowf haute-loire</span> / <span class="mono">denyf haute-loire</span> relayer ou bloquer ses inondations (<span class="mono">*</span> = paquets sans région) ·
-        <span class="mono">home haute-loire</span> région d’attache · <span class="mono">default haute-loire</span> limiter ses propres envois (<span class="mono">default &lt;null&gt;</span> pour retirer) ·
-        <span class="mono">remove nom</span> supprimer · <span class="mono">def eu fr fr-ara fr-43</span> créer un arbre en une ligne. Les changements sont enregistrés (<span class="mono">region save</span>) puis relus.</p>
-      <textarea name="actions" rows="4" placeholder="put haute-loire&#10;allowf haute-loire&#10;home haute-loire"></textarea>
+        <span class="mono">put az-phoenix</span> créer (parent facultatif : <span class="mono">put phx az-phoenix</span>) ·
+        <span class="mono">allowf az-phoenix</span> / <span class="mono">denyf az-phoenix</span> relayer ou bloquer ses inondations (<span class="mono">*</span> = paquets sans région) ·
+        <span class="mono">home az-phoenix</span> région d’attache · <span class="mono">default az-phoenix</span> limiter ses propres envois (<span class="mono">default &lt;null&gt;</span> pour retirer) ·
+        <span class="mono">remove nom</span> supprimer · <span class="mono">def us us-az az-phoenix</span> créer un arbre en une ligne. Les changements sont enregistrés (<span class="mono">region save</span>) puis relus.</p>
+      <textarea name="actions" rows="4" placeholder="put az-phoenix&#10;allowf az-phoenix&#10;home az-phoenix"></textarea>
       <div class="actions-prop"><button class="principal">Appliquer et relire</button><button type="button" data-lire>Lire seulement</button><button type="button" data-fermer>Annuler</button></div>${pied}</form>`;
     const f = zone.querySelector('form');
     const actions = () => mcLireActionsRegions(f.actions.value);
@@ -786,7 +786,7 @@ Notez-le : sans lui, il faudra repasser par l’USB.`))) return;
       <p class="note">Applique un modèle, l’identification du répéteur et un nouveau mot de passe admin en une seule opération, puis met à l’heure (et redémarre si le modèle le prévoit).</p>
       <div class="grille-edit">
         <label>Modèle <select name="modele"><option value="">(aucun : identification seulement)</option>${l.map((m) => `<option value="${m.id}">${esc(m.nom)}</option>`).join('')}</select></label>
-        <label>Nom <input name="name" maxlength="31" value="${esc(v.name || n.nom || '')}" placeholder="ex. FR43PYVE_Rep"></label>
+        <label>Nom <input name="name" maxlength="31" value="${esc(v.name || n.nom || '')}" placeholder="e.g. PHX-NorthMtn-Rep"></label>
         <label>Latitude <input name="lat" inputmode="decimal" value="${esc(v.lat || (n.lat != null ? n.lat.toFixed(6) : ''))}"></label>
         <label>Longitude <input name="lon" inputmode="decimal" value="${esc(v.lon || (n.lon != null ? n.lon.toFixed(6) : ''))}"></label>
         <label style="grid-column:1/-1">Contact (infos propriétaire) <input name="owner" maxlength="120" value="${esc(v['owner.info'] || '')}" placeholder="E-Mail|Telegram|INDICATIF"></label>
@@ -817,7 +817,7 @@ Notez-le : sans lui, il faudra repasser par l’USB.`))) return;
       <form class="form-edit"><h4>Nouveau modèle${source && source.valeurs ? ` <small>(prérempli avec ${esc(noms[0])})</small>` : ''}</h4>
         <div class="grille-edit"><label>Nom <input name="nom" required maxlength="40" placeholder="ex. Répéteur point haut"></label><label>Description <input name="description" maxlength="200"></label></div>
         <div class="grille-edit reglages-modele">${info.params.filter((p) => !['name', 'lat', 'lon', 'owner.info'].includes(p.cle)).map((p) => `<label>${esc(p.nom)}${p.redemarrage ? ' <small>(redémarrage)</small>' : ''} <input name="${p.cle}" value="${esc(source && source.valeurs && source.valeurs[p.cle] != null ? source.valeurs[p.cle] : '')}" placeholder="non inclus"></label>`).join('')}</div>
-        <label>Régions (une action par ligne, facultatif)<textarea name="regions" rows="3" placeholder="def eu fr fr-ara fr-43&#10;default fr&#10;home fr"></textarea></label>
+        <label>Régions (une action par ligne, facultatif)<textarea name="regions" rows="3" placeholder="def us us-az az-phoenix&#10;default us&#10;home us"></textarea></label>
         <label class="case"><input type="checkbox" name="horloge" checked> Mettre à l’heure</label>
         <label class="case"><input type="checkbox" name="redemarrer"> Redémarrer à la fin (nécessaire pour certains réglages)</label>
         <p class="note">Laissez vide ce qui ne doit pas être changé. Nom, position, infos propriétaire et mot de passe ne font jamais partie d’un modèle : ils se règlent avec « Mise en service ».</p>
@@ -860,7 +860,7 @@ function mcSuivreTache(id, zone, apres) {
 function mcHtmlTache(t) {
   const enCours = ['en_cours', 'en_attente', 'reprise'].includes(t.statut);
   const r = t.rapport;
-  const hm = (x) => new Date(x).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const hm = (x) => new Date(x).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const res = t.resultats || {};
   return `<div class="tache-mc ${t.statut}">
     <div class="titre-tache"><b>${esc(MC_TACHES[t.type] || t.type)}</b> · ${MC_STATUTS[t.statut] || t.statut}${t.prochainEssai ? ` à ${hm(t.prochainEssai)}` : ''}${t.insister && t.statut !== 'reprise' ? ' · insiste 2 h' : ''}${t.courant ? ` · ${esc(t.noms[t.courant] || '')}` : ''}${enCours ? ' <span class="sablier"></span> <button class="mini" data-mc-arreter>Arrêter</button>' : ''}</div>
@@ -996,7 +996,7 @@ function mcHtmlOutils() {
     ${o.telemetrie ? `<div class="grille">${o.telemetrie.map((m) => `<div class="mesure"><span>${esc(MC_LPP[m.type] || m.type)}${m.canal > 1 ? ' · ' + m.canal : ''}</span><b>${typeof m.valeur === 'number' ? fmt(m.valeur, m.unite === 'V' ? 2 : 1) : esc(JSON.stringify(m.valeur))} ${esc(m.unite)}</b></div>`).join('') || '<div class="vide">Aucune mesure.</div>'}</div>` : ''}
     <details class="outils-mc"${o.ouvert ? ' open' : ''}><summary>Région et réglages du companion</summary>
       <form id="mc-f-zone" class="envoi-ligne" title="Les messages envoyés en inondation par le companion ne seront relayés que par les répéteurs qui acceptent cette région (firmware 1.10+)">
-        <input name="zone" placeholder="${o.zone === undefined ? 'région (ex. haute-loire), vide = aucune' : o.zone ? esc(o.zone) : 'aucune région'}" autocomplete="off"><button>Définir la région</button><button type="button" data-mc-outil="zone-lire">Lire</button>
+        <input name="zone" placeholder="${o.zone === undefined ? 'région (ex. az-phoenix), vide = aucune' : o.zone ? esc(o.zone) : 'aucune région'}" autocomplete="off"><button>Définir la région</button><button type="button" data-mc-outil="zone-lire">Lire</button>
       </form>
       <p class="note">Région actuelle : <b>${o.zone === undefined ? 'non lue' : o.zone ? esc(o.zone) : 'aucune (envois sans limite de région)'}</b>. Le nom doit être celui que les répéteurs connaissent (<span class="mono">region home</span> / <span class="mono">region put</span>).</p>
       <div class="envoi-ligne"><input id="mc-cli-local" placeholder="commande sur le companion : ver, board, get name, get wifi.status, get wifi.ip…" autocomplete="off"><button data-mc-outil="cli">Envoyer</button></div>
@@ -1203,10 +1203,10 @@ function mcRendreCompanion() {
     <div class="note">${e.republication.actif ? `${e.republication.connecte ? '● connecté' : '○ en attente'} · ${e.republication.publies} paquet(s) publié(s) sur <span class="mono">${esc(e.republication.sujet)}</span>${e.republication.refus ? ` · <b style="color:var(--attention)">${esc(e.republication.refus)}</b>` : ''}` : 'désactivée'}</div>
     <form id="mc-f-reglages" class="form-edit">
       <div class="grille-edit">
-        <label>Code de zone (IATA) <input name="iata" value="${esc(e.reglages.iata)}" maxlength="8"><small>LPY = Le Puy</small></label>
+        <label>Code de zone (IATA) <input name="iata" value="${esc(e.reglages.iata)}" maxlength="8"><small>PHX = Phoenix, SEA = Seattle…</small></label>
         <label>Racine des sujets <input name="racine" value="${esc(e.reglages.racine)}"></label>
         <label class="case"><input type="checkbox" name="republier" ${e.reglages.republier ? 'checked' : ''}> Republier les paquets du companion</label>
-        <label>Paquets conservés <select name="perimetre">${[['departement', 'captés dans le département'], ['voisins', 'captés dans le département et ses voisins'], ['national', 'tout le flux national (lourd)']].map(([v, t]) => `<option value="${v}" ${e.reglages.perimetre === v ? 'selected' : ''}>${t}</option>`).join('')}</select><small>${e.reglages.horsPerimetre ? `${e.reglages.horsPerimetre} paquets ignorés depuis le démarrage` : 'selon la position de l’observateur qui les capte'}</small></label>
+        <label>Paquets conservés <select name="perimetre">${[['departement', 'heard in the county'], ['voisins', 'heard in the county and its neighbours'], ['national', 'tout le flux national (lourd)']].map(([v, t]) => `<option value="${v}" ${e.reglages.perimetre === v ? 'selected' : ''}>${t}</option>`).join('')}</select><small>${e.reglages.horsPerimetre ? `${e.reglages.horsPerimetre} paquets ignorés depuis le démarrage` : 'selon la position de l’observateur qui les capte'}</small></label>
         <label>Codes de zone voisins <input name="iataVoisins" value="${esc(e.reglages.iataVoisins || '')}" placeholder="ex. CFE, LYS, EBU"><small>pour les observateurs sans position connue</small></label>
         <label style="grid-column:1/-1">Canaux à déchiffrer (un par ligne) <textarea name="canaux" rows="3">${esc(e.reglages.canaux)}</textarea><small>Public · #nom (canal « hashtag ») · nom=secret (32 caractères hexadécimaux)</small></label>
       </div>
@@ -1544,7 +1544,7 @@ async function mcOuvrirFiche(cle, ongletInitial) {
     ['Dernier entendu', ilYa(n.dernierVu)], ['Dernière annonce', n.derniereAnnonce ? ilYa(n.derniereAnnonce) : '–'],
     ['Sauts (min.)', n.sautsMin == null ? '–' : n.sautsMin === 0 ? 'Direct' : n.sautsMin],
     ['SNR direct', fmt(n.snr, 1, ' dB')], ['RSSI direct', fmt(n.rssi, 0, ' dBm')],
-    ['Vu la 1re fois', n.premierVu ? new Date(n.premierVu).toLocaleDateString('fr-FR') : '–'],
+    ['Vu la 1re fois', n.premierVu ? new Date(n.premierVu).toLocaleDateString('en-US') : '–'],
   ];
   if (n.observateur) mesures.push(['Observateur', n.etatObservateur === 'offline' ? 'hors ligne' : 'en ligne'], ['Matériel', obs.modele || '–'], ['Firmware', obs.firmware || '–']);
   const voisins = d.voisins.slice(0, 40).map((v) => `<tr data-mc="${v.cle}"><td><span style="color:${v.snrEntendu ?? v.snrEmis != null ? couleurSnr(v.snrEntendu ?? v.snrEmis) : '#fb923c'}">●</span> ${esc(v.nom || v.cle.slice(0, 8))}</td>
@@ -1615,12 +1615,12 @@ async function mcOuvrirFiche(cle, ongletInitial) {
     setTimeout(() => { const t = $('#mc-texte'); if (t) t.focus(); }, 400);
   };
   const c = $('#mc-centrer'); if (c) c.onclick = () => carte.flyTo([n.lat, n.lon], Math.max(carte.getZoom(), 12));
-  const cv = $('#mc-couv'); if (cv) cv.onclick = () => voirCouvertureSite({ lat: n.lat, lon: n.lon }, n.nom || n.id, Number($('#mc-h').value) || 2, { cadrer: true, preset: 'MESHCORE_FR' });
+  const cv = $('#mc-couv'); if (cv) cv.onclick = () => voirCouvertureSite({ lat: n.lat, lon: n.lon }, n.nom || n.id, Number($('#mc-h').value) || 2, { cadrer: true, preset: 'MESHCORE_US' });
   zc.querySelectorAll('tr[data-mc]').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('[data-mc-profil]')) mcOuvrirFiche(tr.dataset.mc); }));
   zc.querySelectorAll('[data-mc-profil]').forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     const o = mc.noeuds.get(b.dataset.mcProfil);
-    ouvrirProfilCoords({ lat: n.lat, lon: n.lon, nom: n.nom || n.id, h: n.infrastructure ? 6 : 2 }, { lat: o.lat, lon: o.lon, nom: o.nom || o.id, h: o.infrastructure ? 6 : 2 }, 'MESHCORE_FR');
+    ouvrirProfilCoords({ lat: n.lat, lon: n.lon, nom: n.nom || n.id, h: n.infrastructure ? 6 : 2 }, { lat: o.lat, lon: o.lon, nom: o.nom || o.id, h: o.infrastructure ? 6 : 2 }, 'MESHCORE_US');
   }));
 }
 
@@ -1645,7 +1645,7 @@ async function mcOuvrirPaquet(id) {
   const champs = [
     ['Hachage', d.hachage], ['Type', `${p.typeFr} (${p.type}, ${(p.entete >> 2) & 15})`], ['Routage', p.routeFr], ['Version', 'v' + p.version],
     ['Taille', `${p.taille} octets (charge ${p.tailleCharge})`], ['Chemin', p.chemin.length ? `${p.chemin.length} saut(s), hachages de ${p.tailleHachage} octet(s)` : p.type === 'TRACE' ? 'trace' : 'aucun (0 saut)'],
-    ['Reçu', `${d.nbReceptions} fois · ${new Date(d.heure).toLocaleString('fr-FR')}`],
+    ['Reçu', `${d.nbReceptions} fois · ${new Date(d.heure).toLocaleString('en-US')}`],
   ];
   if (p.transport) champs.push(['Codes de transport', p.transport.join(', ')]);
   if (p.region) champs.push(['Région (étiquette)', p.region === '-' ? 'aucune (inondation sans région)' : p.region === '?' ? 'inconnue de la carte' : p.region]);
@@ -1654,7 +1654,7 @@ async function mcOuvrirPaquet(id) {
     hachageCanal: 'Hachage du canal', canal: 'Canal', expediteur: 'Expéditeur', texte: 'Texte', dechiffre: 'Déchiffré', sousType: 'Sous-type',
     vers: 'Destinataire (préfixe)', de: 'Émetteur (préfixe)', chiffre: 'Chiffré', cleExpediteur: 'Clé de l’émetteur', controle: 'Contrôle',
     etiquette: 'Étiquette', auth: 'Code d’auth.', route: 'Route', donnees: 'Données',
-  }[k] || k, k === 'horodatage' ? `${v} (${new Date(v * 1000).toLocaleString('fr-FR')})` : typeof v === 'boolean' ? (v ? 'oui' : 'non') : Array.isArray(v) ? v.join(' › ') : k === 'drapeaux' ? '0x' + Number(v).toString(16).toUpperCase() : String(v)]);
+  }[k] || k, k === 'horodatage' ? `${v} (${new Date(v * 1000).toLocaleString('en-US')})` : typeof v === 'boolean' ? (v ? 'oui' : 'non') : Array.isArray(v) ? v.join(' › ') : k === 'drapeaux' ? '0x' + Number(v).toString(16).toUpperCase() : String(v)]);
   z.innerHTML = `
     <h3><span class="tag"><i style="background:${t.hex}"></i>${esc(t.nom)}</span> ${esc(d.resume || '')}</h3>
     <div class="grille">${champs.map(([l, v]) => `<div class="mesure"><span>${esc(l)}</span><b class="${l === 'Hachage' ? 'mono' : ''}">${esc(v)}</b></div>`).join('')}</div>

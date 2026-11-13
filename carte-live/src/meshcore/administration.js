@@ -54,7 +54,7 @@ function valeurValide(p, v) {
   if (p.type === 'liste') { if (!p.valeurs.some(([x]) => x === v)) throw new Error(`${p.nom} : valeur inconnue`); return v; }
   if (p.type === 'radio') {
     const m = /^(\d{3}(?:\.\d{1,4})?),(\d+(?:\.\d+)?),(\d{1,2}),(\d)$/.exec(v.replace(/\s/g, ''));
-    if (!m || +m[3] < 5 || +m[3] > 12 || +m[4] < 5 || +m[4] > 8) throw new Error('Radio : fréquence,bande,SF,CR (ex. 869.618,62.5,8,8)');
+    if (!m || +m[3] < 5 || +m[3] > 12 || +m[4] < 5 || +m[4] > 8) throw new Error('Radio: frequency,bandwidth,SF,CR (e.g. 910.525,62.5,7,5)');
     return `${m[1]},${m[2]},${m[3]},${m[4]}`;
   }
   let n = Number(v.replace(',', '.'));
@@ -299,7 +299,7 @@ function creerAdministrationMc(config, companion, reseauMc, journal, surFin = ()
     lectures[n.cle] = { ...(lectures[n.cle] || {}), trace: { sauts, dureeMs: r.dureeMs, heure: Date.now() } };
     ecrire(fLectures, lectures);
     t.resultats[n.cle] = { ...(t.resultats[n.cle] || {}), trace: sauts };
-    const f = (v) => (v > 0 ? '+' : '') + String(v).replace('.', ',');
+    const f = (v) => (v > 0 ? '+' : '') + String(v);
     etape(t, n.cle, `${sauts.map((x, i) => (i === 0 ? x.de.nom : '') + ` ─(${f(x.snr)} dB)→ ${x.vers.nom}`).join('')} · ${(r.dureeMs / 1000).toFixed(1)} s`);
   }
 
@@ -412,7 +412,7 @@ function creerAdministrationMc(config, companion, reseauMc, journal, surFin = ()
             ecrire(fLectures, lectures);
             t.resultats[n.cle] = { ...(t.resultats[n.cle] || {}), telemetrie: l };
             const LIB = { tension: 'tension', temperature: 'température', humidite: 'humidité', pression: 'pression', courant: 'courant', pourcentage: 'charge', luminosite: 'luminosité' };
-            etape(t, n.cle, l.length ? l.map((m) => `${LIB[m.type] || m.type}${m.canal > 1 ? ' (canal ' + m.canal + ')' : ''} ${typeof m.valeur === 'object' ? JSON.stringify(m.valeur) : String(m.valeur).replace('.', ',')} ${m.unite}`.trim()).join(' · ') : 'aucune mesure renvoyée');
+            etape(t, n.cle, l.length ? l.map((m) => `${LIB[m.type] || m.type}${m.canal > 1 ? ' (canal ' + m.canal + ')' : ''} ${typeof m.valeur === 'object' ? JSON.stringify(m.valeur) : String(m.valeur)} ${m.unite}`.trim()).join(' · ') : 'aucune mesure renvoyée');
             const v = l.find((m) => m.type === 'tension' && m.canal === 1);
             if (v) reseauMc.noterEtat(n.cle, { batterieMv: Math.round(v.valeur * 1000) });
             for (const f of ecouteursTelemetrie) { try { f(n.cle, l); } catch (e) { journal('télémétrie :', e.message); } }
@@ -509,7 +509,7 @@ function creerAdministrationMc(config, companion, reseauMc, journal, surFin = ()
     if (aReprendre.length && Date.now() - t.creee < 2 * 3600000) {
       t.statut = 'reprise';
       t.prochainEssai = Date.now() + 10 * 60000;
-      etape(t, null, `${aReprendre.length} nœud(s) en échec : nouvel essai à ${new Date(t.prochainEssai).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' })}`);
+      etape(t, null, `${aReprendre.length} nœud(s) en échec : nouvel essai à ${new Date(t.prochainEssai).toLocaleTimeString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', minute: '2-digit' })}`);
       const minut = setTimeout(() => {
         t.prochainEssai = null;
         if (t.arret) { t.statut = 'annule'; t.motDePasse = null; t.secrets = {}; sauverTaches(); return; }
@@ -547,7 +547,7 @@ function creerAdministrationMc(config, companion, reseauMc, journal, surFin = ()
   // Traces de nuit (vers 3 h) vers les répéteurs surveillés : SNR de chaque liaison, suivi dans le temps
   let derniereTraceNuit = 0;
   setInterval(() => {
-    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }).slice(0, 2));
+    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }).slice(0, 2));
     if (h !== 3 || enCours || file.length || !companion.etat().pret || Date.now() - derniereTraceNuit < 20 * 3600000) return;
     derniereTraceNuit = Date.now();
     const cibles = reseauMc.surveilles(Object.keys(motsDePasse)).filter((n) => n.role === 'repeteur').slice(0, config.meshcore.supervisionMax).map((n) => n.cle);
@@ -558,11 +558,11 @@ function creerAdministrationMc(config, companion, reseauMc, journal, surFin = ()
   const fModeles = path.join(dossier, 'meshcore-modeles.json');
   let modeles = [];
   try { modeles = JSON.parse(fs.readFileSync(fModeles, 'utf8')); } catch {
-    // Premier lancement : configuration de base d'un répéteur du réseau français (régions eu › fr › fr-ara › fr-43)
+    // First start: base configuration of a US repeater (regions na › us; no duty-cycle limit on 915 MHz in the US)
     modeles = [{
-      id: 'base-repeteur-fr43', nom: 'Répéteur de base (FR-43)', description: 'Configuration de base d’un répéteur : annonces, AGC, accusés, cycle d’émission, hachages 2 octets, détection des boucles, sauts limités hors région, régions eu › fr › fr-ara › fr-43.',
-      valeurs: { 'advert.interval': '240', 'flood.advert.interval': '24', 'agc.reset.interval': '4', 'multi.acks': '1', dutycycle: '10', 'path.hash.mode': '1', 'loop.detect': 'minimal', 'flood.max.unscoped': '3', 'flood.max.advert': '5' },
-      regions: [{ op: 'def', nom: 'eu fr fr-ara fr-43' }, { op: 'default', nom: 'fr' }, { op: 'home', nom: 'fr' }],
+      id: 'base-repeteur-us', nom: 'Base repeater (US)', description: 'Base repeater configuration: adverts, AGC, acks, 2-byte path hashes, loop detection, limited hops outside a region, regions na › us. Add your state (e.g. us-az) as a child region.',
+      valeurs: { 'advert.interval': '240', 'flood.advert.interval': '24', 'agc.reset.interval': '4', 'multi.acks': '1', 'path.hash.mode': '1', 'loop.detect': 'minimal', 'flood.max.unscoped': '3', 'flood.max.advert': '5' },
+      regions: [{ op: 'def', nom: 'na us' }, { op: 'default', nom: 'us' }, { op: 'home', nom: 'us' }],
       horloge: true, redemarrer: true, auteur: 'carte', heure: Date.now(),
     }];
   }

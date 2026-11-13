@@ -6,9 +6,9 @@ const fs = require('fs');
 const path = require('path');
 
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (v, d = 1) => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d).replace('.', ','));
-const date = (t) => (t ? new Date(t).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–');
-const jour = (t) => new Date(t).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'short', day: '2-digit', month: '2-digit' });
+const fmt = (v, d = 1) => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d));
+const date = (t) => (t ? new Date(t).toLocaleString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix'), day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–');
+const jour = (t) => new Date(t).toLocaleDateString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix'), weekday: 'short', day: '2-digit', month: '2-digit' });
 
 function creerRapport(dep) {
   const { stockage, config, reseau, maintenance, journal } = dep;
@@ -64,13 +64,13 @@ function creerRapport(dep) {
 </style></head><body>
 <button class="imprimer" onclick="print()">Imprimer / PDF</button>
 <h1>Rapport hebdomadaire · ${esc(titre)}</h1>
-<p class="sous">Du ${new Date(debut).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} au ${new Date(fin).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} · ${esc(config.zoneNom || '')} · produit le ${date(fin)}</p>
+<p class="sous">Du ${new Date(debut).toLocaleDateString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix') })} au ${new Date(fin).toLocaleDateString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix') })} · ${esc(config.zoneNom || '')} · produit le ${date(fin)}</p>
 
 <div class="chiffres">
   <div><b>${relais.length - muets.length}/${relais.length}</b><span>relais et passerelles actifs</span></div>
   <div><b>${actifs7}</b><span>nœuds entendus dans la zone (7 j)</span></div>
   <div><b>${couv ? fmt(couv.pct) + ' %' : '–'}</b><span>couverture calculée du département</span></div>
-  <div><b>${totalPaquets.toLocaleString('fr-FR')}</b><span>paquets reçus (7 j)</span></div>
+  <div><b>${totalPaquets.toLocaleString('en-US')}</b><span>paquets reçus (7 j)</span></div>
   <div><b>${totalTextes}</b><span>messages texte</span></div>
   <div><b>${nouveaux.length}</b><span>nouveaux nœuds dans le secteur</span></div>
 </div>
@@ -98,7 +98,7 @@ ${section('Firmwares', fw ? `<p>Dernière version stable : <b>${esc(fw.reference
 
 ${mc ? section('MeshCore', `<p>${mc.repeteurs} répéteur(s) dans la zone, dont ${mc.actifs} actif(s) cette semaine · ${mc.noeuds} nœud(s) MeshCore entendus.</p>`) : ''}
 
-<p class="sous" style="margin-top:28px">Couverture et liaisons calculées d’après le relief IGN, les fiches d’installation et les mesures réelles du réseau. Rapport généré automatiquement par la carte live.</p>
+<p class="sous" style="margin-top:28px">Couverture et liaisons calculées d’après le relief USGS 3DEP, les fiches d’installation et les mesures réelles du réseau. Rapport généré automatiquement par la carte live.</p>
 </body></html>`;
     return html;
   }
@@ -113,7 +113,7 @@ ${mc ? section('MeshCore', `<p>${mc.repeteurs} répéteur(s) dans la zone, dont 
   }
   // Chaque lundi vers 7 h (heure de Paris)
   const minuterie = setInterval(() => {
-    const p = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+    const p = new Date(new Date().toLocaleString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix') }));
     if (p.getDay() !== 1 || p.getHours() !== 7) return;
     if (fs.existsSync(path.join(dossier, nomFichier(Date.now())))) return;
     try { archiver(); } catch (e) { journal('[Rapport] erreur :', e.message); }

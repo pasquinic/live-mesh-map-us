@@ -117,8 +117,10 @@ function ajouterRegions(noms) {
     REGIONS.push([n, crypto.createHash('sha256').update('#' + n, 'utf8').digest().subarray(0, 16)]);
   }
 }
-ajouterRegions(['eu', 'europe', 'fr', 'france', 'fr-ara', 'fr-bfc', 'fr-bre', 'fr-cvl', 'fr-cor', 'fr-ges', 'fr-hdf', 'fr-idf', 'fr-nor', 'fr-naq', 'fr-occ', 'fr-pdl', 'fr-pac', 'fr-paca',
-  ...Array.from({ length: 95 }, (_, i) => 'fr-' + String(i + 1).padStart(2, '0')), 'fr-2a', 'fr-2b', 'ch', 'be', 'it', 'es', 'de', 'lu', 'uk', 'nl']);
+// US edition: North America, the US and its states (both "us-az" and "az" spellings), then a few common names
+const ETATS_US = 'al ak az ar ca co ct de dc fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy pr'.split(' ');
+ajouterRegions(['na', 'north-america', 'us', 'usa', 'ca', 'canada', 'mx', ...ETATS_US.map((e) => 'us-' + e), ...ETATS_US,
+  'pnw', 'socal', 'norcal', 'bayarea', 'nyc', 'eu', 'uk']);
 function regionDuCode(typeN, charge, code) {
   for (let i = 0; i < REGIONS.length; i++) {
     const [nom, cle] = REGIONS[i];

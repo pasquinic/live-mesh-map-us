@@ -2,8 +2,8 @@
 // Carte publique allégée, à intégrer dans un site (iframe) : relais, passerelles, nœuds à position approchée,
 // liaisons radio, Meshtastic et MeshCore, avec l'animation en direct des paquets qui transitent.
 // Aucune donnée réservée aux membres (messages, positions exactes des particuliers).
-// Options d'adresse : ?reseau=meshtastic|meshcore|deux, ?animations=0, ?couverture=actuelle|sites, ?acces=voiture|4x4|pied|tous, ?fond=Plan IGN, ?clients=0 (masquer les nœuds),
-// ?liens=0 (masquer les liaisons), ?titre=…, ?zone=dep|v|france|r84 (région)|d63 (département)
+// Options d'adresse : ?reseau=meshtastic|meshcore|deux, ?animations=0, ?couverture=actuelle|sites, ?acces=voiture|4x4|pied|tous, ?fond=USGS Topo, ?clients=0 (masquer les nœuds),
+// ?liens=0 (masquer les liaisons), ?titre=…, ?zone=dep|v|france|r04 (state)|d04013 (county)
 const params = new URLSearchParams(location.search);
 const opt = { clients: params.get('clients') !== '0', liens: params.get('liens') !== '0' };
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,7 +27,7 @@ function distanceKm(a, b) {
 // ou toute la France (?zone=dep|v|r84|d63|france, retenu dans ce navigateur)
 let zoneSel = 'dep', departements = [];
 const regionSel = () => (/^r\d{2}$/.test(zoneSel) ? (config.regions || []).find((r) => 'r' + r.code === zoneSel) : null);
-const depSel = () => (/^d(\d{2}|2A|2B)$/.test(zoneSel) ? departements.find((d) => 'd' + d.code === zoneSel) : null);
+const depSel = () => (/^d(\d{5})$/.test(zoneSel) ? departements.find((d) => 'd' + d.code === zoneSel) : null);
 function bboxZone() {
   if (zoneSel === 'france') return null;
   if (zoneSel === 'v' && config.zoneVoisins) return config.zoneVoisins.bbox;
@@ -36,8 +36,8 @@ function bboxZone() {
   return config.zoneDep || config.zone;
 }
 function nomZone() {
-  if (zoneSel === 'france') return 'France';
-  if (zoneSel === 'v' && config.zoneVoisins) return `${config.zoneNom} et voisins`;
+  if (zoneSel === 'france') return 'Whole map';
+  if (zoneSel === 'v' && config.zoneVoisins) return `${config.zoneNom} and neighbours`;
   const r = regionSel(); if (r) return r.nom;
   const d = depSel(); if (d) return d.nom;
   return config.zoneNom;
@@ -104,19 +104,19 @@ async function demarrer() {
 // ---- Fonds de carte au choix (mêmes fonds que la carte complète) ----------------------------------
 function installerFonds() {
   const t = config.tuiles;
-  const wmts = (c, format = 'image/png', style = 'normal') => `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${c}&STYLE=${style}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${format}`;
-  const ign = '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> Géoplateforme';
+  const tnm = (service) => `https://basemap.nationalmap.gov/arcgis/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`;
+  const usgs = 'Map courtesy of the <a href="https://www.usgs.gov/programs/national-geospatial-program/national-map" target="_blank" rel="noopener">U.S. Geological Survey</a>';
   const fonds = {
     'Sombre': L.layerGroup([
       L.tileLayer(t.url, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: t.sombre ? 'tuiles-sombres' : '', attribution: t.attribution }),
       ...(t.etiquettes ? [L.tileLayer(t.etiquettes, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: 'etiquettes-claires' })] : []),
     ]),
-    'Plan IGN': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
-    'Plan IGN sombre': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, className: 'tuiles-sombres', attribution: ign }),
-    'Photos aériennes IGN': L.tileLayer(wmts('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
+    'USGS Topo': L.tileLayer(tnm('USGSTopo'), { maxZoom: 19, maxNativeZoom: 16, attribution: usgs }),
+    'USGS Topo sombre': L.tileLayer(tnm('USGSTopo'), { maxZoom: 19, maxNativeZoom: 16, className: 'tuiles-sombres', attribution: usgs }),
+    'USGS Imagery': L.tileLayer(tnm('USGSImageryTopo'), { maxZoom: 19, maxNativeZoom: 16, attribution: usgs }),
     'Topographique': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, maxNativeZoom: 17, subdomains: 'abc', attribution: 'Carte &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), données &copy; contributeurs OpenStreetMap' }),
   };
-  const surcouches = { 'Relief ombré': L.tileLayer(wmts('ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'image/png', 'estompage_grayscale'), { maxZoom: 19, maxNativeZoom: 15, opacity: 0.4, attribution: ign }) };
+  const surcouches = { 'Relief ombré': L.tileLayer(tnm('USGSShadedReliefOnly'), { maxZoom: 19, maxNativeZoom: 16, opacity: 0.4, attribution: usgs }) };
   let choix = params.get('fond') && fonds[params.get('fond')] ? params.get('fond') : 'Sombre';
   try { const c = localStorage.getItem('publique_fond'); if (!params.get('fond') && c && fonds[c]) choix = c; } catch { /* stockage indisponible */ }
   fonds[choix].addTo(carte);
@@ -127,7 +127,7 @@ function installerFonds() {
 // ---- Couverture radio : zone couverte aujourd'hui et emplacements conseillés pour de nouveaux relais --
 const couv = { hauteur: 6, dernierPoint: null, couche: null, mode: null, acces: ['voiture', '4x4', 'pied', 'tous'].includes(params.get('acces')) ? params.get('acces') : 'voiture', plan: null, imagePlan: null, siteChoisi: null };
 const NOM_ACCES = { voiture: 'accessibles en voiture', '4x4': 'accessibles en 4×4 ou en voiture', pied: 'accessibles à pied, en 4×4 ou en voiture', tous: 'tous les points hauts' };
-const pc = (v) => String(v).replace('.', ',');
+const pc = (v) => String(v);
 // Plan : emplacements conseillés selon l'accès choisi ; un clic sur une épingle montre la couverture de ce site seul
 async function afficherPlan(g, info) {
   const r = await fetch(avecDep(`/api/relief/plan?objectif=99&max=8&acces=${couv.acces}&realiste=1`)).then((x) => x.json());
@@ -166,7 +166,7 @@ async function couverturePoint(ll) {
   if (r.erreur) { info.innerHTML = ligne('Couverture indisponible : ' + esc(r.erreur)); brancher(); return; }
   const e = r.emprise;
   L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.65, pane: 'couverture', className: 'pixelise' }).addTo(g);
-  info.innerHTML = ligne(`${ll.lat.toFixed(4)}, ${ll.lng.toFixed(4)}${r.sol != null ? ' · sol à ' + r.sol + ' m' : ''}<br>Zone couverte : <b>${Math.round(r.surfaceKm2).toLocaleString('fr-FR')} km²</b>${r.pctZone != null ? `, soit <b>${pc(r.pctZone)} %</b> ${libZone()}` : ''}<br><small>Turquoise : bonne liaison · jaune : liaison juste · orange pâle : à la limite. Cliquez ailleurs pour un autre point.</small>`);
+  info.innerHTML = ligne(`${ll.lat.toFixed(4)}, ${ll.lng.toFixed(4)}${r.sol != null ? ' · sol à ' + r.sol + ' m' : ''}<br>Zone couverte : <b>${Math.round(r.surfaceKm2).toLocaleString('en-US')} km²</b>${r.pctZone != null ? `, soit <b>${pc(r.pctZone)} %</b> ${libZone()}` : ''}<br><small>Turquoise : bonne liaison · jaune : liaison juste · orange pâle : à la limite. Cliquez ailleurs pour un autre point.</small>`);
   brancher();
 }
 async function couvertureSite(x, g, info) {
@@ -181,7 +181,7 @@ async function couvertureSite(x, g, info) {
   const e = r.emprise;
   couv.siteChoisi = L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.65, pane: 'couverture', className: 'pixelise' }).addTo(g);
   info.innerHTML = `<b>${x.rang} · ${esc(x.nom || x.commune || 'Point haut')}</b>${x.commune && x.nom ? ' · ' + esc(x.commune) : ''} · ${x.alt} m<br>
-    Couverture de ce site seul : <b>${Math.round(r.surfaceKm2).toLocaleString('fr-FR')} km²</b>${r.pctZone != null ? `, soit <b>${pc(r.pctZone)} %</b> ${libZone()}` : ''} · il apporte <b>+${x.gainKm2} km²</b> au réseau actuel
+    Couverture de ce site seul : <b>${Math.round(r.surfaceKm2).toLocaleString('en-US')} km²</b>${r.pctZone != null ? `, soit <b>${pc(r.pctZone)} %</b> ${libZone()}` : ''} · il apporte <b>+${x.gainKm2} km²</b> au réseau actuel
     <br><small>Antenne à ${hs} m du sol, rayon de calcul ${r.rayonKm} km. Turquoise : bonne liaison · jaune : liaison juste · orange pâle : à la limite.</small>
     <div style="margin-top:6px"><button class="bascule" id="retour-plan">↩ Revenir au plan</button></div>`;
   document.getElementById('retour-plan').onclick = () => {
@@ -232,7 +232,7 @@ async function basculerCouverture(mode) {
       if (r.vide) { info.textContent = 'Aucun relais positionné entendu depuis 24 h.'; return; }
       const e = r.emprise;
       L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.6, pane: 'couverture', className: 'pixelise' }).addTo(g);
-      info.innerHTML = `<b>Couverture ${mcSeul ? 'MeshCore' : 'Meshtastic'} estimée</b>${r.pctZone != null ? ` : <b>${String(r.pctZone).replace('.', ',')} %</b> ${libZone()}` : ''} · ${r.noeuds.length} relais et passerelles<br><small>Calcul d’après le relief (IGN) et les antennes connues, corrigé par les mesures réelles du réseau.</small>`;
+      info.innerHTML = `<b>Couverture ${mcSeul ? 'MeshCore' : 'Meshtastic'} estimée</b>${r.pctZone != null ? ` : <b>${String(r.pctZone)} %</b> ${libZone()}` : ''} · ${r.noeuds.length} relais et passerelles<br><small>Calcul d’après le relief (IGN) et les antennes connues, corrigé par les mesures réelles du réseau.</small>`;
     } else {
       await afficherPlan(g, info);
       if (couv.mode !== mode) return;
@@ -249,24 +249,26 @@ function majTitre() {
   const base = params.get('titre') || config.titre || 'Réseau Meshtastic';
   const nomReseau = vue === 'meshcore' ? 'MeshCore' : vue === 'deux' && config.meshcore ? 'Meshtastic et MeshCore' : 'Meshtastic';
   let titre = base.replace(/Meshtastic(\s*(et|\/|&|\+)\s*MeshCore)?|MeshCore(\s*(et|\/|&|\+)\s*Meshtastic)?/i, nomReseau);
-  // Le nom de la zone de la carte (ex. Haute-Loire) suit le secteur choisi
+  // The map area name (e.g. Maricopa County, AZ) follows the chosen area
   if (config.zoneNom && zoneSel !== 'dep' && titre.includes(config.zoneNom)) titre = titre.replace(config.zoneNom, nomZone());
   document.getElementById('titre').textContent = titre;
   document.title = titre + ' · carte publique';
 }
 // « du département » quand la zone est un département, sinon le nom de la zone (région, zone libre)
-const libZone = () => (depSel() && depSel().code !== depCarte() ? `du département (${depSel().nom})` : config.departement && config.zoneNom && config.departement.nom && config.zoneNom !== config.departement.nom ? `de la zone ${config.zoneNom}` : 'du département');
+const libZone = () => (depSel() && depSel().code !== depCarte() ? `of the county (${depSel().nom})` : config.departement && config.zoneNom && config.departement.nom && config.zoneNom !== config.departement.nom ? `of the area ${config.zoneNom}` : 'of the county');
 function recadrer() {
   const z = bboxZone();
-  if (z) carte.fitBounds([[z[0], z[1]], [z[2], z[3]]], { padding: [10, 10] }); else carte.setView([46.6, 2.5], 6);
+  if (z) carte.fitBounds([[z[0], z[1]], [z[2], z[3]]], { padding: [10, 10] }); else carte.setView([39.5, -98.35], 4);
 }
 function installerZone() {
   const sel = document.getElementById('choix-zone');
   if (!sel) return;
   const o = (v, t) => `<option value="${v}">${esc(t)}</option>`;
-  sel.innerHTML = o('dep', config.zoneNom || 'Département de la carte') + (config.zoneVoisins ? o('v', `${config.zoneNom} + voisins`) : '') + o('france', 'France entière')
-    + ((config.regions || []).length ? `<optgroup label="Régions">${config.regions.map((r) => o('r' + r.code, r.nom)).join('')}</optgroup>` : '')
-    + (departements.length ? `<optgroup label="Départements">${departements.map((d) => o('d' + d.code, `${d.code} · ${d.nom}`)).join('')}</optgroup>` : '');
+  // Counties of the map's state only (the full list has ~3,200 counties)
+  const etatCarte = depCarte().slice(0, 2), comtes = departements.filter((d) => d.etat === etatCarte).sort((a, b) => a.nom.localeCompare(b.nom));
+  sel.innerHTML = o('dep', config.zoneNom || 'County of the map') + (config.zoneVoisins ? o('v', `${config.zoneNom} + neighbours`) : '') + o('france', 'Whole map')
+    + ((config.regions || []).length ? `<optgroup label="States">${config.regions.map((r) => o('r' + r.code, r.nom)).join('')}</optgroup>` : '')
+    + (comtes.length ? `<optgroup label="Counties">${comtes.map((d) => o('d' + d.code, d.nom)).join('')}</optgroup>` : '');
   sel.value = zoneSel;
   sel.onchange = () => {
     zoneSel = sel.value;
@@ -287,7 +289,7 @@ function majBoutonsCouv() {
     if (b.dataset.titre == null) b.dataset.titre = b.title;
     const possible = id === 'b-point' ? pointPossible() : ok;
     b.disabled = !possible;
-    b.title = possible ? b.dataset.titre : franceOuverte() ? 'Choisissez un département pour ce calcul' : `Calculs de couverture disponibles sur ${config.zoneNom || 'le département de la carte'}`;
+    b.title = possible ? b.dataset.titre : franceOuverte() ? 'Choose a county for this computation' : `Coverage computations available on ${config.zoneNom || 'the county of the map'}`;
   }
   const n = document.getElementById('note-couv');
   if (n) { n.hidden = ok; n.textContent = franceOuverte() ? 'Couverture et emplacements de relais : choisissez un département (la couverture d’un point marche partout).' : `Couverture et emplacements de relais : sur ${config.zoneNom || 'le département de la carte'} seulement.`; }
@@ -313,7 +315,7 @@ async function rafraichirSignalements() {
   for (const s of l) {
     if (s.trace && s.trace.length > 1) (s.forme === 'zone' ? L.polygon(s.trace, { color: '#dc2626', weight: 3, fillOpacity: 0.18 }) : L.polyline(s.trace, { color: '#dc2626', weight: 6, opacity: 0.85 })).addTo(coucheSig);
     L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'sig-marqueur', html: `<span>${e(s.icone)}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] }), title: s.titre, zIndexOffset: 900 })
-      .bindPopup(`<b>${e(s.icone)} ${e(s.titre)}</b>${s.details ? '<br>' + e(s.details) : ''}<br><small>signalé le ${new Date(s.cree).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small>`).addTo(coucheSig);
+      .bindPopup(`<b>${e(s.icone)} ${e(s.titre)}</b>${s.details ? '<br>' + e(s.details) : ''}<br><small>signalé le ${new Date(s.cree).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small>`).addTo(coucheSig);
   }
 }
 
@@ -348,7 +350,7 @@ function dessinerMt() {
     const infra = n.infrastructure || n.passerelle;
     if (!infra && !opt.clients) continue;
     const icon = L.divIcon({ className: '', html: `<div class="mk ${infra ? (n.passerelle ? 'gw' : '') : 'cl'} ${n.statut}"><div class="c"></div></div>`, iconSize: [14, 14], iconAnchor: [7, 7] });
-    const m = L.marker([n.lat, n.lon], { icon, zIndexOffset: infra ? 500 : 0 }).bindTooltip(`<b>${esc(n.nomLong || n.id)}</b> <small>Meshtastic</small><br>${esc(n.roleFr || n.role || '')}${n.passerelle ? ' · passerelle MQTT' : ''}<br><small>vu ${n.dernierVu ? new Date(n.dernierVu).toLocaleString('fr-FR') : '–'}</small>`).addTo(couche);
+    const m = L.marker([n.lat, n.lon], { icon, zIndexOffset: infra ? 500 : 0 }).bindTooltip(`<b>${esc(n.nomLong || n.id)}</b> <small>Meshtastic</small><br>${esc(n.roleFr || n.role || '')}${n.passerelle ? ' · passerelle MQTT' : ''}<br><small>vu ${n.dernierVu ? new Date(n.dernierVu).toLocaleString('en-US') : '–'}</small>`).addTo(couche);
     etat.marqueurs.set(n.num, m);
   }
 }
@@ -400,7 +402,7 @@ function dessinerMc() {
     if (!relais && !opt.clients) continue;
     const cls = n.role === 'salon' ? 'salon' : relais ? '' : 'autre';
     const m = L.marker([n.lat, n.lon], { icon: L.divIcon({ className: '', html: `<div class="mkc ${cls}"><div class="c"></div></div>`, iconSize: [14, 14], iconAnchor: [7, 7] }), zIndexOffset: relais ? 450 : 0 })
-      .bindTooltip(`<b>${esc(n.nom || n.id)}</b> <small>MeshCore</small><br>${esc(n.roleFr || n.role || '')}<br><small>vu ${n.dernierVu ? new Date(n.dernierVu).toLocaleString('fr-FR') : '–'}</small>`).addTo(mcp.coucheNoeuds);
+      .bindTooltip(`<b>${esc(n.nom || n.id)}</b> <small>MeshCore</small><br>${esc(n.roleFr || n.role || '')}<br><small>vu ${n.dernierVu ? new Date(n.dernierVu).toLocaleString('en-US') : '–'}</small>`).addTo(mcp.coucheNoeuds);
     mcp.marqueurs.set(n.cle, m);
   }
 }

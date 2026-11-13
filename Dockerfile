@@ -1,5 +1,5 @@
 # Carte live Meshtastic — image du service (x86-64 ou ARM64)
-# Construction depuis la racine du dépôt :  docker build -t carte-live-meshtastic .
+# Construction depuis la racine du dépôt :  docker build -t live-mesh-map-us .
 
 # 1. Agents (petit programme qui relie un module USB ou d'un autre réseau à la carte), compilés pour chaque système
 FROM golang:1.24-bookworm AS agents
@@ -18,7 +18,7 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
     PORT=8095 \
     FICHIER_BASE=/data/carte-live.db \
-    TZ=Europe/Paris
+    TZ=America/Phoenix
 WORKDIR /app
 COPY carte-live/package.json carte-live/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

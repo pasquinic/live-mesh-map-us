@@ -22,8 +22,8 @@
     SHORT_FAST: { sf: 7, bw: 250, cr: 5 }, LONG_MODERATE: { sf: 11, bw: 125, cr: 8 }, SHORT_TURBO: { sf: 7, bw: 500, cr: 5 },
     LONG_TURBO: { sf: 11, bw: 500, cr: 8 }, MEDIUM_TURBO: { sf: 9, bw: 500, cr: 5 },
     LITE_FAST: { sf: 9, bw: 125, cr: 5 }, LITE_SLOW: { sf: 10, bw: 125, cr: 5 }, NARROW_FAST: { sf: 7, bw: 62.5, cr: 6 }, NARROW_SLOW: { sf: 8, bw: 62.5, cr: 6 },
-    // MeshCore (réglage français 869,618 MHz) ; « EU/UK narrow » courant ailleurs en Europe
-    MESHCORE_FR: { sf: 8, bw: 62.5, cr: 8 }, MESHCORE_EU_NARROW: { sf: 8, bw: 62.5, cr: 8 }, MESHCORE_SF10: { sf: 10, bw: 62.5, cr: 5 },
+    // MeshCore: US/Canada recommended (910.525 MHz, SF7, BW 62.5) ; French and EU/UK narrow settings kept
+    MESHCORE_US: { sf: 7, bw: 62.5, cr: 5 }, MESHCORE_FR: { sf: 8, bw: 62.5, cr: 8 }, MESHCORE_EU_NARROW: { sf: 8, bw: 62.5, cr: 8 }, MESHCORE_SF10: { sf: 10, bw: 62.5, cr: 5 },
   };
   // SNR minimal démodulable par facteur d'étalement (dB)
   const SNR_LIMITE = { 7: -7.5, 8: -10, 9: -12.5, 10: -15, 11: -17.5, 12: -20 };

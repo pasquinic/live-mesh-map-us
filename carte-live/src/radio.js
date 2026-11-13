@@ -142,7 +142,7 @@ function creerSourceRadio(stockage, config, canauxGlobaux, rappels, agents = nul
       if (socket !== ceSocket) return; // ancienne connexion remplacée
       if (arretVoulu) {
         etat = { ...etat, connecte: false, evince: false, reprise: repriseAuto };
-        journal('déconnecté à la demande' + (repriseAuto ? `, reprise à ${new Date(repriseAuto).toLocaleTimeString('fr-FR')}` : ''));
+        journal('déconnecté à la demande' + (repriseAuto ? `, reprise à ${new Date(repriseAuto).toLocaleTimeString('en-US')}` : ''));
         if (apresSynchro) apresSynchro();
         return;
       }

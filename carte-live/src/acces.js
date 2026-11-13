@@ -82,7 +82,7 @@ function creerAcces(dossier, journal, suffixe = '') {
       try {
         const r = await fetch(url, {
           method: 'POST',
-          headers: { 'User-Agent': 'live-mesh-map-world/1.0 (+https://github.com/sauveteur71/live-mesh-map-world)', 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: { 'User-Agent': 'live-mesh-map-us/1.0 (+https://github.com/pasquinic/live-mesh-map-us)', 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'data=' + encodeURIComponent(q),
           signal: AbortSignal.timeout(150000),
         });

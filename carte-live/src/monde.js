@@ -1,9 +1,10 @@
 'use strict';
-// Relief hors de France : modèle Copernicus DEM GLO-30 (ESA, 30 m, monde entier), en accès libre sur AWS.
+// Terrain: USGS 3DEP for US counties (below), Copernicus DEM GLO-30 elsewhere and as a fallback.
+// Relief hors des comtés US : modèle Copernicus DEM GLO-30 (ESA, 30 m, monde entier), en accès libre sur AWS.
 // Les zones d'étude hors de France sont des carrés de 1° × 1°, nommés d'après leur coin sud-ouest :
 // « MN40W075 » = 40° à 41° N, 75° à 74° O. Une marge de 0,4° (≈ 44 km) les entoure pour que la couverture
 // d'un point proche du bord ne soit pas tronquée.
-const { fromUrl } = require('geotiff');
+const { fromUrl, fromArrayBuffer } = require('geotiff');
 
 const RE_CODE = /^M([NS])(\d{2})([EW])(\d{3})$/;
 const MARGE_MONDE = 0.4;
@@ -61,7 +62,7 @@ async function grilleCopernicus({ sud, ouest, pasLat, pasLon, nLat, nLon }, prog
         w = Math.max(60, Math.round(im.getWidth() / 4)); h = Math.max(60, Math.round(im.getHeight() / 4));
         r = (await tiff.readRasters({ width: w, height: h, resampleMethod: 'bilinear' }))[0];
       } catch (e) {
-        if (essai === 2) throw new Error(`relief Copernicus indisponible (${e.message})`);
+        if (essai === 2) throw new Error(`Copernicus terrain unavailable (${e.message})`);
         await new Promise((res) => setTimeout(res, 2000 * (essai + 1)));
       }
     }
@@ -88,16 +89,63 @@ async function grilleCopernicus({ sud, ouest, pasLat, pasLon, nLat, nLon }, prog
   return z;
 }
 
+// US terrain: USGS 3DEP (The National Map, public domain), 1/3 arc-second (≈ 10 m) seamless DEM.
+// The ImageServer resamples it straight onto our 250 m grid (bilinear), in blocks of up to 2000 × 2000 px.
+// Pixel centres are aligned on the grid points by widening the requested box by half a step.
+const URL_3DEP = process.env.USGS_3DEP_URL || 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage';
+async function grille3DEP({ sud, ouest, pasLat, pasLon, nLat, nLon }, progression = () => {}, arrete = () => false) {
+  const z = new Float32Array(nLat * nLon).fill(NaN);
+  const B = 2000, blocs = [];
+  for (let i0 = 0; i0 < nLat; i0 += B) for (let j0 = 0; j0 < nLon; j0 += B) blocs.push([i0, j0, Math.min(B, nLat - i0), Math.min(B, nLon - j0)]);
+  let faits = 0;
+  for (const [i0, j0, h, w] of blocs) {
+    if (arrete()) throw new Error('chargement interrompu');
+    const s = sud + i0 * pasLat - pasLat / 2, o = ouest + j0 * pasLon - pasLon / 2;
+    const n = s + h * pasLat, e = o + w * pasLon;
+    const q = new URLSearchParams({ bbox: `${o},${s},${e},${n}`, bboxSR: '4326', imageSR: '4326', size: `${w},${h}`, format: 'tiff', pixelType: 'F32', noData: '-9999', interpolation: 'RSP_BilinearInterpolation', renderingRule: JSON.stringify({ rasterFunction: 'None' }), f: 'image' });
+    let r = null;
+    for (let essai = 0; essai < 4 && !r; essai++) {
+      try {
+        const rep = await fetch(`${URL_3DEP}?${q}`, { headers: { 'User-Agent': 'live-mesh-map-us/1.0' }, signal: AbortSignal.timeout(180000) });
+        if (!rep.ok) throw new Error('HTTP ' + rep.status);
+        const buf = await rep.arrayBuffer();
+        const im = await (await fromArrayBuffer(buf)).getImage();
+        if (im.getWidth() !== w || im.getHeight() !== h) throw new Error(`unexpected image size ${im.getWidth()}×${im.getHeight()}`);
+        r = (await im.readRasters())[0];
+      } catch (err) {
+        if (essai === 3) throw new Error(`USGS 3DEP unavailable (${err.message})`);
+        await new Promise((res) => setTimeout(res, 3000 * (essai + 1)));
+      }
+    }
+    // Image row 0 = north; grid row 0 = south
+    for (let y = 0; y < h; y++) {
+      const i = i0 + (h - 1 - y);
+      for (let x = 0; x < w; x++) { const v = r[y * w + x]; z[i * nLon + j0 + x] = Number.isFinite(v) && v > -1000 ? v : NaN; }
+    }
+    faits++;
+    progression(Math.round((faits / blocs.length) * 100));
+  }
+  return z;
+}
+
+// Towns of a box (OpenStreetMap: place=city|town|village with a population tag — in the US, mostly from the Census)
+async function lieuxRectangle(r) {
+  return lieuxRequete(r);
+}
+
 // Villes et villages d'un carré mondial (OpenStreetMap : place=city|town|village avec population)
 const SERVEURS_OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 async function lieuxMonde(code) {
   const r = rectangleMonde(code);
   if (!r) return [];
+  return lieuxRequete(r);
+}
+async function lieuxRequete(r) {
   const q = `[out:json][timeout:90];node["place"~"^(city|town|village)$"]["population"](${r.join(',')});out body;`;
   let derniere = null;
   for (const url of SERVEURS_OVERPASS) {
     try {
-      const rep = await fetch(url, { method: 'POST', headers: { 'User-Agent': 'live-mesh-map-world/1.0', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q), signal: AbortSignal.timeout(120000) });
+      const rep = await fetch(url, { method: 'POST', headers: { 'User-Agent': 'live-mesh-map-us/1.0', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q), signal: AbortSignal.timeout(120000) });
       if (!rep.ok) throw new Error('HTTP ' + rep.status);
       const j = await rep.json();
       return j.elements.map((e) => ({ nom: (e.tags && (e.tags['name:en'] || e.tags.name)) || '?', lat: e.lat, lon: e.lon, population: parseInt(String(e.tags.population).replace(/[^\d]/g, ''), 10) || 0 }))
@@ -107,4 +155,4 @@ async function lieuxMonde(code) {
   throw new Error('OpenStreetMap (Overpass) : ' + (derniere ? derniere.message : 'indisponible'));
 }
 
-module.exports = { lieuxMonde, MARGE_MONDE, estCodeMonde, codeMonde, rectangleMonde, contourMonde, nomMonde, grilleCopernicus };
+module.exports = { lieuxMonde, lieuxRectangle, grille3DEP, MARGE_MONDE, estCodeMonde, codeMonde, rectangleMonde, contourMonde, nomMonde, grilleCopernicus };

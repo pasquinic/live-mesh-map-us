@@ -192,12 +192,13 @@ function rendreAccueil() {
   z.innerHTML = `<h2 class="titre-accueil">Que voulez-vous faire ?</h2>
     <div class="tuiles-accueil">${tuiles.map((x, i) => `<button type="button" class="tuile-accueil" data-i="${i}"><span class="ic" aria-hidden="true">${x.ic}</span><b>${esc(x.nom)}</b><small>${esc(x.aide)}</small></button>`).join('')}</div>
     ${favoris.length ? `<div class="raccourcis"><span class="note">⭐ Mes raccourcis</span>${favoris.map((e) => `<button type="button" class="mini" data-fav="${esc(e.t)}">${esc(e.t)}</button>`).join('')}</div>` : ''}
-    <div class="pied-accueil"><button type="button" class="mini" id="acc-chercher">🔎 Chercher une fonction</button><label class="note">Affichage <select id="acc-niveau" aria-label="Niveau d’affichage">${Object.entries(NIVEAUX).map(([k, v]) => `<option value="${k}" ${k === ergo.niveau ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="note" translate="no">🌐 Langue · Language <select id="acc-langue" aria-label="Langue · Language"><option value="fr" ${window.LANGUE !== 'en' ? 'selected' : ''}>Français</option><option value="en" ${window.LANGUE === 'en' ? 'selected' : ''}>English</option></select></label></div>`;
+    <div class="pied-accueil"><button type="button" class="mini" id="acc-chercher">🔎 Chercher une fonction</button><label class="note">Affichage <select id="acc-niveau" aria-label="Niveau d’affichage">${Object.entries(NIVEAUX).map(([k, v]) => `<option value="${k}" ${k === ergo.niveau ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="note" translate="no">🌐 Langue · Language <select id="acc-langue" aria-label="Langue · Language"><option value="fr" ${window.LANGUE !== 'en' ? 'selected' : ''}>Français</option><option value="en" ${window.LANGUE === 'en' ? 'selected' : ''}>English</option></select></label><label class="note" translate="no">📏 <select id="acc-unites" aria-label="Units"><option value="imperial" ${window.UNITES !== 'metrique' ? 'selected' : ''}>mi · ft</option><option value="metrique" ${window.UNITES === 'metrique' ? 'selected' : ''}>km · m</option></select></label></div>`;
   z.querySelectorAll('[data-i]').forEach((b) => (b.onclick = () => tuiles[Number(b.dataset.i)].go()));
   z.querySelectorAll('[data-fav]').forEach((b) => (b.onclick = () => { const e = index.find((x) => x.t === b.dataset.fav); if (e) e.go(); }));
   $('#acc-chercher').onclick = () => ouvrirRechercheReglages();
   $('#acc-niveau').onchange = (e) => appliquerNiveau(e.target.value, true);
   $('#acc-langue').onchange = (e) => choisirLangue(e.target.value);
+  $('#acc-unites').onchange = (e) => choisirUnites(e.target.value);
 }
 // Le tableau de bord d'origine devient repliable sous l'accueil (ouvert par défaut hors niveau simple)
 function installerPliTableau() {
@@ -232,7 +233,7 @@ function rendreHubReglages() {
     ['📦', 'Sauvegarde complète', 'Tout télécharger en un fichier (base, réglages, comptes) pour changer de serveur', async () => { if (await confirmer('Télécharger la sauvegarde complète ? Le fichier contient les comptes et les clés des canaux : gardez-le en lieu sûr.', { ok: 'Télécharger' })) location.href = '/api/sauvegarde-complete'; }],
     ['📜', 'Journal du serveur', 'Ce que fait la carte, erreurs', () => ouvrirDlg('journal')],
     ['⬆️', 'Mise à jour de la carte', 'Version installée, nouvelle version, mise à jour en un clic', () => ficheMaj()],
-    ['🇫🇷', 'Toute la France', 'Télécharger et installer le relief de tous les départements', () => ficheFrance()],
+    ['🇺🇸', 'Whole state', 'Prepare the terrain of every county of the state', () => ficheFrance()],
   ];
   const modules = !etat.membre ? [] : [
     ['🔌', 'Connecter un module', 'Bluetooth, USB ou adresse IP, Meshtastic ou MeshCore', () => { const b = $('#outil-connecter'); if (b) b.click(); }],
@@ -249,16 +250,18 @@ function rendreHubReglages() {
       <label class="case"><input type="checkbox" id="hub-grand" ${document.body.classList.contains('grand-texte') ? 'checked' : ''}> Grand texte</label>
       <label class="case"><input type="checkbox" id="hub-clair" ${document.body.classList.contains('theme-clair') ? 'checked' : ''}> Thème clair (plein soleil)</label>
       <label translate="no">🌐 Langue · Language <select id="hub-langue" aria-label="Langue · Language"><option value="fr" ${window.LANGUE !== 'en' ? 'selected' : ''}>Français</option><option value="en" ${window.LANGUE === 'en' ? 'selected' : ''}>English</option></select></label>
+      <label translate="no">📏 Units <select id="hub-unites" aria-label="Units"><option value="imperial" ${window.UNITES !== 'metrique' ? 'selected' : ''}>Imperial (mi, ft, °F)</option><option value="metrique" ${window.UNITES === 'metrique' ? 'selected' : ''}>Metric (km, m, °C)</option></select></label>
       <div class="actions-prop"><button type="button" class="mini" id="hub-visite">🧭 Revoir la visite guidée</button><button type="button" class="mini" id="hub-aide">❓ Aide</button></div>
     </div>
     ${bloc('Compte', compte)}${bloc('Modules et réseaux', modules)}${bloc('La carte (administrateur)', carteL)}
-    <p class="note a-propos">Carte live Meshtastic / MeshCore v${esc((etat.config.version && etat.config.version.version) || '')} · créée par F4GLD · <a href="https://www.helloasso.com/associations/radioclub-du-velay/formulaires/2" target="_blank" rel="noopener">♥ Soutenir le projet</a> (Radio-club du Velay) · <a href="https://github.com/sauveteur71/live-mesh-map-world" target="_blank" rel="noopener">code source</a></p></div>`;
+    <p class="note a-propos" translate="no">Live mesh map, US edition v${esc((etat.config.version && etat.config.version.version) || '')} · <a href="https://github.com/pasquinic/live-mesh-map-us" target="_blank" rel="noopener">source code</a> · based on <a href="https://github.com/sauveteur71/live-mesh-map-world" target="_blank" rel="noopener">live-mesh-map-world</a> by F4GLD (<a href="https://www.helloasso.com/associations/radioclub-du-velay/formulaires/2" target="_blank" rel="noopener">♥ support the original project</a>)</p></div>`;
   z.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => { try { actions[b.dataset.go](); } catch (e) { annonce('⚠ ' + e.message, 'erreur'); } }));
   $('#hub-chercher').onclick = () => ouvrirRechercheReglages();
   $('#hub-niveau').onchange = (e) => appliquerNiveau(e.target.value, true);
   $('#hub-grand').onchange = (e) => { document.body.classList.toggle('grand-texte', e.target.checked); ecrireLs('gaulix_grand_texte', e.target.checked); };
   $('#hub-clair').onchange = (e) => appliquerTheme(e.target.checked);
   $('#hub-langue').onchange = (e) => choisirLangue(e.target.value);
+  $('#hub-unites').onchange = (e) => choisirUnites(e.target.value);
   $('#hub-visite').onclick = () => visiteGuidee(true);
   $('#hub-aide').onclick = () => ouvrirAide('Home');
 }
@@ -279,7 +282,7 @@ async function ficheDiagnostic() {
   const pb = r.controles.filter((c) => c.etat === 'ko' || c.etat === 'attention').length;
   const groupes = [...new Set(r.controles.map((c) => c.groupe))];
   z.innerHTML = `<div class="diagnostic"><h2>🩺 Diagnostic</h2>
-    <p class="note"><b>${pb ? pb + ' point(s) à regarder' : 'Tout va bien'}</b> · vérifié à ${new Date(r.heure).toLocaleTimeString('fr-FR')} <button type="button" class="mini" id="diag-relancer">↻ Revérifier</button></p>
+    <p class="note"><b>${pb ? pb + ' point(s) à regarder' : 'Tout va bien'}</b> · vérifié à ${new Date(r.heure).toLocaleTimeString('en-US')} <button type="button" class="mini" id="diag-relancer">↻ Revérifier</button></p>
     ${groupes.map((g) => `<h3>${esc(g)}</h3>${r.controles.filter((c) => c.groupe === g).map((c) => `<div class="controle ${c.etat}"><span class="ic" aria-hidden="true">${IC[c.etat]}</span><div><b>${esc(c.titre)}</b>${c.detail ? `<small>${esc(c.detail)}</small>` : ''}${c.action && ACTIONS[c.action] && c.etat !== 'ok' ? `<button type="button" class="mini principal" data-diag="${c.action}">${esc(ACTIONS[c.action][0])} ›</button>` : ''}</div></div>`).join('')}`).join('')}</div>`;
   $('#diag-relancer').onclick = ficheDiagnostic;
   z.querySelectorAll('[data-diag]').forEach((b) => (b.onclick = () => ACTIONS[b.dataset.diag][1]()));

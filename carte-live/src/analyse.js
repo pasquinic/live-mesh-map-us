@@ -21,6 +21,7 @@ const PRESETS = {
   NARROW_FAST: { sf: 7, bw: 62.5, cr: 6 }, NARROW_SLOW: { sf: 8, bw: 62.5, cr: 6 },
   TINY_FAST: { sf: 7, bw: 15.6, cr: 5 }, TINY_SLOW: { sf: 8, bw: 15.6, cr: 6 },
   MESHCORE_FR: { sf: 8, bw: 62.5, cr: 8 },
+  MESHCORE_US: { sf: 7, bw: 62.5, cr: 5 },
 };
 // SNR minimal démodulable par facteur d'étalement (dB)
 const SNR_LIMITE = { 7: -7.5, 8: -10, 9: -12.5, 10: -15, 11: -17.5, 12: -20 };
@@ -76,7 +77,7 @@ function creerAnalyse(stockage, config, reseau, presetCourant) {
     const jours = new Map();
     for (const t of telem) {
       if (!(t.tension > 0)) continue;
-      const j = new Date(t.heure).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'short', day: '2-digit', month: '2-digit' });
+      const j = new Date(t.heure).toLocaleDateString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), weekday: 'short', day: '2-digit', month: '2-digit' });
       const v = jours.get(j) || { jour: j, min: Infinity, max: -Infinity, nb: 0 };
       v.min = Math.min(v.min, t.tension);
       v.max = Math.max(v.max, t.tension);
@@ -216,13 +217,17 @@ function creerAnalyse(stockage, config, reseau, presetCourant) {
     if (cacheAlti.has(cle)) return cacheAlti.get(cle);
     let points = null, source = null;
     try {
-      // API altimétrique IGN (Géoplateforme) : RGE ALTI, précision métrique en France
-      const url = `https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevationLine.json?lon=${a.lon}|${b.lon}&lat=${a.lat}|${b.lat}&resource=ign_rge_alti_wld&sampling=${n}&profile_mode=simple&indent=false`;
-      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) throw new Error('IGN ' + r.status);
+      // USGS 3DEP ImageServer: samples along the line (1/3 arc-second ≈ 10 m DEM, US only)
+      const geom = JSON.stringify({ paths: [[[a.lon, a.lat], [b.lon, b.lat]]], spatialReference: { wkid: 4326 } });
+      const prm = new URLSearchParams({ geometry: geom, geometryType: 'esriGeometryPolyline', sampleCount: String(n), returnFirstValueOnly: 'true', interpolation: 'RSP_BilinearInterpolation', outFields: '', f: 'json' });
+      const r = await fetch(`${process.env.USGS_3DEP_SAMPLES_URL || 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples'}?${prm}`, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error('USGS ' + r.status);
       const j = await r.json();
-      points = (j.elevations || []).map((e) => ({ lat: e.lat, lon: e.lon, z: e.z > -1000 ? e.z : null }));
-      source = 'IGN RGE ALTI';
+      if (!j.samples || j.samples.length < Math.min(n, 10)) throw new Error('USGS : ' + ((j.error && j.error.message) || 'no samples'));
+      const d0 = (p) => (p.location.x - a.lon) ** 2 + (p.location.y - a.lat) ** 2;
+      points = j.samples.filter((x) => x.location).sort((x, y) => d0(x) - d0(y)).map((x) => { const z = parseFloat(x.value); return { lat: x.location.y, lon: x.location.x, z: Number.isFinite(z) && z > -1000 ? z : null }; });
+      if (points.every((x) => x.z == null)) throw new Error('USGS : no data here');
+      source = 'USGS 3DEP';
     } catch (e) {
       // Repli : Open-Meteo (Copernicus DEM 90 m)
       const lats = [], lons = [];
@@ -254,7 +259,7 @@ function creerAnalyse(stockage, config, reseau, presetCourant) {
     if (!A || !B || A.lat == null || B.lat == null) throw new Error('Les deux extrémités doivent avoir une position');
     const pr = PRESETS[opts.preset] ? opts.preset : preset();
     const p = PRESETS[pr];
-    const f = 869.525e6; // fréquence par défaut EU_868 (slot 1)
+    const f = (Number(process.env.RADIO_FREQ_MHZ) || 906.875) * 1e6; // US LongFast by default
     const lambda = 299792458 / f;
     const k = 4 / 3;
     const D = distanceM(A, B);

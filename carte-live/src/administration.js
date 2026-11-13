@@ -993,7 +993,7 @@ function creerAdministration(radio, stockage) {
       if (reprendre.length && Date.now() - tache.debut < 2 * 3600000) {
         const quand = Date.now() + 10 * 60000;
         tache.prochainEssai = quand;
-        const hh = new Date(quand).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
+        const hh = new Date(quand).toLocaleTimeString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', minute: '2-digit' });
         for (const n of reprendre) { n.statut = 'en_attente'; n.detail = `${n.detail} — nouvel essai automatique à ${hh} (${n.echecs} échec(s))`; }
         journal(`${tache.nom} : ${reprendre.length} nœud(s) repris à ${hh}`);
         sauverTaches();
@@ -1091,7 +1091,7 @@ function creerAdministration(radio, stockage) {
   const minuterieConf = setInterval(() => {
     resumerConformite();
     if (!conf.actif) return;
-    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }).slice(0, 2));
+    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }).slice(0, 2));
     if (h !== conf.heure || (conf.lancee && Date.now() - conf.lancee < 20 * 3600000) || !radio.infos().connecte) return;
     try { lancerConformite(); journal('conformité automatique lancée'); } catch (e) { journal('conformité automatique :', e.message); conf.lancee = Date.now(); sauverConf(); }
   }, 5 * 60000);

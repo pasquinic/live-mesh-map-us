@@ -1,52 +1,52 @@
-# Équipes
+# Teams
 
-*Programmer › 👥 Équipes* (administrateur). Pour une institution qui déploie et gère elle-même ses nœuds (secours, association, île…) : chaque équipe a son **canal chiffré**, que le module de la carte **pose ou retire à distance** sur les nœuds des intervenants. Quand un intervenant entre dans une équipe, son nœud reçoit le canal ; quand il en sort, le canal lui est retiré.
+*Program › 👥 Teams* (administrator). For an organisation that deploys and manages its own nodes (rescue, association, island…): each team has its own **encrypted channel**, which the map's node **adds or removes remotely** on the responders' nodes. When a responder joins a team, their node receives the channel; when they leave, the channel is removed.
 
-## Principe
-- Le module de la carte (relié en USB, Wi-Fi ou par l'agent) administre les nœuds **par la radio**, avec l'administration chiffrée du firmware 2.5+ : la **clé publique du module** doit figurer dans les **clés d'administration** de chaque nœud (Programmer › 🔑 Clés d'administration). À faire une fois, à la préparation du nœud.
-- Le canal d'équipe est créé avec `uplink` et `downlink` MQTT **désactivés** : les messages de l'équipe ne remontent jamais sur le broker et restent chiffrés (AES-256) entre les nœuds de l'équipe. La carte ne les voit pas : c'est voulu (données personnelles des victimes).
-- Le module n'a pas besoin d'avoir le canal de l'équipe : il n'écrit que la configuration des nœuds.
+## How it works
+- The map's node (linked over USB, Wi-Fi or by the agent) administers the nodes **over radio**, with the encrypted administration of firmware 2.5+: the **node's public key** must be in each node's **admin keys** (Program › 🔑 Admin keys). Done once, when preparing the node.
+- The team channel is created with MQTT `uplink` and `downlink` **off**: the team's messages never reach the broker and stay encrypted (AES-256) between the team's nodes. The map doesn't see them: this is intended (victims' personal data).
+- The map's node doesn't need to have the team channel: it only writes the nodes' configuration.
 
-## Créer une équipe
-Nom du canal (11 caractères au plus, sans accent ni espace), description, et option **positions des membres sur le canal d'équipe**. La carte génère une clé AES-256 ; on peut aussi importer une clé existante (16 ou 32 octets en base64).
+## Creating a team
+Channel name (11 characters at most, no accents or spaces), description, and option **members' positions on the team channel**. The map generates an AES-256 key; you can also import an existing key (16 or 32 bytes in base64).
 
-## Ajouter ou retirer des nœuds
-- **➕ Ajouter** : identifiants saisis (`!a1b2c3d4, !e5f6a7b8`) et/ou nœuds cochés dans Programmer. Pour chaque nœud, la carte lit ses canaux, pose le canal dans le premier emplacement libre (ou met à jour celui qui porte déjà ce nom), puis **relit pour vérifier** le nom et la clé.
-- **Retirer** : le canal est supprimé et les canaux suivants remontent d'un cran (comme `meshtastic --ch-del`), puis relecture.
-- Un nœud absent (éteint, hors de portée) est repris **toutes les 10 min pendant 2 h** ; ensuite **↻ Renvoyer aux nœuds pas à jour**.
-- Chaque nœud affiche son état : ✔ à jour (emplacement du canal), ⏳ en attente, ⚠ échec avec la raison.
+## Adding or removing nodes
+- **➕ Add**: typed IDs (`!a1b2c3d4, !e5f6a7b8`) and/or nodes ticked in Program. For each node, the map reads its channels, adds the channel in the first free slot (or updates the one already carrying this name), then **reads back to check** the name and key.
+- **Remove**: the channel is deleted and the following channels move up one slot (like `meshtastic --ch-del`), then read back.
+- An absent node (off, out of range) is retried **every 10 min for 2 h**; then **↻ Resend to nodes not up to date**.
+- Each node shows its status: ✔ up to date (channel slot), ⏳ waiting, ⚠ failed with the reason.
 
-## Demander les positions
-**📍 Demander les positions** : chaque nœud de l'équipe renvoie sa position (une demande toutes les 3 s pour ne pas saturer le canal). Les réponses s'affichent en bas de l'écran ; un clic centre la carte sur le nœud. Pour un seul nœud : clic droit sur le nœud › **📍 Demander sa position** (gestionnaire), comme « Demander la position » dans l'appli. Le nœud doit avoir sa position activée et recevoir le module de la carte (canal principal en commun, ou clé publique échangée).
+## Requesting positions
+**📍 Request positions**: each team node sends back its position (one request every 3 s so as not to saturate the channel). Answers show at the bottom of the screen; a click centres the map on the node. For a single node: right-click on the node › **📍 Request its position** (manager), like “Request position” in the app. The node must have its position enabled and receive the map's node (shared primary channel, or exchanged public key).
 
-### Suivi automatique
-**Suivi des positions** (à la demande, ou toutes les 5, 10, 15, 30 ou 60 min) : la carte demande leur position aux membres à cet intervalle. Chaque membre affiche l'âge de sa dernière position (« voir » centre la carte). Un membre **sans nouvelle** (position plus vieille que 3 intervalles, 30 min au moins) est signalé en rouge et dans les alertes du réseau. Chaque demande est un paquet radio : gardez un intervalle raisonnable.
+### Automatic tracking
+**Position tracking** (on demand, or every 5, 10, 15, 30 or 60 min): the map asks members for their position at this interval. Each member shows the age of its last position (“view” centres the map). A member **with no news** (position older than 3 intervals, 30 min at least) is flagged in red and in the network alerts. Each request is a radio packet: keep a reasonable interval.
 
-## Nœud perdu ou volé : nouvelle clé
-Retirer un nœud n'efface le canal **que s'il est joignable**. Pour un nœud perdu, volé ou qui ne répond plus : retirez-le de l'équipe, puis **🔑 Nouvelle clé** (taper `NOUVELLE CLE`). Tous les membres reçoivent la nouvelle clé ; l'ancien nœud ne comprend plus rien. Tant qu'un membre n'a pas reçu la nouvelle clé, il ne comprend plus les autres : renvoyez-la jusqu'à ce que tous soient à jour.
+## Lost or stolen node: new key
+Removing a node only erases the channel **if it is reachable**. For a lost, stolen or unresponsive node: remove it from the team, then **🔑 New key** (type `NOUVELLE CLE`). All members receive the new key; the old node no longer understands anything. Until a member has received the new key, it no longer understands the others: resend it until all are up to date.
 
-## Exporter la clé
-**⬇ Exporter la clé** (inscrit dans l'historique des opérations) :
-- **fichier `NOM.cle`** (clé en base64) pour la ligne de commande ;
-- **lien de canal** pour l'appli Meshtastic (ajoute le canal sans toucher aux autres), pour un nœud préparé à la main.
+## Exporting the key
+**⬇ Export the key** (recorded in the operations history):
+- **`NAME.cle` file** (base64 key) for the command line;
+- **channel link** for the Meshtastic app (adds the channel without touching the others), for a node prepared by hand.
 
-## Équivalent en ligne de commande (meshtastic CLI)
-Depuis le module (`--port /dev/ttyUSB0` ou `--host IP`), vers le nœud d'un intervenant :
+## Command-line equivalent (meshtastic CLI)
+From the node (`--port /dev/ttyUSB0` or `--host IP`), to a responder's node:
 ```
-# poser le canal avec la clé de l'équipe (ne pas utiliser --ch-add : il tire une clé au hasard sur chaque nœud)
+# add the channel with the team key (don't use --ch-add: it draws a random key on each node)
 meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --ch-index 1 \
-  --ch-set name Equipe1 --ch-set psk base64:$(cat Equipe1.cle) \
+  --ch-set name Team1 --ch-set psk base64:$(cat Team1.cle) \
   --ch-set uplink_enabled false --ch-set downlink_enabled false
-# ou avec le lien de canal exporté
+# or with the exported channel link
 meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --ch-add-url 'https://meshtastic.org/e/?add=true#…'
-# retirer (les canaux suivants remontent d'un cran)
+# remove (the following channels move up one slot)
 meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --ch-index 1 --ch-del
-# verrouiller le nœud : seule l'administration à distance peut le modifier
+# lock the node: only remote administration can change it
 meshtastic --host 192.168.1.50 --dest '!a1b2c3d4' --set security.is_managed true
 ```
 
-## Sécurité des clés sur le serveur
-- Les clés des équipes sont **chiffrées** (AES-256-GCM) dans `equipes.json` avec une clé maîtresse : la variable **`CLE_EQUIPES`** du `.env` (une phrase longue ou une valeur aléatoire, par ex. `openssl rand -base64 32`), sinon un fichier `cle-equipes.bin` créé automatiquement dans le dossier de données.
-- `equipes.json` est inclus dans les sauvegardes, **pas** `cle-equipes.bin` : pour pouvoir restaurer les équipes sur une autre installation, définissez `CLE_EQUIPES` **avant** de créer la première équipe et conservez-la à part. Changer `CLE_EQUIPES` ensuite rend les clés illisibles (la carte le signale : créez une nouvelle clé).
-- La clé n'apparaît jamais dans la liste des équipes, les opérations enregistrées, les journaux ni l'historique ; seul l'export (administrateur) la montre.
-- Les lectures de configuration gardées par la carte (Programmer › Lire) contiennent les canaux lus, clés comprises, comme pour les autres canaux : protégez le dossier de données.
+## Key security on the server
+- Team keys are **encrypted** (AES-256-GCM) in `equipes.json` with a master key: the **`CLE_EQUIPES`** variable of the `.env` (a long phrase or a random value, e.g. `openssl rand -base64 32`), otherwise a `cle-equipes.bin` file created automatically in the data folder.
+- `equipes.json` is included in backups, `cle-equipes.bin` is **not**: to be able to restore teams on another installation, set `CLE_EQUIPES` **before** creating the first team and keep it separately. Changing `CLE_EQUIPES` afterwards makes the keys unreadable (the map says so: create a new key).
+- The key never appears in the team list, recorded operations, logs or history; only the export (administrator) shows it.
+- Configuration reads kept by the map (Program › Read) contain the channels read, keys included, as for other channels: protect the data folder.

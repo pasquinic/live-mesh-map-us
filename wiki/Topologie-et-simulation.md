@@ -1,18 +1,18 @@
-# Topologie et simulation
+# Topology and simulation
 
-*Outils › 🕸️ Topologie et simulation* (Meshtastic) et *Topologie et simulation MeshCore*.
+*Tools › 🕸️ Topology and simulation* (Meshtastic) and *MeshCore topology and simulation*.
 
-![Graphe des liaisons et analyse](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-topologie.jpg)
+![Link graph and analysis](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-topologie.jpg)
 
-## Analyse
-- Graphe des liaisons **mesurées** : disposition libre, en anneaux ou géographique ; relais seuls ou tous les nœuds.
-- **Points de rupture** : les relais dont la panne couperait des nœuds de toute passerelle.
-- **Liaisons critiques**, **relais les plus traversés**, distance aux passerelles face à la limite de sauts, îlots, nœuds sans position.
+## Analysis
+- Graph of **measured** links: free, ring or geographic layout; relays only or all nodes.
+- **Breaking points**: relays whose failure would cut nodes off from any gateway.
+- **Critical links**, **most traversed relays**, distance to gateways against the hop limit, islands, nodes without position.
 
-## Simulation d'un paquet
-- **Meshtastic**, d'après la logique du firmware 2.7 : attente selon le SNR, priorité des ROUTER, annulation par les CLIENT, ROUTER_LATE, sauts gratuits entre favoris, écoute du canal, collisions.
-- **MeshCore**, d'après la logique du firmware répéteur : délai aléatoire selon `tx_delay_factor`, `flood.max`, collisions.
-- Animée, ou sur 200 tirages, pour comparer preset, limite de sauts, favoris et rôles : part des nœuds atteints, nombre d'émissions, durée.
+## Simulating a packet
+- **Meshtastic**, following firmware 2.7 logic: SNR-based wait, ROUTER priority, cancellation by CLIENTs, ROUTER_LATE, free hops between favorites, listen before talk, collisions.
+- **MeshCore**, following repeater firmware logic: random delay based on `tx_delay_factor`, `flood.max`, collisions.
+- Animated, or over 200 draws, to compare preset, hop limit, favorites and roles: share of nodes reached, number of transmissions, duration.
 
-## Trafic en direct
-Les paquets réels sont animés sur le graphe (émetteur → relais → passerelle), avec les axes les plus empruntés et le flux des derniers paquets.
+## Live traffic
+Real packets are animated on the graph (sender → relay → gateway), with the most used paths and the latest packets feed.

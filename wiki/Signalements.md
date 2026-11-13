@@ -1,38 +1,38 @@
-# Signalements
+# Reports
 
-Pour signaler un événement de terrain (route inondée, arbre sur la route, accident, point de rassemblement…) et le faire **remonter en LoRa**. Réservé aux membres connectés.
+To report a field event (flooded road, tree on the road, accident, gathering point…) and **send it over LoRa**. For logged-in members.
 
-## Signaler
-Clic droit (ou appui long) sur la carte › **🚩 Signaler un événement ici**, puis :
-- une **catégorie** (Routes, Crise, Secourisme, Météo, Statut, SDIS, ADRASEC) et un **type** : ce sont les mêmes que **GerMaCrise / Bipper** (F4EED), avec le même emoji et la même icône ;
-- un titre, des précisions (140 caractères) et une **durée** (2 h à 7 jours) ;
-- **Meshtastic** : les canaux du module où envoyer. Par défaut **Fr_Balise** et **Alerte**, comme GerMaCrise ; la carte retient ensuite votre dernier choix ;
-- **MeshCore** : un canal du companion, si le companion est relié.
+## Reporting
+Right-click (or long press) on the map › **🚩 Report an event here**, then:
+- a **category** (Roads, Crisis, First aid, Weather, Status, Fire brigade, ADRASEC) and a **type**: they are the same as **GerMaCrise / Bipper** (F4EED), with the same emoji and icon;
+- a title, details (140 characters) and a **duration** (2 h to 7 days);
+- **Meshtastic**: the node's channels to send on. By default **Fr_Balise** and **Alerte**, like GerMaCrise; the map then remembers your last choice;
+- **MeshCore**: a companion channel, if the companion is linked.
 
-## Tronçon ou zone
-**Forme** : *Un point* (par défaut), *Un tronçon* (route inondée entre deux points ou plus) ou *Une zone* (périmètre). Pour un tronçon ou une zone, touchez la carte pour poser les points suivants (« Retirer le dernier » pour corriger). Le tracé s'affiche en rouge sur la carte et sur la carte publique. En LoRa, le point de passage reste au premier point ; le message texte d'un tronçon donne aussi son point d'arrivée.
+## Section or area
+**Shape**: *A point* (default), *A section* (flooded road between two or more points) or *An area* (perimeter). For a section or an area, tap the map to place the next points (“Remove the last one” to correct). The drawing shows in red on the map and on the public map. Over LoRa, the waypoint stays at the first point; a section's text message also gives its end point.
 
-## Alertes Bipper / GerMaCrise
-*Outils › 🚩 Signalements*, bloc **📟 Alertes Bipper** (gestionnaires) : type (alerte, secours, vigilance, info), canal (par défaut **Alerte**), texte et entités visées. La carte envoie `#alerte N texte #entité` avec un numéro qui s'incrémente, au format des pagers Bipper et de GerMaCrise (F4EED). Les **accusés de lecture** des pagers (`Pager ACK alerte #N …`) s'affichent sous l'alerte, avec le nom du nœud. **✅ Clôturer** envoie `#fin N`.
+## Bipper / GerMaCrise alerts
+*Tools › 🚩 Reports*, **📟 Bipper alerts** block (managers): type (alert, rescue, watch, info), channel (default **Alerte**), text and targeted entities. The map sends `#alerte N text #entity` with an increasing number, in the format of Bipper pagers and GerMaCrise (F4EED). The pagers' **read receipts** (`Pager ACK alerte #N …`) show under the alert, with the node's name. **✅ Close** sends `#fin N`.
 
-## Ce qui part en LoRa
-- **Meshtastic** : un **point de passage** (*waypoint*, port 8) sur chaque canal coché, 500 ms d'écart, priorité alerte, sans accusé (comme GerMaCrise). Il apparaît sur la carte des applis Meshtastic avec son icône et disparaît à la fin de la durée choisie, et sur les Bipper / GerMaCrise. En option (coché par défaut), un **message texte** sur les mêmes canaux : `🌊 Axe inondé : RD 103… · 45.07401,3.90015 · F4GLD`.
-- **MeshCore** : le même message texte sur le canal choisi (coupé à 140 octets).
-- L'état de chaque envoi (✔ envoyé, ⚠ échec et sa raison) est affiché sur le signalement.
+## What goes out over LoRa
+- **Meshtastic**: a **waypoint** (port 8) on each ticked channel, 500 ms apart, alert priority, no ack (like GerMaCrise). It appears on the Meshtastic apps' map with its icon and disappears at the end of the chosen duration, and on Bipper / GerMaCrise. Optionally (ticked by default), a **text message** on the same channels: `🌊 Flooded road: RD 103… · 45.07401,3.90015 · F4GLD`.
+- **MeshCore**: the same text message on the chosen channel (cut at 140 bytes).
+- The status of each send (✔ sent, ⚠ failed and why) is shown on the report.
 
-## Sur la carte
-Les signalements actifs ont un marqueur rouge avec leur icône. Un clic : détails, auteur, heure, état des envois, et
-- **✅ Terminé** : un message de fin part sur les mêmes canaux et le point de passage est retiré des applis ;
-- **↻ Renvoyer** : renvoie le signalement (par exemple après avoir relié le module).
+## On the map
+Active reports have a red marker with their icon. A click: details, author, time, send status, and
+- **✅ Done**: an end message goes out on the same channels and the waypoint is removed from the apps;
+- **↻ Resend**: sends the report again (for example after linking the node).
 
-*Outils › 🚩 Signalements* liste les signalements actifs et ceux des 7 derniers jours.
+*Tools › 🚩 Reports* lists active reports and those of the last 7 days.
 
-## Sans réseau
-Pas de connexion au moment de signaler (zone blanche, réseau coupé) : le signalement est **gardé sur l'appareil** (marqueur orange en pointillés), puis **envoyé tout seul** au retour du réseau, avec l'heure à laquelle il a été fait. *Réessayer maintenant* force l'envoi. La dernière liste de signalements connue reste affichée hors connexion. Avec *Outils › Mode terrain*, les fonds de carte du secteur peuvent aussi être préparés à l'avance.
+## Without network
+No connection when reporting (dead zone, network down): the report is **kept on the device** (dotted orange marker), then **sent by itself** when the network is back, with the time it was made. *Retry now* forces sending. The last known list of reports stays shown offline. With *Tools › Field mode*, the area's map tiles can also be prepared in advance.
 
-## Carte publique et main courante
-- Les signalements **en cours** s'affichent aussi sur la **carte publique** (`/publique`), en lecture seule : type, titre, précisions et heure, sans l'auteur.
-- **📋 Main courante** (*Outils › Signalements*) : page imprimable (PDF) des signalements des 7 derniers jours, avec heure, position, auteur, diffusion et fin.
+## Public map and log book
+- **Current** reports also show on the **public map** (`/publique`), read only: type, title, details and time, without the author.
+- **📋 Log book** (*Tools › Reports*): printable page (PDF) of the last 7 days' reports, with time, position, author, broadcast and end.
 
-## Points de passage reçus
-Les points de passage captés par la carte (MQTT ou module), envoyés par un Bipper, GerMaCrise ou l'appli Meshtastic, deviennent aussi des signalements (📻 reçu par radio), avec leur auteur. Ceux sans durée restent affichés 24 h ; « Terminé » les retire seulement de la carte.
+## Received waypoints
+Waypoints captured by the map (MQTT or node), sent by a Bipper, GerMaCrise or the Meshtastic app, also become reports (📻 received over radio), with their author. Those without a duration stay shown for 24 h; “Done” only removes them from the map.

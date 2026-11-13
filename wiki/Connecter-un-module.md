@@ -1,85 +1,85 @@
-# Connecter un module
+# Connect a node
 
-Un **module radio** relié à la carte lui permet de capter le trafic directement, d'envoyer des messages et de **programmer les nœuds à distance**. Tout se fait depuis **Outils › 🔌 Connecter un module…**. La carte reconnaît toute seule s'il s'agit d'un module **Meshtastic** ou d'un companion **MeshCore**.
+A **radio node** linked to the map lets it capture traffic directly, send messages and **program nodes remotely**. Everything is done from **Tools › 🔌 Connect a node…**. The map detects by itself whether it is a **Meshtastic** node or a **MeshCore** companion.
 
 ## Bluetooth
-1. Ouvrez la carte en **HTTPS** dans **Chrome ou Edge** (pas Firefox ni Safari).
-2. Bouton **📶 Bluetooth**, puis choisissez le module.
-3. Windows peut demander un **code PIN** : celui affiché par le module, sinon `123456`.
+1. Open the map over **HTTPS** in **Chrome or Edge** (not Firefox or Safari).
+2. **📶 Bluetooth** button, then choose the node.
+3. Windows may ask for a **PIN code**: the one shown by the node, otherwise `123456`.
 
-Gardez l'onglet ouvert : c'est la page qui relaie le module vers la carte.
+Keep the tab open: the page relays the node to the map.
 
-Les pièges habituels :
-- **L'appli du téléphone doit être déconnectée** : un module n'accepte qu'une liaison Bluetooth à la fois.
-- **Meshtastic sur ESP32** (Heltec, T-Beam…) : le Bluetooth est coupé tant que le Wi-Fi est actif. Utilisez l'adresse IP, ou désactivez le Wi-Fi.
-- En rôle ROUTER, l'économie d'énergie peut endormir le Bluetooth (*Config › Power*).
-- Si la connexion échoue, appairez d'abord le module dans les réglages Bluetooth de Windows.
+Usual pitfalls:
+- **The phone app must be disconnected**: a node only accepts one Bluetooth link at a time.
+- **Meshtastic on ESP32** (Heltec, T-Beam…): Bluetooth is off while Wi-Fi is on. Use the IP address, or turn Wi-Fi off.
+- In the ROUTER role, power saving may put Bluetooth to sleep (*Config › Power*).
+- If the connection fails, first pair the node in the Windows Bluetooth settings.
 
-### Coupures du Bluetooth
-Si la liaison se coupe, la page **se reconnecte toute seule** : toutes les 5 s pendant 30 s, puis toutes les 30 s pendant 15 min. Il ne faut rien faire, mais l'onglet doit rester ouvert. « Débrancher » arrête ces essais.
+### Bluetooth dropouts
+If the link drops, the page **reconnects by itself**: every 5 s for 30 s, then every 30 s for 15 min. Nothing to do, but the tab must stay open. “Unplug” stops these attempts.
 
-Pour limiter les coupures :
-- fermez l'appli MeshCore ou Meshtastic du téléphone : dès qu'elle voit le module libre, elle le reprend ;
-- sous Windows, dans le Gestionnaire de périphériques › Bluetooth › votre adaptateur › Gestion de l'alimentation, décochez « Autoriser l'ordinateur à éteindre ce périphérique » ;
-- empêchez la mise en veille du PC pendant l'usage ;
-- rapprochez le module : le Bluetooth d'un PC porte peu et le Wi-Fi 2,4 GHz le brouille ;
-- pour un module fixe en Wi-Fi, préférez l'**adresse IP** : la liaison est permanente et ne dépend pas d'un onglet ouvert.
+To limit dropouts:
+- close the MeshCore or Meshtastic phone app: as soon as it sees the node free, it takes it back;
+- on Windows, in Device Manager › Bluetooth › your adapter › Power Management, untick “Allow the computer to turn off this device”;
+- prevent the PC from sleeping during use;
+- bring the node closer: a PC's Bluetooth has little range and 2.4 GHz Wi-Fi interferes with it;
+- for a fixed Wi-Fi node, prefer the **IP address**: the link is permanent and doesn't depend on an open tab.
 
 ## USB
-Bouton **🔌 USB**, puis choisissez le port. Fermez d'abord tout ce qui l'utilise déjà (appli, agent, autre onglet). Même conditions : HTTPS, Chrome ou Edge.
+**🔌 USB** button, then choose the port. First close anything already using it (app, agent, other tab). Same conditions: HTTPS, Chrome or Edge.
 
-## USB du serveur (module branché sur le NAS ou le Raspberry Pi)
-Le module (Meshtastic ou companion MeshCore USB) est branché **sur la machine qui fait tourner la carte**, comme avec Remote Terminal for MeshCore ou MeshMonitor. Ni navigateur ni agent : la liaison est permanente et reprend seule après un redémarrage.
+## Server USB (node plugged into the NAS or Raspberry Pi)
+The node (Meshtastic or MeshCore USB companion) is plugged **into the machine running the map**, as with Remote Terminal for MeshCore or MeshMonitor. No browser or agent: the link is permanent and resumes by itself after a restart.
 
-1. Sur la machine, repérez le port : `ls /dev/ttyACM* /dev/ttyUSB*` (ou `ls /dev/serial/by-id/`, nom stable conseillé).
-2. Dans `docker-compose.yml`, décommentez et adaptez :
+1. On the machine, find the port: `ls /dev/ttyACM* /dev/ttyUSB*` (or `ls /dev/serial/by-id/`, stable name recommended).
+2. In `docker-compose.yml`, uncomment and adapt:
    ```yaml
        devices: ["/dev/ttyACM0:/dev/ttyACM0"]
        group_add: ["dialout"]
    ```
-   Ces deux lignes vont dans le service `carte-live`, au même retrait que `mem_limit` (pas sous `volumes:`).
-   puis `docker compose up -d`.
-3. *Outils › Connecter un module › 🖥️ USB du serveur* : la carte liste les ports vus, reconnaît le type de module et le relie comme **principal** ou **en écoute**.
+   These two lines go in the `carte-live` service, at the same indentation as `mem_limit` (not under `volumes:`).
+   then `docker compose up -d`.
+3. *Tools › Connect a node › 🖥️ Server USB*: the map lists the ports it sees, detects the node type and links it as **main** or **listening**.
 
-Le port est réglé à 115 200 bauds. Fermez tout autre programme qui utiliserait le même port sur la machine.
+The port is set to 115,200 baud. Close any other program that would use the same port on the machine.
 
-## Adresse IP (module en Wi-Fi)
-Tapez l'adresse, par exemple `192.168.1.122`, puis **Connecter**. La carte cherche :
-- un module **Meshtastic** sur le port **4403** ;
-- un companion **MeshCore** sur le port **5000**.
+## IP address (node on Wi-Fi)
+Type the address, for example `192.168.1.122`, then **Connect**. The map looks for:
+- a **Meshtastic** node on port **4403**;
+- a **MeshCore** companion on port **5000**.
 
-Deux cas :
-1. **Le serveur de la carte voit ce réseau** : la liaison est directe.
-2. **Le module est sur un autre réseau** (autre maison, autre box) : la carte passe automatiquement par un PC de ce réseau qui fait tourner l'**[[Agent]] 1.6 ou plus**. Rien à configurer sur l'agent.
+Two cases:
+1. **The map's server can see this network**: the link is direct.
+2. **The node is on another network** (another house, another router): the map automatically goes through a PC on that network running the **[[agent|Agent]] 1.6 or later**. Nothing to configure on the agent.
 
-Si aucun des deux n'est possible, la carte l'explique et propose le Bluetooth, l'USB ou l'installation de l'agent.
+If neither is possible, the map explains it and suggests Bluetooth, USB or installing the agent.
 
-## Plusieurs modules en même temps
-Pour chaque réseau, Meshtastic et MeshCore, la carte a **un module principal**. Il écoute, envoie les messages, lance les traceroutes et sert à l'administration.
+## Several nodes at the same time
+For each network, Meshtastic and MeshCore, the map has **one main node**. It listens, sends messages, starts traceroutes and is used for administration.
 
-D'autres modules peuvent être reliés **en écoute**, en plus du principal. Chacun devient une passerelle supplémentaire :
-- ce qu'il entend s'ajoute à la carte avec son propre SNR et son nombre de sauts ;
-- les liaisons et les parcours des messages sont donc vus depuis plusieurs points ;
-- un paquet entendu par plusieurs modules est compté comme un seul paquet, avec plusieurs réceptions, comme pour les passerelles MQTT.
+Other nodes can be linked as **listening**, in addition to the main one. Each one becomes an extra gateway:
+- what it hears is added to the map with its own SNR and hop count;
+- links and message routes are therefore seen from several points;
+- a packet heard by several nodes counts as a single packet, with several receptions, as for MQTT gateways.
 
-Comment en ajouter un :
-- **Connecter un module** : choisissez « 👂 en écoute, en plus » avant de cliquer sur Bluetooth, USB ou Connecter (adresse IP). Si un module principal est déjà relié, ce choix est proposé d'emblée.
-- **Réseau › Modules radio** : bouton **👂 En écoute** sur un module connu.
-- **MeshCore › Companion** : bouton **👂** à côté d'un agent, ou **👂 En écoute** à côté de l'adresse Wi-Fi.
+How to add one:
+- **Connect a node**: choose “👂 listening, in addition” before clicking Bluetooth, USB or Connect (IP address). If a main node is already linked, this choice is offered straight away.
+- **Network › Radio nodes**: **👂 Listening** button on a known node.
+- **MeshCore › Companion**: **👂** button next to an agent, or **👂 Listening** next to the Wi-Fi address.
 
-Ensuite :
-- **⭐ Principal** échange les rôles : le module en écoute devient principal, l'ancien principal passe en écoute.
-- **Arrêter l'écoute** le retire.
-- Les modules en écoute par adresse IP ou par agent sont conservés au redémarrage de la carte. Ceux d'une page (Bluetooth, USB) durent tant que l'onglet est ouvert.
+Then:
+- **⭐ Main** swaps the roles: the listening node becomes main, the old main switches to listening.
+- **Stop listening** removes it.
+- Listening nodes by IP address or by agent are kept when the map restarts. Those of a page (Bluetooth, USB) last as long as the tab is open.
 
-Limites :
-- Depuis une même page, un seul module Bluetooth ou USB par réseau. Les autres se relient par adresse IP ou par agent.
-- Un PC qui sert de relais du réseau local ([[Agent]] 1.6) ne relaie qu'un module à la fois.
+Limits:
+- From a single page, only one Bluetooth or USB node per network. The others are linked by IP address or by agent.
+- A PC acting as a local network relay ([[agent|Agent]] 1.6) only relays one node at a time.
 
-Exemple : le module de Saint-Vincent reste principal, le companion du Monteil est en écoute par son adresse IP, et le module de la voiture est en écoute en Bluetooth pendant un déplacement.
+Example: the home node stays main, the companion at another house listens through its IP address, and the car's node listens over Bluetooth during a trip.
 
-## Un seul client à la fois
-Un module Meshtastic n'accepte qu'un client Wi-Fi, et un companion MeshCore qu'un client. Si l'appli du téléphone se connecte au même module, la carte est « évincée » et réessaie plus tard.
+## One client at a time
+A Meshtastic node only accepts one Wi-Fi client, and a MeshCore companion only one client. If the phone app connects to the same node, the map is “kicked out” and tries again later.
 
-## Quel module choisir pour programmer ?
-Le module de la carte doit **bien entendre** les nœuds à programmer. Un module mal placé (qui entend le réseau vers −15 dB) fera échouer beaucoup de demandes. Pour une intervention, le plus efficace est de relier un module **proche du nœud** : en voiture en Bluetooth, par exemple.
+## Which node to use for programming?
+The map's node must **hear the nodes to program well**. A badly placed node (hearing the network around −15 dB) will make many requests fail. For an intervention, the most effective is to link a node **close to the target**: in the car over Bluetooth, for example.

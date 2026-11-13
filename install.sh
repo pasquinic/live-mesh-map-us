@@ -1,16 +1,16 @@
 #!/bin/sh
-# One-command install of the live mesh map, world edition (Linux: Debian, Ubuntu, Raspberry Pi OS…)
+# One-command install of the live mesh map, US edition (Linux: Debian, Ubuntu, Raspberry Pi OS…)
 #
-#   curl -fsSL https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/install.sh | sudo sh
+#   curl -fsSL https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/install.sh | sudo sh
 #
-# Optional variables: DOSSIER (default /opt/live-mesh-map-world), CARTE_PORT (default 8095),
+# Optional variables: DOSSIER (default /opt/live-mesh-map-us), CARTE_PORT (default 8095),
 # MISE_A_JOUR=non (without the one-click update service).
 # The script only touches the install folder. Run again on an existing install, it just updates the image,
 # without changing the .env or the data.
 set -eu
 
-DEPOT="https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main"
-DOSSIER="${DOSSIER:-/opt/live-mesh-map-world}"
+DEPOT="https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main"
+DOSSIER="${DOSSIER:-/opt/live-mesh-map-us}"
 CARTE_PORT="${CARTE_PORT:-8095}"
 MISE_A_JOUR="${MISE_A_JOUR:-oui}"
 

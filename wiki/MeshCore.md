@@ -1,106 +1,105 @@
 # MeshCore
 
-La carte affiche MeshCore **seul ou superposé** à Meshtastic : répéteurs, room servers, companions, capteurs, observateurs, liaisons mesurées et déduites, analyseur de paquets en direct.
+The map shows MeshCore **alone or overlaid** on Meshtastic: repeaters, room servers, companions, sensors, observers, measured and inferred links, live packet analyser.
 
-## Le companion de la carte
-Onglet **MeshCore › Companion** (administrateur). Le companion sert d'**observateur** : il transmet à la carte chaque paquet entendu, avec le SNR. Pour le relier, voir [[Connecter un module]] : Wi-Fi (port 5000), USB ou Bluetooth. Le companion ne sert qu'un client à la fois.
+## The map's companion
+**MeshCore › Companion** tab (administrator). The companion acts as an **observer**: it passes every packet it hears to the map, with the SNR. To link it, see [[Connect a node|Connecter un module]]: Wi-Fi (port 5000), USB or Bluetooth. The companion only serves one client at a time.
 
-### Outils du companion
-- **📡 Qui m'entend en direct ?** : appel à 0 saut ; chaque répéteur qui l'entend répond. Tableau avec le SNR auquel **il vous entend**, celui auquel **vous l'entendez**, et la distance. Sans mot de passe, automatique toutes les 6 h.
-- **📊 Bruit et statistiques** : bruit de fond, dernier SNR et RSSI, temps d'émission et de réception, erreurs, avec une **courbe du bruit sur 7 jours**. Au-dessus de −100 dBm, une source proche gêne la réception (antenne relais, alimentation…).
-- **🌡️ Télémétrie** : batterie et capteurs.
-- **Région par défaut** : les envois en inondation du companion ne sont relayés que par les répéteurs qui acceptent cette région.
-- **Commandes sur le companion** (firmware 1.14+) et **Wi-Fi du companion** (réseau, mot de passe, activé).
+### Companion tools
+- **📡 Who hears me directly?**: 0-hop call; every repeater that hears it answers. Table with the SNR at which **it hears you**, the one at which **you hear it**, and the distance. No password, automatic every 6 h.
+- **📊 Noise and statistics**: noise floor, last SNR and RSSI, transmit and receive time, errors, with a **7-day noise curve**. Above −100 dBm, a nearby source hampers reception (cell tower, power supply…).
+- **🌡️ Telemetry**: battery and sensors.
+- **Default region**: the companion's flood sends are only relayed by repeaters accepting this region.
+- **Companion commands** (firmware 1.14+) and **companion Wi-Fi** (network, password, enabled).
 
-## Les répéteurs
-Onglet **MeshCore › Programmer** et fiche d'un répéteur :
-- connexion par **mot de passe admin** (mémorisable) ;
-- lecture et modification des réglages, état (batterie, bruit, émission), voisins, mise à l'heure, annonce, redémarrage, console ;
-- **Tracer** : aller-retour le long du chemin avec le **SNR de chaque saut**, sans mot de passe ; fait aussi chaque nuit vers 3 h pour les répéteurs surveillés ;
-- **Télémétrie** des répéteurs et capteurs ;
-- **région d'attache** et région d'envoi lues avec la configuration ;
-- **lecture ciblée** : seulement les réglages cochés (*Lecture ciblée*), au lieu de tout relire ;
-- **🔑 Mots de passe** : changer le mot de passe admin (le mot de passe mémorisé suit) et le mot de passe invité, ou le retirer. Les nouveaux mots de passe ne sont jamais enregistrés dans l'historique des opérations ;
-- **🗺️ Régions** : lire l'arbre des régions, la région d'attache et la région d'envoi ; créer (`put`), autoriser ou bloquer les inondations d'une région (`allowf` / `denyf`, `*` pour les paquets sans région), définir l'attache (`home`) et la région d'envoi (`default`), supprimer (`remove`) ; enregistrement (`region save`) et relecture automatiques ;
-- **📋 Modèles** : réglages types (préremplis depuis un répéteur lu), actions de régions, mise à l'heure et redémarrage, appliqués à plusieurs répéteurs en une fois. Nom, position, contact et mot de passe n'en font jamais partie. Un modèle **« Répéteur de base (FR-43) »** est fourni :
+## Repeaters
+**MeshCore › Program** tab and a repeater's sheet:
+- login with the **admin password** (can be remembered);
+- read and change settings, status (battery, noise, transmit), neighbours, set the clock, advert, restart, console;
+- **Trace**: round trip along the path with the **SNR of each hop**, no password; also done every night around 3 am for monitored repeaters;
+- **Telemetry** of repeaters and sensors;
+- **home region** and sending region read with the configuration;
+- **targeted read**: only the ticked settings (*Targeted read*), instead of reading everything again;
+- **🔑 Passwords**: change the admin password (the remembered password follows) and the guest password, or remove it. New passwords are never stored in the operations history;
+- **🗺️ Regions**: read the region tree, the home region and the sending region; create (`put`), allow or block a region's floods (`allowf` / `denyf`, `*` for packets without region), set the home (`home`) and the sending region (`default`), delete (`remove`); automatic save (`region save`) and read-back;
+- **📋 Templates**: standard settings (prefilled from a repeater that was read), region actions, clock setting and restart, applied to several repeaters at once. Name, position, contact and password are never part of them. A **“Base repeater (US)”** template is provided:
 
-  | Réglage | Valeur |
+  | Setting | Value |
   |---|---|
   | advert.interval | 240 |
   | flood.advert.interval | 24 |
   | agc.reset.interval | 4 |
   | multi.acks | 1 |
-  | dutycycle | 10 |
-  | path.hash.mode | 1 (2 octets) |
+  | path.hash.mode | 1 (2 bytes) |
   | loop.detect | minimal |
   | flood.max.unscoped | 3 |
   | flood.max.advert | 5 |
-  | régions | `def eu fr fr-ara fr-43`, `default fr`, `home fr`, enregistrement |
-  | puis | mise à l'heure et redémarrage |
+  | regions | `def na us`, `default us`, `home us`, save (add your state, e.g. `put us-az us`) |
+  | then | set the clock and restart |
 
-- **🚀 Mise en service** (fiche du répéteur) : un modèle, le nom, la position (préremplie depuis la carte), le contact (`owner.info`) et un nouveau mot de passe admin, en une seule opération ;
-- **Insister 2 h** : les répéteurs en échec passager sont repris toutes les 10 min pendant 2 h ; chaque nœud affiche l'heure de sa réussite ou de son échec ;
-- **vérification de conformité** et « Aligner sur la référence » ;
-- **supervision** automatique et alertes (muet, batterie, émission, brouillage).
+- **🚀 Commissioning** (repeater sheet): a template, the name, the position (prefilled from the map), the contact (`owner.info`) and a new admin password, in one operation;
+- **Retry for 2 h**: repeaters with a temporary failure are retried every 10 min for 2 h; each node shows the time of its success or failure;
+- **compliance check** and “Align with the reference”;
+- automatic **monitoring** and alerts (silent, battery, transmit, interference).
 
-Les liaisons mesurées (découverte, traces) s'affichent sur la carte et dans la topologie.
+Measured links (discovery, traces) show on the map and in the topology.
 
-## Chemin depuis le companion
-Le companion retient, pour chaque contact, le **chemin** (liste des répéteurs) appris au dernier échange. Si ce chemin est faux (répéteur déplacé, éteint, liaison tombée), les messages directs n'arrivent plus alors que le nœud est joignable. La fiche du nœud (onglet *Infos*) et le clic droit **🧭 Chemin depuis le companion** montrent :
-- **Inondation** (aucun chemin) ou **Direct** (0 saut), ou la liste des répéteurs avec leur nom quand il est connu ;
-- **↺ Réinitialiser** (gestionnaire) : efface le chemin, le prochain envoi part en inondation et le bon chemin est réappris au retour, comme « Reset path » dans l'application officielle ;
-- **Forcer en direct** : 0 saut, si le nœud est à portée du companion ;
-- **Forcer un chemin** : identifiants des répéteurs du companion vers le nœud, séparés par des virgules (`A3,7F`, ou `A3F1,7F02` en identifiants de 2 octets ; tous de la même taille). L'identifiant d'un répéteur est le début de sa clé (voir sa fiche).
+## Path from the companion
+For each contact, the companion remembers the **path** (list of repeaters) learned at the last exchange. If this path is wrong (repeater moved, off, link down), direct messages no longer arrive although the node is reachable. The node's sheet (*Info* tab) and the right-click **🧭 Path from the companion** show:
+- **Flood** (no path) or **Direct** (0 hops), or the list of repeaters with their name when known;
+- **↺ Reset** (manager): clears the path, the next send goes out in flood mode and the right path is learned again on the way back, like “Reset path” in the official app;
+- **Force direct**: 0 hops, if the node is within range of the companion;
+- **Force a path**: IDs of the repeaters from the companion to the node, comma-separated (`A3,7F`, or `A3F1,7F02` with 2-byte IDs; all the same size). A repeater's ID is the start of its key (see its sheet).
 
-Le nœud doit être dans les contacts du companion (lui avoir écrit, ou l'avoir administré). Chaque changement est inscrit dans l'historique des opérations.
+The node must be in the companion's contacts (you wrote to it, or administered it). Each change is recorded in the operations history.
 
-## Supprimer un nœud disparu
-Clic droit sur le nœud › **🗑 Supprimer ce nœud** (administrateur) : il est effacé de la carte et de la base (télémétrie, capteurs, liaisons) et retiré des contacts du companion. S'il émet de nouveau, il réapparaîtra.
+## Deleting a node that disappeared
+Right-click on the node › **🗑 Delete this node** (administrator): it is erased from the map and the database (telemetry, sensors, links) and removed from the companion's contacts. If it transmits again, it will reappear.
 
-## Capteurs : relevés périodiques et courbes
-Fiche d'un répéteur, salon ou capteur, onglet **Capteurs** :
-- **Relever toutes les…** : 15 min, 30 min, 1 h, 3 h, 6 h, 12 h ou 24 h (ou jamais). La carte lance elle-même la tâche « télémétrie » par le companion. Le nœud doit autoriser la télémétrie (mot de passe invité ou admin mémorisé, ou télémétrie ouverte). Chaque relevé envoie un paquet : 1 h ou plus suffit pour un abri ou une batterie ;
-- **Relever maintenant** ;
-- une **courbe par mesure** (tension, température, humidité, pression, courant…) sur 1, 7, 30 ou 90 jours, avec dernier, minimum et maximum ;
-- **✏️ libellé** : renommez chaque mesure (« Batterie », « Abri », « Panneau solaire ») au lieu de « tension 1 » ;
-- **🔔 Alerte** : un seuil bas et/ou haut par mesure. Quand le dernier relevé en sort, une alerte MeshCore s'affiche (onglet Réseau) et le navigateur envoie une notification si la carte est ouverte ;
-- **🙈 Masquer** : retire de l'affichage une mesure non pertinente (voie non câblée à 0 V…). Elle reste enregistrée et dans l'export CSV, sans alerte ; *Mesures masquées* permet de la réafficher ;
-- **⬇ CSV** : export des relevés de la période affichée (séparateur « ; », virgule décimale, pour un tableur).
-- **🗑** (sur une mesure) : efface cette mesure, tout son historique, son nom et son alerte ; elle revient au prochain relevé si le capteur l'envoie encore ;
-- **♻ Remettre à zéro** (en bas de l'onglet) : après un renommage, un recâblage ou une mise à jour du capteur, les canaux peuvent changer de sens et les anciens noms ne correspondent plus. Au choix : effacer tout l'historique, seulement les relevés antérieurs à une date, ou le garder ; et effacer les noms des mesures, les alertes et le masquage. L'intervalle de relevé est gardé.
+## Sensors: periodic readings and curves
+Sheet of a repeater, room or sensor, **Sensors** tab:
+- **Read every…**: 15 min, 30 min, 1 h, 3 h, 6 h, 12 h or 24 h (or never). The map starts the “telemetry” task through the companion itself. The node must allow telemetry (remembered guest or admin password, or open telemetry). Each reading sends a packet: 1 h or more is enough for a shelter or a battery;
+- **Read now**;
+- one **curve per measurement** (voltage, temperature, humidity, pressure, current…) over 1, 7, 30 or 90 days, with last, minimum and maximum;
+- **✏️ label**: rename each measurement (“Battery”, “Shelter”, “Solar panel”) instead of “voltage 1”;
+- **🔔 Alert**: a low and/or high threshold per measurement. When the last reading goes outside, a MeshCore alert shows (Network tab) and the browser sends a notification if the map is open;
+- **🙈 Hide**: removes an irrelevant measurement from the display (unwired input at 0 V…). It stays recorded and in the CSV export, without alert; *Hidden measurements* shows it again;
+- **⬇ CSV**: export of the readings of the displayed period (“;” separator, decimal comma, for a spreadsheet).
+- **🗑** (on a measurement): erases this measurement, its whole history, its name and its alert; it comes back at the next reading if the sensor still sends it;
+- **♻ Reset** (bottom of the tab): after a rename, rewiring or sensor update, channels may change meaning and the old names no longer match. Choose: erase the whole history, only readings before a date, or keep it; and erase measurement names, alerts and hiding. The reading interval is kept.
 
-Les relevés faits à la main depuis l'administration alimentent aussi les courbes. L'historique est gardé 90 jours.
+Readings made by hand from the administration also feed the curves. History is kept 90 days.
 
-## Republication MQTT et canaux
-- **Republier les paquets du companion** : publiés sur votre broker sous `meshcore/IATA/CLÉ/packets` (format meshcoretomqtt), pour les autres cartes.
-- **Code de zone (IATA)** : 3 lettres, par exemple `LPY` pour le Puy.
-- **Paquets conservés** : département, département et voisins, ou national (lourd).
-- **Codes de zone voisins** : pour accepter des observateurs sans position (ex. `CFE, LYS, EBU`).
-- **Canaux à déchiffrer**, un par ligne :
+## MQTT republishing and channels
+- **Republish the companion's packets**: published to your broker under `meshcore/IATA/KEY/packets` (meshcoretomqtt format), for other maps.
+- **Area code (IATA)**: 3 letters, for example `PHX` for Phoenix.
+- **Packets kept**: county, county and neighbours, or everything (heavy).
+- **Neighbouring area codes**: to accept observers without position (e.g. `CFE, LYS, EBU`).
+- **Channels to decrypt**, one per line:
 
-| Ligne | Canal |
+| Line | Channel |
 |---|---|
-| `Public` | canal public par défaut |
-| `#haute-loire` | canal hashtag : le nom exact suffit, # compris |
-| `ADRASEC=0123…cdef` | canal privé : son secret de 32 caractères hexadécimaux |
+| `Public` | default public channel |
+| `#az-phoenix` | hashtag channel: the exact name is enough, # included |
+| `ADRASEC=0123…cdef` | private channel: its 32 hex character secret |
 
-Les canaux déjà présents dans le companion relié sont déchiffrés automatiquement.
+Channels already present in the linked companion are decrypted automatically.
 
-## Topologie et simulation MeshCore
-*Outils › Topologie et simulation MeshCore* : voir [[Topologie et simulation]].
+## MeshCore topology and simulation
+*Tools › MeshCore topology and simulation*: see [[Topology and simulation|Topologie et simulation]].
 
-## Audit des régions et collisions d'identifiants
-Dans *MeshCore › Programmer* :
+## Region audit and ID collisions
+In *MeshCore › Program*:
 
-**🏷 Audit des régions.** Pour chaque répéteur de la zone, la carte compare deux choses :
-- **Déclare** : les régions réglées sur le répéteur. Il les annonce sans mot de passe à un companion qui l'entend en direct, avec le bouton « 📡 Demander leurs régions… ». La demande est aussi refaite toutes les 6 h, après la découverte automatique.
-- **Relaie** : les étiquettes de région des paquets en inondation dont le chemin passe par lui (1, 2 ou 7 jours).
+**🏷 Region audit.** For each repeater in the area, the map compares two things:
+- **Declares**: the regions set on the repeater. It announces them without password to a companion hearing it directly, with the “📡 Ask for their regions…” button. The request is also repeated every 6 h, after automatic discovery.
+- **Relays**: region labels of flood packets whose path goes through it (1, 2 or 7 days).
 
-Un écart est signalé en orange :
-- une région déclarée mais jamais relayée ;
-- une région relayée mais pas déclarée ;
-- des messages sans région relayés alors qu'il ne les accepte pas.
+A difference is flagged in orange:
+- a region declared but never relayed;
+- a region relayed but not declared;
+- messages without region relayed although it doesn't accept them.
 
-C'est l'outil pour vérifier une mise en service, par exemple avec le modèle « Répéteur de base (FR-43) ».
+This is the tool to check a commissioning, for example with the “Base repeater (US)” template.
 
-**🔀 Collisions d'identifiants.** Dans un chemin, chaque relais n'est noté que par le début de sa clé : 1 octet par défaut. Deux répéteurs proches qui commencent pareil rendent le parcours ambigu. Le tableau liste ces répéteurs, avec la distance entre les plus proches, et la part des chemins encore à 1 octet. Le remède : `set path.hash.mode 1` (2 octets).
+**🔀 ID collisions.** In a path, each relay is only noted by the start of its key: 1 byte by default. Two nearby repeaters starting the same way make the route ambiguous. The table lists these repeaters, with the distance between the closest ones, and the share of paths still on 1 byte. The fix: `set path.hash.mode 1` (2 bytes).

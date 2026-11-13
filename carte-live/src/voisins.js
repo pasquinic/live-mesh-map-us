@@ -1,8 +1,14 @@
 'use strict';
-// Départements voisins du département configuré (à partir du contour des 96 départements métropolitains)
-// → zone « département + voisins » : codes, noms et rectangle englobant.
+// Counties bordering the configured county (from the outlines of the ~3,200 US counties, FIPS codes)
+// → "county + neighbours" area: codes, names and bounding box.
+// Internal names keep the French edition's vocabulary ("département" = county, "région" = state).
 const fs = require('fs');
 const path = require('path');
+let cacheComtes = null;
+function lireComtes() {
+  if (!cacheComtes) cacheComtes = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8'));
+  return cacheComtes;
+}
 
 function anneaux(geom) {
   if (!geom) return [];
@@ -18,7 +24,7 @@ function rectangle(f) {
 
 function calculerVoisins(code, zoneDep) {
   let d;
-  try { d = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8')); } catch { return null; }
+  try { d = lireComtes(); } catch { return null; }
   const feats = d.features || [];
   const dep = feats.find((f) => String(f.properties.code) === String(code));
   if (!dep) return null;
@@ -48,39 +54,28 @@ function calculerVoisins(code, zoneDep) {
   };
 }
 
-// Régions métropolitaines : départements et rectangle englobant (calculé depuis les contours)
-const REGIONS = [
-  ['84', 'Auvergne-Rhône-Alpes', '01 03 07 15 26 38 42 43 63 69 73 74'],
-  ['27', 'Bourgogne-Franche-Comté', '21 25 39 58 70 71 89 90'],
-  ['53', 'Bretagne', '22 29 35 56'],
-  ['24', 'Centre-Val de Loire', '18 28 36 37 41 45'],
-  ['94', 'Corse', '2A 2B'],
-  ['44', 'Grand Est', '08 10 51 52 54 55 57 67 68 88'],
-  ['32', 'Hauts-de-France', '02 59 60 62 80'],
-  ['11', 'Île-de-France', '75 77 78 91 92 93 94 95'],
-  ['28', 'Normandie', '14 27 50 61 76'],
-  ['75', 'Nouvelle-Aquitaine', '16 17 19 23 24 33 40 47 64 79 86 87'],
-  ['76', 'Occitanie', '09 11 12 30 31 32 34 46 48 65 66 81 82'],
-  ['52', 'Pays de la Loire', '44 49 53 72 85'],
-  ['93', 'Provence-Alpes-Côte d’Azur', '04 05 06 13 83 84'],
-];
+// States: counties of each state and bounding box (computed from the county outlines).
+// Code = 2-digit state FIPS (e.g. 04 = Arizona), the same "?zone=r04" parameter as the French regions.
 let cacheRegions = null;
 function calculerRegions() {
   if (cacheRegions) return cacheRegions;
-  let d;
-  try { d = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8')); } catch { return []; }
-  const parCode = new Map((d.features || []).map((f) => [String(f.properties.code), f]));
-  cacheRegions = REGIONS.map(([code, nom, deps]) => {
-    const bbox = [90, 180, -90, -180];
-    const liste = deps.split(' ');
-    for (const c of liste) {
-      const f = parCode.get(c); if (!f) continue;
-      const r = rectangle(f);
-      bbox[0] = Math.min(bbox[0], r[0]); bbox[1] = Math.min(bbox[1], r[1]); bbox[2] = Math.max(bbox[2], r[2]); bbox[3] = Math.max(bbox[3], r[3]);
-    }
-    return { code, nom, departements: liste, bbox: bbox.map((v) => Math.round(v * 1000) / 1000) };
-  });
+  let d, etats = {};
+  try { d = lireComtes(); } catch { return []; }
+  try { etats = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'etats.json'), 'utf8')); } catch { /* names optional */ }
+  const parEtat = new Map();
+  for (const f of d.features || []) {
+    const s = String(f.properties.etat || String(f.properties.code).slice(0, 2));
+    if (!parEtat.has(s)) parEtat.set(s, { code: s, nom: (etats[s] && etats[s].nom) || f.properties.etatNom || s, departements: [], bbox: [90, 180, -90, -180] });
+    const e = parEtat.get(s), r = rectangle(f);
+    e.departements.push(String(f.properties.code));
+    // Alaska's Aleutians cross the antimeridian: keep the box on the western side
+    if (r[3] - r[1] > 180) continue;
+    e.bbox[0] = Math.min(e.bbox[0], r[0]); e.bbox[1] = Math.min(e.bbox[1], r[1]); e.bbox[2] = Math.max(e.bbox[2], r[2]); e.bbox[3] = Math.max(e.bbox[3], r[3]);
+  }
+  cacheRegions = [...parEtat.values()].sort((a, b) => a.nom.localeCompare(b.nom)).map((e) => ({ ...e, bbox: e.bbox.map((v) => Math.round(v * 1000) / 1000) }));
   return cacheRegions;
 }
+// State of a county code (FIPS 5 digits → 2 first digits)
+const etatDuComte = (code) => (/^\d{5}$/.test(String(code)) ? String(code).slice(0, 2) : null);
 
-module.exports = { calculerVoisins, calculerRegions };
+module.exports = { calculerVoisins, calculerRegions, etatDuComte, lireComtes };

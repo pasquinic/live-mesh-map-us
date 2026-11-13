@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -21,7 +21,7 @@
       <span class="logo"></span>
       <div>
         <div class="nom">Carte live</div>
-        <div class="sous">Carte live · Haute-Loire</div>
+        <div class="sous">Live map</div>
         <a id="version" class="version" target="_blank" rel="noopener" hidden></a>
       </div>
       <span id="direct" class="direct" title="État de la connexion au broker">
@@ -38,7 +38,7 @@
   </header>
 
   <div class="outils">
-    <select id="sel-zone" class="vue-zone actif" title="Secteur affiché : votre département, avec ses voisins, ou toute la France"><option value="dep">Haute-Loire</option><option value="voisins">Haute-Loire + voisins</option><option value="france">France</option></select>
+    <select id="sel-zone" class="vue-zone actif" title="Area shown: your county, with its neighbours, a state or the whole map"><option value="dep">County</option><option value="voisins">County + neighbours</option><option value="france">Whole map</option></select>
     <label class="choix">Liens
       <select id="fenetre">
         <option value="1">1 h</option>
@@ -56,7 +56,7 @@
       <button class="bascule" data-couche="inactifs" title="Afficher les nœuds non entendus depuis longtemps">Inactifs</button>
       <button class="bascule actif" data-couche="animations" title="Animer les paquets en direct">Animations</button>
       <button class="bascule actif" data-couche="sommets" title="Points hauts du relief et meilleurs sites radio">Points hauts</button>
-      <button class="bascule" data-couche="routiers" title="Webcams et stations du Département et de la DIR Massif Central (mât, électricité) : sites possibles pour des relais">Sites routiers</button>
+      <button class="bascule" data-couche="routiers" title="Communication towers, masts and water towers from OpenStreetMap (height, power): possible relay sites">📡 Towers</button>
       <button class="bascule actif" data-couche="federation" title="Relais des bulles voisines (cartes fédérées)">Bulles voisines</button>
       <button class="bascule actif seul-membre" data-couche="releves" title="Relevés de terrain (photos, notes, mesures)" hidden>Relevés terrain</button>
       </div>
@@ -99,7 +99,7 @@
         <button id="outil-portee" class="bascule" title="Écouter un nœud en direct : qui l’entend, avec quel signal, par quels relais, et s’il remonte sur MQTT">📶 Test de portée d’un nœud</button>
         <button id="outil-terrain" class="bascule" title="Relevé GPS avec photo et note, même sans réseau ; préparer la carte hors connexion ; installer l’application sur le téléphone">📍 Mode terrain</button>
         <div class="titre-outils">Partager</div>
-        <button id="outil-france" class="bascule" hidden title="Télécharger et installer le relief de toute la France (administrateur)">🗺️ Toute la France</button>
+        <button id="outil-france" class="bascule" hidden title="Prepare the terrain of every county of the state (administrator)">🗺️ Whole state</button>
         <button id="outil-signalements" class="bascule seul-membre" hidden title="Événements signalés sur la carte et diffusés en LoRa">🚩 Signalements</button>
         <button id="outil-rapport" class="bascule seul-membre" hidden title="État du réseau sur 7 jours, imprimable en PDF ; archivé chaque lundi">📄 Rapport hebdomadaire</button>
         <button id="outil-partager" class="bascule" title="Carte publique à intégrer dans un site, exports GeoJSON / GPX, Grafana, Home Assistant">📤 Carte publique et exports</button>
@@ -320,7 +320,8 @@
         <option value="LONG_FAST">LongFast</option><option value="LONG_MODERATE">LongModerate</option>
         <option value="LONG_SLOW">LongSlow</option><option value="MEDIUM_FAST">MediumFast</option>
         <option value="MEDIUM_SLOW">MediumSlow</option><option value="SHORT_FAST">ShortFast</option>
-        <option value="MESHCORE_FR">MeshCore France (SF8 · 62,5 kHz)</option>
+        <option value="MESHCORE_US">MeshCore US/Canada (SF7 · 62.5 kHz)</option>
+        <option value="MESHCORE_FR">MeshCore EU narrow (SF8 · 62.5 kHz)</option>
         <optgroup label="Région EU_N_868 « narrow » (firmware 2.8, en test)"><option value="NARROW_SLOW">NarrowSlow (SF8 · 62,5 kHz)</option><option value="NARROW_FAST">NarrowFast (SF7 · 62,5 kHz)</option></optgroup>
       </select></label>
       <button type="submit" class="principal">Recalculer</button>
@@ -365,7 +366,7 @@
     <form id="form-inscription" data-pan="inscription" hidden>
       <p class="note" id="note-inscription"></p>
       <label>Identifiant <input name="identifiant" autocomplete="username" required minlength="3" maxlength="32"></label>
-      <label>Indicatif radio (facultatif) <input name="indicatif" placeholder="F4XXX" maxlength="16"></label>
+      <label>Indicatif radio (facultatif) <input name="indicatif" placeholder="KK7ABC" maxlength="16"></label>
       <label>E-mail (facultatif) <input name="email" type="email" autocomplete="email"></label>
       <label>Mot de passe <input name="motDePasse" type="password" autocomplete="new-password" required minlength="8"></label>
       <label>Confirmer le mot de passe <input name="confirmation" type="password" autocomplete="new-password" required minlength="8"></label>
@@ -411,17 +412,17 @@
       <h3>1. Compte administrateur</h3>
       <div class="grille-form">
         <label>Identifiant <input name="identifiant" required minlength="3" maxlength="32" autocomplete="username"></label>
-        <label>Indicatif radio <input name="indicatif" placeholder="F4XXX" maxlength="16"></label>
+        <label>Indicatif radio <input name="indicatif" placeholder="KK7ABC" maxlength="16"></label>
         <label>Mot de passe <input name="motDePasse" type="password" required minlength="8" autocomplete="new-password"></label>
         <label>Confirmer <input name="confirmation" type="password" required minlength="8" autocomplete="new-password"></label>
         <label id="champ-code-installation" hidden>Code d'installation <input name="code" type="password" autocomplete="off"><small id="aide-code-installation">Valeur de ADMIN_MOT_DE_PASSE dans le fichier .env</small></label>
       </div>
       <h3>2. Votre réseau</h3>
       <div class="grille-form">
-        <label>Département <select name="departement"></select></label>
+        <label>County <select name="departement"></select></label>
         <label>Nom de la carte <input name="titre" placeholder="Réseau Meshtastic · …" maxlength="80"></label>
         <label>Serveur MQTT <input name="mqttUrl" placeholder="mqtt://serveur:1883"></label>
-        <label>Sujet racine <input name="mqttRacine" placeholder="msh/EU_868"></label>
+        <label>Sujet racine <input name="mqttRacine" placeholder="msh/US"></label>
         <label>Utilisateur MQTT <input name="mqttUtilisateur" autocomplete="off"></label>
         <label>Mot de passe MQTT <input name="mqttMotDePasse" type="password" autocomplete="new-password"></label>
         <div class="large-col"><button type="button" id="inst-tester-mqtt">🔌 Tester ce serveur MQTT (10 s)</button> <span id="inst-test-mqtt" class="note"></span></div>

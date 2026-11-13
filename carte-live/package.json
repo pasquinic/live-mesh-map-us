@@ -1,7 +1,7 @@
 {
-  "name": "live-mesh-map-world",
-  "version": "1.0.1",
-  "description": "Carte live, supervision et administration d’un réseau Meshtastic (MQTT, LoRa)",
+  "name": "live-mesh-map-us",
+  "version": "1.0.0",
+  "description": "Live map, monitoring and remote administration of Meshtastic and MeshCore networks — US edition",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {

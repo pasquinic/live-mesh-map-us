@@ -1,36 +1,37 @@
-# Carte live Meshtastic / MeshCore
+# Live mesh map — US edition
 
-Carte en temps réel, supervision et **administration à distance** d'un réseau [Meshtastic](https://meshtastic.org) et [MeshCore](https://meshcore.co.uk), départemental ou local. Née pour un réseau de Haute-Loire, elle s'installe pour n'importe quel département.
+Real-time map, monitoring and **remote administration** of a [Meshtastic](https://meshtastic.org) and [MeshCore](https://meshcore.co.uk) network, regional or local, **anywhere in the world**. **US edition**: areas are US counties, terrain-based coverage uses USGS 3DEP (Copernicus DEM elsewhere), base maps from the USGS National Map, US 915 MHz defaults and imperial units.
 
-![La carte live : nœuds Meshtastic et MeshCore, liaisons mesurées](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-carte.jpg)
+![The live map: Meshtastic and MeshCore nodes, measured links](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-carte.jpg)
 
-## Par où commencer
-1. [[Installation]] : Docker, `.env`, assistant d'installation.
-2. [[Brancher le réseau]] : broker MQTT, canaux.
-3. [[Connecter un module]] : Bluetooth, USB ou adresse IP, et l'[[Agent]].
-4. Découvrir [[La carte]].
+## Where to start
+1. [[Installation]]: Docker, `.env`, setup wizard.
+2. [[Connect the network|Brancher le réseau]]: MQTT broker, channels.
+3. [[Connect a node|Connecter un module]]: Bluetooth, USB or IP address, and the [[agent|Agent]].
+4. Discover [[the map|La carte]].
 
-## Utiliser la carte
-- [[La carte]] : nœuds, liaisons, couches, parcours d'un message, rejeu.
-- [[Messages]] : envoi, accusés, non lus, sons, alertes.
-- [[Couverture et sites]] : relief IGN, points hauts, plan de couverture, simulation « et si… ».
-- [[Topologie et simulation]] : graphe des liaisons, points de rupture, propagation d'un paquet.
-- [[Contrôle du trafic]] : nœuds trop bavards, réinjection MQTT.
+## Using the map
+- [[The map|La carte]]: nodes, links, layers, message route, replay.
+- [[Messages]]: sending, acks, unread, sounds, alerts.
+- [[Coverage and sites|Couverture et sites]]: USGS 3DEP terrain, high points, coverage plan, “what if…” simulation.
+- [[Topology and simulation|Topologie et simulation]]: link graph, breaking points, packet propagation.
+- [[Traffic control|Contrôle du trafic]]: overly chatty nodes, MQTT re-injection.
 
-## Administrer
-- [[Programmation à distance]] : réglages Meshtastic par LoRa, lecture ciblée, modèles, favoris, firmware 2.8.
-- [[Signalements]] : route inondée, arbre tombé… posé sur la carte et envoyé en LoRa (point de passage Meshtastic compatible Bipper / GerMaCrise, message MeshCore).
-- [[Équipes]] : canal chiffré par équipe, posé ou retiré à distance sur les nœuds des intervenants, nouvelle clé, équivalent en ligne de commande.
-- [[MeshCore]] : companion, répéteurs, traces, régions, republication MQTT.
-- [[Comptes et sécurité]] : rôles, gestionnaires de secteur, double authentification, journal.
-- [[Archive PostgreSQL]] : historique complet, conservation, taille maximale.
+## Administration
+- [[Remote programming|Programmation à distance]]: Meshtastic settings over LoRa, targeted read, templates, favorites, firmware 2.8.
+- [[Reports|Signalements]]: flooded road, fallen tree… placed on the map and sent over LoRa (Meshtastic waypoint, MeshCore message).
+- [[Teams|Équipes]]: encrypted channel per team, added or removed remotely on responders' nodes, new key, command-line equivalent.
+- [[MeshCore]]: companion, repeaters, traces, regions, MQTT republishing.
+- [[Accounts and security|Comptes et sécurité]]: roles, area managers, two-factor authentication, log.
+- [[PostgreSQL archive|Archive PostgreSQL]]: full history, retention, maximum size.
+- [[Versions and compatibility|Versions et compatibilité]]: supported firmware, Meshtastic 2.8.
 
-## Aide
+## Help
 
-![L’aide s’ouvre dans la carte](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-aide.jpg)
+![Help opens inside the map](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-aide.jpg)
 
-- [[Dépannage]] : les problèmes les plus fréquents et leur solution.
-- [Dernière version](https://github.com/sauveteur71/live-mesh-map-world/releases/latest) · [Signaler un problème](https://github.com/sauveteur71/live-mesh-map-world/issues)
+- [[Troubleshooting|Dépannage]]: the most common problems and their solution.
+- [Latest version](https://github.com/pasquinic/live-mesh-map-us/releases/latest) · [Report a problem](https://github.com/pasquinic/live-mesh-map-us/issues)
 
 ---
-*Carte live créée par F4GLD · [♥ Soutenir le projet](https://www.helloasso.com/associations/radioclub-du-velay/formulaires/2) (Radio-club du Velay)*
+*Live map created by F4GLD · [♥ Support the project](https://www.helloasso.com/associations/radioclub-du-velay/formulaires/2) (Radio-club du Velay)*

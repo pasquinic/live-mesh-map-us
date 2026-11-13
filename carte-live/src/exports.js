@@ -84,7 +84,7 @@ function creerExports({ config, stockage, reseau, reseauMc, maintenance, santeCa
   function relaisGpx() {
     const x = (t) => String(t ?? '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
     const pts = noeudsVisibles().filter((n) => n.infrastructure || n.passerelle);
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="live-mesh-map-world" xmlns="http://www.topografix.com/GPX/1/1">\n`
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="live-mesh-map-us" xmlns="http://www.topografix.com/GPX/1/1">\n`
       + pts.map((n) => `<wpt lat="${n.lat}" lon="${n.lon}">${n.alt != null ? `<ele>${n.alt}</ele>` : ''}<name>${x(n.nomLong || n.id)}</name><desc>${x([n.roleFr || n.role, n.passerelle ? 'passerelle MQTT' : '', n.statut, n.dernierVu ? 'vu ' + new Date(n.dernierVu).toLocaleString('fr-FR') : ''].filter(Boolean).join(' · '))}</desc><sym>${n.passerelle ? 'Radio Beacon' : 'Tower'}</sym></wpt>`).join('\n')
       + '\n</gpx>\n';
   }

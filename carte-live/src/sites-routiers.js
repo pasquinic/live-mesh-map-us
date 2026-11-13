@@ -1,12 +1,13 @@
 'use strict';
-// Sites routiers (webcams et stations du Département de la Haute-Loire et de la DIR Massif Central) d'après la carte
-// publique inforoute43.fr. Ces sites ont souvent un mât, l'électricité et parfois une liaison réseau :
-// des emplacements intéressants à proposer pour des relais. Cache d'une semaine dans /data/sites-routiers.json.
+// Tall structures of the map area, from OpenStreetMap: communication towers and masts, water towers.
+// (The French edition used the road webcams of Haute-Loire here.) These sites usually have height, power and
+// sometimes a network link: good candidates to suggest for relays, subject to the owner's agreement.
+// One-week cache in /data/sites-routiers.json. The "gestionnaire" field holds the OSM operator, if any.
 
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = 'https://www.inforoute43.fr/mod_turbolead/mod/inforoute/index.php?action=383';
+const SERVEURS_OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 
 function creerSitesRoutiers(config, journal) {
   const fichier = path.join(path.dirname(config.fichierBase), 'sites-routiers.json');
@@ -14,29 +15,39 @@ function creerSitesRoutiers(config, journal) {
   try { donnees = JSON.parse(fs.readFileSync(fichier, 'utf8')); } catch { /* absent */ }
 
   async function charger() {
-    if (donnees && Date.now() - donnees.date < 7 * 86400000) return donnees;
-    try {
-      const r = await fetch(SOURCE, { headers: { 'User-Agent': 'Mozilla/5.0 (live-mesh-map-world)' }, signal: AbortSignal.timeout(20000) });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      // On ne garde que le nom, la position et le gestionnaire (rien des autres champs techniques)
-      const sites = (j.features || []).filter((f) => f.geometry && f.geometry.type === 'Point').map((f) => {
-        const p = f.properties || {};
-        const titre = String(p.titre || '').trim();
-        const dir = /inforoute-massif-central/.test(p.url_dossier || p.url_script || '');
-        const m = /alt(?:itude)?\.?\s*(\d{3,4})\s*m/i.exec(titre);
-        return {
-          id: (dir ? 'dir-' : 'dep-') + p.id_webcam, nom: titre.replace(/\s*\(Département de la Haute-Loire\)\s*/i, ' ').replace(/\s*(alt(itude)?\.?\s*\d{3,4}\s*m)\s*$/i, '').replace(/\s+/g, ' ').trim(),
-          gestionnaire: dir ? 'DIR Massif Central' : /Département de la Haute-Loire/i.test(titre) ? 'Département de la Haute-Loire' : 'autre',
-          lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], altitude: m ? Number(m[1]) : null,
-          type: p.type_media === 'VIDEO' ? 'caméra vidéo' : 'webcam',
-          lien: dir ? 'https://www.inforoute-massif-central.fr/' : 'https://www.inforoute43.fr/',
-        };
-      });
-      donnees = { date: Date.now(), source: 'inforoute43.fr', sites };
-      try { fs.writeFileSync(fichier, JSON.stringify(donnees)); } catch { /* lecture seule */ }
-      journal(`[Sites routiers] ${sites.length} sites chargés (inforoute43.fr)`);
-    } catch (e) { journal('[Sites routiers] chargement impossible :', e.message); }
+    const zone = (config.zone || []).join(',');
+    if (donnees && donnees.zone === zone && Date.now() - donnees.date < 7 * 86400000) return donnees;
+    const [s, o, n, e] = config.zone;
+    const bb = `${s},${o},${n},${e}`;
+    const q = `[out:json][timeout:90];(nwr["man_made"="mast"](${bb});nwr["man_made"="tower"]["tower:type"="communication"](${bb});nwr["man_made"="water_tower"](${bb}););out center tags 2000;`;
+    let derniere = null;
+    for (const url of SERVEURS_OVERPASS) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'User-Agent': 'live-mesh-map-us/1.0 (+https://github.com/pasquinic/live-mesh-map-us)', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q), signal: AbortSignal.timeout(120000) });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const sites = (j.elements || []).map((x) => {
+          const t = x.tags || {}, lat = x.lat ?? (x.center && x.center.lat), lon = x.lon ?? (x.center && x.center.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          const eau = t.man_made === 'water_tower';
+          const h = parseFloat(String(t.height || '').replace(',', '.'));
+          return {
+            id: `osm-${x.type[0]}${x.id}`,
+            nom: t.name || (eau ? 'Water tower' : 'Communication tower') + (t.operator ? ` (${t.operator})` : ''),
+            // "DIR…" kept the French edition's second marker colour: here, communication towers
+            gestionnaire: eau ? (t.operator || 'water tower') : 'DIR ' + (t.operator || 'communication'),
+            lat, lon, altitude: null, hauteur: Number.isFinite(h) ? h : null,
+            type: eau ? 'château d’eau' : 'pylône',
+            lien: `https://www.openstreetmap.org/${x.type}/${x.id}`,
+          };
+        }).filter(Boolean);
+        donnees = { date: Date.now(), zone, source: 'OpenStreetMap', sites };
+        try { fs.writeFileSync(fichier, JSON.stringify(donnees)); } catch { /* lecture seule */ }
+        journal(`[Sites routiers] ${sites.length} sites chargés (OpenStreetMap)`);
+        return donnees;
+      } catch (err) { derniere = err; }
+    }
+    journal('[Sites routiers] chargement impossible :', derniere ? derniere.message : '?');
     return donnees || { date: null, sites: [] };
   }
   return { charger };

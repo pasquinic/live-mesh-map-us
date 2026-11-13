@@ -1,0 +1,226 @@
+{
+ "10": {
+  "abr": "DE",
+  "nom": "Delaware"
+ },
+ "11": {
+  "abr": "DC",
+  "nom": "District of Columbia"
+ },
+ "12": {
+  "abr": "FL",
+  "nom": "Florida"
+ },
+ "13": {
+  "abr": "GA",
+  "nom": "Georgia"
+ },
+ "15": {
+  "abr": "HI",
+  "nom": "Hawaii"
+ },
+ "16": {
+  "abr": "ID",
+  "nom": "Idaho"
+ },
+ "17": {
+  "abr": "IL",
+  "nom": "Illinois"
+ },
+ "18": {
+  "abr": "IN",
+  "nom": "Indiana"
+ },
+ "19": {
+  "abr": "IA",
+  "nom": "Iowa"
+ },
+ "20": {
+  "abr": "KS",
+  "nom": "Kansas"
+ },
+ "21": {
+  "abr": "KY",
+  "nom": "Kentucky"
+ },
+ "22": {
+  "abr": "LA",
+  "nom": "Louisiana"
+ },
+ "23": {
+  "abr": "ME",
+  "nom": "Maine"
+ },
+ "24": {
+  "abr": "MD",
+  "nom": "Maryland"
+ },
+ "25": {
+  "abr": "MA",
+  "nom": "Massachusetts"
+ },
+ "26": {
+  "abr": "MI",
+  "nom": "Michigan"
+ },
+ "27": {
+  "abr": "MN",
+  "nom": "Minnesota"
+ },
+ "28": {
+  "abr": "MS",
+  "nom": "Mississippi"
+ },
+ "29": {
+  "abr": "MO",
+  "nom": "Missouri"
+ },
+ "30": {
+  "abr": "MT",
+  "nom": "Montana"
+ },
+ "31": {
+  "abr": "NE",
+  "nom": "Nebraska"
+ },
+ "32": {
+  "abr": "NV",
+  "nom": "Nevada"
+ },
+ "33": {
+  "abr": "NH",
+  "nom": "New Hampshire"
+ },
+ "34": {
+  "abr": "NJ",
+  "nom": "New Jersey"
+ },
+ "35": {
+  "abr": "NM",
+  "nom": "New Mexico"
+ },
+ "36": {
+  "abr": "NY",
+  "nom": "New York"
+ },
+ "37": {
+  "abr": "NC",
+  "nom": "North Carolina"
+ },
+ "38": {
+  "abr": "ND",
+  "nom": "North Dakota"
+ },
+ "39": {
+  "abr": "OH",
+  "nom": "Ohio"
+ },
+ "40": {
+  "abr": "OK",
+  "nom": "Oklahoma"
+ },
+ "41": {
+  "abr": "OR",
+  "nom": "Oregon"
+ },
+ "42": {
+  "abr": "PA",
+  "nom": "Pennsylvania"
+ },
+ "44": {
+  "abr": "RI",
+  "nom": "Rhode Island"
+ },
+ "45": {
+  "abr": "SC",
+  "nom": "South Carolina"
+ },
+ "46": {
+  "abr": "SD",
+  "nom": "South Dakota"
+ },
+ "47": {
+  "abr": "TN",
+  "nom": "Tennessee"
+ },
+ "48": {
+  "abr": "TX",
+  "nom": "Texas"
+ },
+ "49": {
+  "abr": "UT",
+  "nom": "Utah"
+ },
+ "50": {
+  "abr": "VT",
+  "nom": "Vermont"
+ },
+ "51": {
+  "abr": "VA",
+  "nom": "Virginia"
+ },
+ "53": {
+  "abr": "WA",
+  "nom": "Washington"
+ },
+ "54": {
+  "abr": "WV",
+  "nom": "West Virginia"
+ },
+ "55": {
+  "abr": "WI",
+  "nom": "Wisconsin"
+ },
+ "56": {
+  "abr": "WY",
+  "nom": "Wyoming"
+ },
+ "60": {
+  "abr": "AS",
+  "nom": "American Samoa"
+ },
+ "66": {
+  "abr": "GU",
+  "nom": "Guam"
+ },
+ "69": {
+  "abr": "MP",
+  "nom": "Northern Mariana Islands"
+ },
+ "72": {
+  "abr": "PR",
+  "nom": "Puerto Rico"
+ },
+ "78": {
+  "abr": "VI",
+  "nom": "U.S. Virgin Islands"
+ },
+ "01": {
+  "abr": "AL",
+  "nom": "Alabama"
+ },
+ "02": {
+  "abr": "AK",
+  "nom": "Alaska"
+ },
+ "04": {
+  "abr": "AZ",
+  "nom": "Arizona"
+ },
+ "05": {
+  "abr": "AR",
+  "nom": "Arkansas"
+ },
+ "06": {
+  "abr": "CA",
+  "nom": "California"
+ },
+ "08": {
+  "abr": "CO",
+  "nom": "Colorado"
+ },
+ "09": {
+  "abr": "CT",
+  "nom": "Connecticut"
+ }
+}

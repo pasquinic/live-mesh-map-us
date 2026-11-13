@@ -1,17 +1,18 @@
-# Live mesh map (world edition) — Docker Compose (Synology Container Manager, Unraid, Linux…)
+# Live mesh map (US edition) — Docker Compose (Synology Container Manager, Unraid, Linux…)
 # 1. Copy .env.exemple to .env and adapt it.   2. docker compose up -d
 # 3. Open http://SERVER_IP:8095: the wizard creates the admin account.
 
 services:
   carte-live:
-    image: ghcr.io/sauveteur71/live-mesh-map-world:latest
+    image: ghcr.io/pasquinic/live-mesh-map-us:latest
     # Pour construire l'image vous-même à partir des sources, remplacez la ligne « image » par :
     # build: .
-    container_name: live-mesh-map-world
+    container_name: live-mesh-map-us
     restart: unless-stopped
     env_file: .env
     environment:
       FICHIER_BASE: /data/carte-live.db
+      TZ: ${TZ:-America/Phoenix}
     ports:
       - "${CARTE_PORT:-8095}:8095"
       # Agents (USB node on a PC, node on another network): local network or VPN (Tailscale) only,
@@ -38,7 +39,7 @@ services:
   # créé dans le volume de données. Pour vous en passer : supprimez ce bloc (mise à jour : docker compose pull
   # && docker compose up -d).
   maj:
-    image: ghcr.io/sauveteur71/live-mesh-map-world:latest
+    image: ghcr.io/pasquinic/live-mesh-map-us:latest
     container_name: carte-live-maj
     command: ["node", "src/majeur.js"]
     restart: unless-stopped
@@ -61,7 +62,7 @@ services:
       - "${CLIENT_PORT:-8096}:8080"
     mem_limit: 64m
 
-  # Flasheur officiel Meshtastic (https://github.com/meshtastic/web-flasher), construit par ce dépôt
+  # Official Meshtastic flasher (https://github.com/meshtastic/web-flasher), image built by the original project
   flasher-meshtastic:
     image: ghcr.io/sauveteur71/meshtastic-flasher:latest
     container_name: flasher-meshtastic

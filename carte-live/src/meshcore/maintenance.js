@@ -87,7 +87,7 @@ function creerMaintenanceMc({ config, reseauMc, adminMc, companion, journal }) {
   const m = setInterval(() => {
     resumer();
     if (!conf.actif) return;
-    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }).slice(0, 2));
+    const h = Number(new Date().toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }).slice(0, 2));
     if (h !== conf.heure || Date.now() - (conf.lancee || 0) < 20 * 3600000 || !companion.etat().pret) return;
     try { lancer(); } catch (e) { journal('[MeshCore] conformité automatique :', e.message); conf.lancee = Date.now(); sauver(); }
   }, 5 * 60000);

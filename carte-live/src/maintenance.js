@@ -2,10 +2,10 @@
 // Maintenance du réseau : charge radio des relais, autonomie, firmwares, rôles.
 // Porte sur les nœuds « surveillés » (relais, passerelles, liste NOEUDS_SURVEILLES) situés dans la zone de la carte.
 
-const LIMITE_EMISSION = 10; // % du temps, sous-bande 869,4–869,65 MHz
+const LIMITE_EMISSION = 10; // % of the time: no FCC duty-cycle limit on 915 MHz, but a courtesy ceiling for a shared channel
 const SEUIL_TENSION = 3.3;
 
-function heureParis(t) { return Number(new Date(t).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }).slice(0, 2)); }
+function heureParis(t) { return Number(new Date(t).toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }).slice(0, 2)); }
 function regression(xs, ys) {
   const n = xs.length; if (n < 2) return 0;
   const mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n;
@@ -158,7 +158,7 @@ function creerMaintenance({ stockage, config, reseau, installations, journal }) 
       if (!e || (l.snr ?? -99) > (e ?? -99)) entend.get(b).set(l.a >>> 0, l.snr);
     }
     const routeursEntendus = (n) => [...((entend.get(n.num >>> 0) || new Map()).entries())].map(([num, snr]) => ({ n: parNum.get(num), snr })).filter((x) => x.n && x.n.role === 'ROUTER' && x.n.num !== n.num);
-    const texteVus = (vus) => vus.slice(0, 3).map((x) => `${nom(x.n)}${x.snr != null ? ` (${x.snr.toFixed(1).replace('.', ',')} dB)` : ''}`).join(', ');
+    const texteVus = (vus) => vus.slice(0, 3).map((x) => `${nom(x.n)}${x.snr != null ? ` (${x.snr.toFixed(1)} dB)` : ''}`).join(', ');
     const mobile = (n) => { const pos = stockage.q.positionsNoeud24h.all(n.num, maintenant - 86400000); return pos.length > 1 && Math.max(...pos.map((p) => distKm(pos[0], p))) > 1; };
     const surToit = (n) => /\b(toit|maison|domicile|chemin[ée]e|habitation|balcon|grenier|pignon|faîtage|faitage)\b/i.test((installations.lire(n.num, true) || {}).site || '');
     const ajouter = (n, roleCible, conseil, niveau, raison, extra = {}) => conseils.push({ num: n.num, nom: nom(n), role: n.role || 'CLIENT', conseil, roleCible, niveau, raison, ...extra });
@@ -176,7 +176,7 @@ function creerMaintenance({ stockage, config, reseau, installations, journal }) 
       const em = c ? c.emission24 : null, ca = c ? c.canal24 : null;
       if (n.role === 'ROUTER_LATE') {
         if ((em ?? 0) >= 7.5 || (ca ?? 0) >= 25) {
-          ajouter(n, 'CLIENT', 'CLIENT', 'attention', `ROUTER_LATE réémet tout ce qu’il entend : ici émission ${em != null ? em.toFixed(1).replace('.', ',') + ' %' : '?'} et canal ${ca != null ? ca.toFixed(1).replace('.', ',') + ' %' : '?'} en moyenne sur 24 h. Au-delà de 7-8 % d’émission ou 25 % d’occupation, Meshtastic conseille de changer de rôle.`);
+          ajouter(n, 'CLIENT', 'CLIENT', 'attention', `ROUTER_LATE réémet tout ce qu’il entend : ici émission ${em != null ? em.toFixed(1) + ' %' : '?'} et canal ${ca != null ? ca.toFixed(1) + ' %' : '?'} en moyenne sur 24 h. Au-delà de 7-8 % d’émission ou 25 % d’occupation, Meshtastic conseille de changer de rôle.`);
         } else if (vus.length && a && a.propreKm2 <= 5) {
           ajouter(n, 'CLIENT', 'CLIENT', 'info', `Entend directement ${vus.length > 1 ? 'les routeurs' : 'le routeur'} ${texteVus(vus)} et ne couvre que ${a.propreKm2} km² qu’aucun autre relais ne couvre : ses voisins atteignent déjà le réseau. En CLIENT, il ne réémet que si personne ne l’a fait (moins de temps d’antenne).`);
         } else if (!vus.length && a && a.propreKm2 >= 50 && siteHaut(n)) {
@@ -189,7 +189,7 @@ function creerMaintenance({ stockage, config, reseau, installations, journal }) 
         } else if (a && a.km2 < 60) {
           ajouter(n, 'CLIENT', 'CLIENT ou déplacer', 'info', `Point bas : couverture calculée ${a.km2} km² seulement. Un ROUTER mal placé prend la priorité sur de meilleurs relais et use les sauts trop tôt ; un site plus haut ou le rôle CLIENT serait plus utile.`);
         } else if ((em ?? 0) >= 7.5 || (ca ?? 0) >= 25) {
-          ajouter(n, null, 'surveiller', 'attention', `Charge élevée : émission ${em != null ? em.toFixed(1).replace('.', ',') + ' %' : '?'}, canal ${ca != null ? ca.toFixed(1).replace('.', ',') + ' %' : '?'} sur 24 h. Vérifiez les nœuds bavards autour (onglet Statistiques) avant de toucher à ce relais bien placé.`);
+          ajouter(n, null, 'surveiller', 'attention', `Charge élevée : émission ${em != null ? em.toFixed(1) + ' %' : '?'}, canal ${ca != null ? ca.toFixed(1) + ' %' : '?'} sur 24 h. Vérifiez les nœuds bavards autour (onglet Statistiques) avant de toucher à ce relais bien placé.`);
         }
       }
     }

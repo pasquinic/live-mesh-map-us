@@ -161,22 +161,22 @@ function creerCapteursMc({ db, config, adminMc, companion, journal }) {
         const [type, canal] = d.mesure.split(':');
         const libelle = (r.libelles && r.libelles[d.mesure]) || `${LIB[type] || type}${canal !== '1' ? ' ' + canal : ''}`;
         const nom = nomDe(cle) || r.nom || cle.slice(0, 8);
-        const v = String(Math.round(d.valeur * 100) / 100).replace('.', ',');
+        const v = String(Math.round(d.valeur * 100) / 100);
         l.push({ cle: `mc-capteur:${cle}:${d.mesure}`, noeud: cle, type: 'capteur', niveau: 'attention', nom, depuis: d.heure,
-          message: `${nom} · ${libelle} : ${v} ${d.unite || ''}`.trim() + ` (${bas ? 'sous ' + String(s.min).replace('.', ',') : 'au-dessus de ' + String(s.max).replace('.', ',')} ${d.unite || ''})`.replace(' )', ')') });
+          message: `${nom} · ${libelle} : ${v} ${d.unite || ''}`.trim() + ` (${bas ? 'sous ' + String(s.min) : 'au-dessus de ' + String(s.max)} ${d.unite || ''})`.replace(' )', ')') });
       }
     }
     return l;
   }
-  // Export CSV (séparateur « ; », virgule décimale, pour un tableur français)
+  // CSV export (comma separator, decimal point, ISO date: opens directly in US spreadsheets)
   function csv(cle, jours = 90) {
     const r = reglages[cle] || {};
-    const lignes = ['date;heure;mesure;libellé;valeur;unité'];
+    const lignes = ['date,time,measure,label,value,unit'];
     for (const p of q.serie.all(cle, Date.now() - jours * 86400000)) {
       const d = new Date(p.heure);
-      const jour = d.toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }), h = d.toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' });
-      const lib = String((r.libelles && r.libelles[p.mesure]) || '').replace(/[;\r\n"]/g, ' ');
-      lignes.push([jour, h, p.mesure, lib, String(p.valeur).replace('.', ','), p.unite || ''].join(';'));
+      const tz = process.env.TZ || 'America/Phoenix', jour = d.toLocaleDateString('en-CA', { timeZone: tz }), h = d.toLocaleTimeString('en-GB', { timeZone: tz });
+      const lib = String((r.libelles && r.libelles[p.mesure]) || '').replace(/[,;\r\n"]/g, ' ');
+      lignes.push([jour, h, p.mesure, lib, String(p.valeur), p.unite || ''].join(','));
     }
     return '\ufeff' + lignes.join('\r\n') + '\r\n';
   }

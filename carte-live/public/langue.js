@@ -5,9 +5,31 @@
 // translate="no" et n'est jamais touché.
 (function () {
   const lire = () => { try { return localStorage.getItem('gaulix_langue'); } catch { return null; } };
-  const choix = lire() || 'en'; // édition monde : anglais par défaut, français au choix
+  const choix = lire() || 'en'; // US edition: English by default, French still available
   window.LANGUE = choix;
   window.choisirLangue = (l) => { try { localStorage.setItem('gaulix_langue', l); } catch { /* navigation privée */ } location.reload(); };
+  // Units shown (US edition): imperial by default (mi, ft, mi², mph, °F), metric on request. The code computes in
+  // metric; values are converted at display time, like the translation. Input fields stay metric (their labels say so).
+  const unites = (() => { try { return localStorage.getItem('gaulix_unites') || 'imperial'; } catch { return 'imperial'; } })();
+  window.UNITES = unites;
+  window.choisirUnites = (u) => { try { localStorage.setItem('gaulix_unites', u); } catch { /* navigation privée */ } location.reload(); };
+  const NB = '(?<![\\w.,])(-?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|-?\\d+(?:\\.\\d+)?)';
+  const nombre = (x) => Number(String(x).replace(/,/g, ''));
+  const ecrire = (v, dec) => { const d = Math.abs(v) >= 10 ? 0 : dec; return Number(v.toFixed(d)).toLocaleString('en-US', { maximumFractionDigits: d }); };
+  // value (or range "3–6") + unit → converted value(s) + new unit
+  const REGLES = [
+    ['km²', (v) => v * 0.386102, 'mi²', 1],
+    ['km/h', (v) => v * 0.621371, 'mph', 0],
+    ['km', (v) => v * 0.621371, 'mi', 1],
+    ['m', (v) => v * 3.28084, 'ft', 0],
+    ['°C', (v) => (v * 9) / 5 + 32, '°F', 0],
+  ].map(([u, f, nu, dec]) => [new RegExp(`${NB}(?:(\\s?[–-]\\s?)${NB})?(\\s?)${u.replace(/[/]/g, '\\/')}(?![\\w²³/])`, 'g'), f, nu, dec]);
+  function imperial(t) {
+    if (unites !== 'imperial' || !/\d/.test(t) || !/km|m|°C/.test(t)) return t;
+    for (const [re, f, nu, dec] of REGLES) t = t.replace(re, (_, a, sep, b, esp) => ecrire(f(nombre(a)), dec) + (b != null ? sep + ecrire(f(nombre(b)), dec) : '') + esp + nu);
+    return t;
+  }
+  window.imperial = imperial;
   // Traduction d'un texte isolé (pour le code qui en a besoin) : identité en français
   window.tr = (t) => t;
   if (choix !== 'en') return;
@@ -83,7 +105,7 @@
       const v = n.nodeValue;
       if (!/[a-zà-ÿ]/i.test(v)) return;
       if (poses.get(n) === v) return;
-      const r = traduire(v);
+      const r = imperial(traduire(v));
       if (r !== v) {
         const avant = v.match(/^\s*/)[0], apres = v.match(/\s*$/)[0];
         n.nodeValue = avant + norme(r) + apres;
@@ -103,7 +125,7 @@
   function traduireAttrs(e) {
     for (const a of ATTRS) {
       const v = e.getAttribute(a);
-      if (v && /[a-zà-ÿ]/i.test(v)) { const r = traduire(v); if (r !== v) e.setAttribute(a, r); }
+      if (v && /[a-zà-ÿ]/i.test(v)) { const r = imperial(traduire(v)); if (r !== v) e.setAttribute(a, r); }
     }
     if (e.tagName === 'INPUT' && (e.type === 'button' || e.type === 'submit') && e.value) { const r = traduire(e.value); if (r !== e.value) e.value = r; }
   }

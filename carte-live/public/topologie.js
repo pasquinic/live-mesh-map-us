@@ -5,7 +5,7 @@
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (v, d = 0, u = '') => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d).replace('.', ',') + u);
+const fmt = (v, d = 0, u = '') => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d) + u);
 // Réseau affiché : Meshtastic (par défaut) ou MeshCore (?reseau=mc)
 const MC = new URLSearchParams(location.search).get('reseau') === 'mc';
 const ROLES = MC ? {
@@ -457,7 +457,7 @@ function rendreSimulation() {
       <label>Paquet <select id="s-paquet">${Object.entries(PAQUETS).map(([k, [lib]]) => `<option value="${k}" ${anc && PAQUETS[k][1] === anc.octets ? 'selected' : ''}>${lib}</option>`).join('')}</select></label>
       <label>Preset <select id="s-preset">${Object.keys(SimMaillage.PRESETS).filter((k) => MC === k.startsWith('MESHCORE')).map((k) => `<option ${k === ((anc && anc.preset) || d.preset) ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
       ${MC ? `<label>Sauts max (flood.max) <select id="s-sauts">${[2, 3, 4, 5, 6, 8, 12, 16, 32, 64].map((k) => `<option ${k === ((anc && anc.hopLimit) || 64) ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
-      <label>tx_delay_factor <select id="s-txdelay">${[0.25, 0.5, 0.75, 1, 1.5, 2].map((k) => `<option value="${k}" ${k === ((anc && anc.txDelayFactor) || 0.5) ? 'selected' : ''}>${String(k).replace('.', ',')}${k === 0.5 ? ' (défaut)' : ''}</option>`).join('')}</select></label>`
+      <label>tx_delay_factor <select id="s-txdelay">${[0.25, 0.5, 0.75, 1, 1.5, 2].map((k) => `<option value="${k}" ${k === ((anc && anc.txDelayFactor) || 0.5) ? 'selected' : ''}>${String(k)}${k === 0.5 ? ' (défaut)' : ''}</option>`).join('')}</select></label>`
       : `<label>Limite de sauts <select id="s-sauts">${[1, 2, 3, 4, 5, 6, 7].map((k) => `<option ${k === ((anc && anc.hopLimit) || d.hopLimit || 3) ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
       <label>Favoris (sauts gratuits) <select id="s-favoris">${[['poses', 'posés par la carte'], ['tous', 'tous ceux possibles'], ['aucun', 'aucun']].map(([k, t]) => `<option value="${k}" ${anc && anc.favoris === k ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`}
       <label class="case"><input type="checkbox" id="s-sym" ${!anc || anc.symetrique ? 'checked' : ''}> Liaisons mesurées dans un seul sens supposées réciproques</label>
@@ -474,7 +474,7 @@ function rendreSimulation() {
 }
 function libelleEssai(o) {
   const modifs = Object.keys(o.roles).length;
-  return `${courtDe(o.emetteur)} · ${o.preset} · ${o.hopLimit} saut${o.hopLimit > 1 ? 's' : ''} · ${MC ? 'tx_delay ' + String(o.txDelayFactor).replace('.', ',') : 'favoris ' + (o.favoris === 'poses' ? 'posés' : o.favoris)}${modifs ? ` · ${modifs} rôle(s) modifié(s)` : ''}${o.symetrique ? '' : ' · sens mesurés seulement'}`;
+  return `${courtDe(o.emetteur)} · ${o.preset} · ${o.hopLimit} saut${o.hopLimit > 1 ? 's' : ''} · ${MC ? 'tx_delay ' + String(o.txDelayFactor) : 'favoris ' + (o.favoris === 'poses' ? 'posés' : o.favoris)}${modifs ? ` · ${modifs} rôle(s) modifié(s)` : ''}${o.symetrique ? '' : ' · sens mesurés seulement'}`;
 }
 function statistiques() {
   arreterAnim();
@@ -701,7 +701,7 @@ function rendreDirect() {
   const lim = Date.now() - 600000;
   direct.parMinute = direct.parMinute.filter((t) => t >= lim);
   const top = [...direct.emetteurs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const hm = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const hm = (t) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   z.innerHTML = `<div class="grille"><div class="mesure"><span>Paquets / min</span><b>${fmt(direct.parMinute.length / 10, 1)}</b></div><div class="mesure"><span>Depuis l’ouverture</span><b>${[...direct.emetteurs.values()].reduce((a, b) => a + b, 0)}</b></div><div class="mesure"><span>Émetteurs</span><b>${direct.emetteurs.size}</b></div></div>
     ${top.length ? `<h2>Les plus bavards (depuis l’ouverture)</h2>${top.map(([num, nb]) => `<div class="ligne" data-n="${num}"><span class="titre">${esc(nomDe(num))}</span><span class="val">${nb}</span></div>`).join('')}` : ''}
     <h2>Derniers paquets</h2>
@@ -724,10 +724,10 @@ function ouvrirVue(v) {
   if (v === 'direct') rendreDirect();
 }
 document.querySelectorAll('nav.onglets button').forEach((b) => (b.onclick = () => ouvrirVue(b.dataset.vue)));
-// Régions de France dans le choix de zone
+// States in the area selector
 fetch('/api/config', { credentials: 'same-origin' }).then((r) => r.json()).then((c) => {
   const z = $('#zone');
-  if (z && (c.regions || []).length && !z.querySelector('optgroup')) z.insertAdjacentHTML('beforeend', `<optgroup label="Régions">${c.regions.map((r) => `<option value="r${r.code}">${r.nom}</option>`).join('')}</optgroup>`);
+  if (z && (c.regions || []).length && !z.querySelector('optgroup')) z.insertAdjacentHTML('beforeend', `<optgroup label="States">${c.regions.map((r) => `<option value="r${r.code}">${r.nom}</option>`).join('')}</optgroup>`);
 }).catch(() => {});
 for (const id of ['#periode', '#zone', '#double-sens']) $(id).onchange = () => charger().catch(erreur);
 document.querySelectorAll('.source').forEach((c) => (c.onchange = () => charger().catch(erreur)));

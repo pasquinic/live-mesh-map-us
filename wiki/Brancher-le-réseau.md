@@ -1,24 +1,24 @@
-# Brancher le réseau
+# Connect the network
 
-## Le broker MQTT
-La carte s'abonne à `MQTT_RACINE/#` (par défaut `msh/EU_868`) et, pour MeshCore, à `meshcore/#`.
-- Les passerelles Meshtastic de votre réseau doivent publier sur ce broker (*Module MQTT* activé, canal avec « envoi vers MQTT »).
-- Le compte MQTT de la carte doit pouvoir **lire** `msh/#` et **lire et écrire** `meshcore/#`.
-- Un exemple de broker Mosquitto (TLS, comptes, droits) est fourni dans le dossier `mosquitto/` du dépôt.
+## The MQTT broker
+The map subscribes to `MQTT_RACINE/#` (default `msh/US`) and, for MeshCore, to `meshcore/#`.
+- The Meshtastic gateways of your network must publish to this broker (*MQTT module* on, channel with “uplink to MQTT”).
+- The map's MQTT account must be able to **read** `msh/#` and **read and write** `meshcore/#`.
+- An example Mosquitto broker (TLS, accounts, permissions) is provided in the repository's `mosquitto/` folder.
 
-## Les canaux Meshtastic
-Pour lire positions, messages et télémétrie, la carte doit connaître la clé de chaque canal : *Gestion › Réglages*, ou `CANAUX` dans `.env`.
-- Format : `NomDuCanal=cléBase64`, séparés par `;`.
-- `AQ==` désigne la clé publique par défaut (canal LongFast…).
-- Les clés des canaux privés se trouvent dans l'appli Meshtastic (canal › partager) ou dans le QR code du canal.
+## Meshtastic channels
+To read positions, messages and telemetry, the map must know each channel's key: *Manage › Settings*, or `CANAUX` in `.env`.
+- Format: `ChannelName=base64Key`, separated by `;`.
+- `AQ==` is the default public key (LongFast channel…).
+- Private channel keys are found in the Meshtastic app (channel › share) or in the channel's QR code.
 
-Les paquets chiffrés avec une clé inconnue s'affichent comme « chiffrés » : on voit qu'ils passent, mais pas leur contenu.
+Packets encrypted with an unknown key show as “encrypted”: you see them go by, but not their content.
 
-## Les protobufs, c'est quoi ?
-Meshtastic écrit tous ses messages (positions, télémétrie, messages, configuration…) dans le format binaire **Protocol Buffers**. Le dépôt [meshtastic/protobufs](https://github.com/meshtastic/protobufs) décrit ce format. La carte les embarque déjà et les tient à jour : **il n'y a rien à installer**. L'option « JSON » du module MQTT n'est pas nécessaire (et elle est incomplète).
+## What are protobufs?
+Meshtastic writes all its messages (positions, telemetry, messages, configuration…) in the binary **Protocol Buffers** format. The [meshtastic/protobufs](https://github.com/meshtastic/protobufs) repository describes it. The map already embeds them and keeps them up to date: **there is nothing to install**. The MQTT module's “JSON” option is not needed (and it is incomplete).
 
-## Le module radio de la carte
-Facultatif pour regarder la carte, **indispensable pour programmer les nœuds à distance** et pour envoyer des messages. Voir [[Connecter un module]].
+## The map's radio node
+Optional to look at the map, **essential to program nodes remotely** and to send messages. See [[Connect a node|Connecter un module]].
 
-## Les canaux MeshCore
-Voir [[MeshCore]] : `Public`, `#nom` pour un canal hashtag (le nom exact suffit), `Nom=secret` pour un canal privé.
+## MeshCore channels
+See [[MeshCore]]: `Public`, `#name` for a hashtag channel (the exact name is enough), `Name=secret` for a private channel.

@@ -1,66 +1,56 @@
-# Couverture et sites
+# Coverage and sites
 
-Onglet **Couverture** et menu **Couverture radio**. Les calculs utilisent le modèle de terrain **IGN RGE ALTI**, calibré sur les liaisons réellement mesurées.
+**Coverage** tab and **Radio coverage** menu. Computations use a terrain model at 250 m (820 ft) resolution, calibrated on actually measured links:
+- **US counties**: **USGS 3DEP** (The National Map, 1/3 arc-second seamless DEM, public domain), resampled to the 250 m grid by the USGS service. The map's area is a county (5-digit FIPS code, e.g. `04013` = Maricopa County, AZ). If 3DEP is unreachable, the map falls back to Copernicus GLO-30, which also covers the whole US.
+- **outside the US**: **Copernicus DEM GLO-30** (ESA, free, worldwide). Areas are **1° × 1° squares** named after their south-west corner (`MN49W123` = 49–50°N, 123–122°W).
 
-![Couverture actuelle du réseau, calculée sur le relief](https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/docs/captures/fr-couverture.jpg)
+![Current network coverage, computed from terrain](https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/docs/captures/en-couverture.jpg)
 
-- **Couverture actuelle du réseau** : zone desservie par les relais détectés, part du département, ce que chaque relais est seul à couvrir.
-- **Couverture d'un point** : clic sur la carte ou sur un nœud ; hauteur d'antenne réglable. Les points proches d'un autre département utilisent automatiquement son relief.
-- **Couvrir un ou plusieurs points** : sites capables de desservir un lieu, ou 2 à 5 lieux avec un seul relais.
-- **Relier deux lieux** : relais nécessaires et où les poser.
-- **Plan pour couvrir le département** : objectif, nombre de sites, accès exigé (voiture, 4×4, à pied) ; bouton **voir la couverture** sur chaque site proposé.
-- **Plan à budget** : « j'ai N relais à poser », surface et habitants gagnés.
-- **Simulation « et si… »** : retirer ou ajouter des relais, villes qui ne seraient plus couvertes.
-- **Profil entre deux points** : hauteur de chaque antenne **au-dessus du sol** (mât dessiné sur le profil, altitude du sol et de l'antenne affichées), **sites routiers** (webcams du Département et de la DIR), **déplacer des relais**.
-- **Fiche d'installation** de chaque relais (antenne, hauteur, gain, câble, puissance, alimentation) : utilisée par les calculs.
-- **Couverture mesurée** : d'où les nœuds sont réellement reçus, relevés de terrain.
-- **Bulles voisines** : les relais des cartes des départements voisins (*Outils › Partager*).
+The radio frequency used for the computations is set with `RADIO_FREQ_MHZ` in the `.env` (`906.875` = US LongFast by default). Town populations come from OpenStreetMap places, whose US population tags mostly come from the Census. Distances, heights and areas are shown in miles, feet and mi² (*Settings › Display › 📏 Units* switches to metric); input fields stay in metres and kilometres.
 
-En vue MeshCore, les calculs utilisent le réglage radio français MeshCore (869,618 MHz, BW 62,5 kHz, SF8, CR8).
+- **Current network coverage**: area served by the detected relays, share of the county, what each relay alone covers.
+- **Point coverage**: click on the map or on a node; adjustable antenna height. Points near another county automatically use its terrain.
+- **Cover one or more points**: sites able to serve a place, or 2 to 5 places with a single relay.
+- **Connect two places**: relays needed and where to place them.
+- **Plan to cover the county**: goal, number of sites, required access (car, 4×4, on foot); **see the coverage** button on each suggested site.
+- **Budget plan**: “I have N relays to install”, area and people gained.
+- **“What if…” simulation**: remove or add relays, towns that would no longer be covered.
+- **Profile between two points**: height of each antenna **above ground** (mast drawn on the profile, ground and antenna altitude shown), **towers** (OpenStreetMap communication towers, masts and water towers), **move relays**.
+- **Installation sheet** of each relay (antenna, height, gain, cable, power, power source): used by the computations.
+- **Measured coverage**: where nodes are actually received from, field surveys.
+- **Neighbouring bubbles**: relays from the maps of neighbouring counties (*Tools › Share*).
 
-## Zone dessinée à la main
-Dans *Couverture › Plan*, **🖊 Dessiner une zone** sert à étudier un secteur plutôt que tout le département : secteur d'intervention, vallée, massif, itinéraire de course…
-1. Cliquez sur la carte pour poser les coins de la zone (3 au moins). « ↶ Point » retire le dernier. Un point qui ferait croiser le contour est refusé.
-2. **➕ Autre zone** ferme la zone et en commence une autre (10 au plus) : toutes sont étudiées ensemble.
-3. Donnez un nom si vous voulez, puis **Terminer et étudier**. Un double-clic ou un clic sur le premier point fait la même chose.
+In the MeshCore view, computations use the US/Canada recommended MeshCore setting (910.525 MHz, BW 62.5 kHz, SF7, CR5).
 
-La carte donne, pour la seule zone :
-- la part couverte aujourd'hui par le réseau ;
-- les points hauts à équiper, dans l'ordre, avec le gain de surface de chacun ;
-- pour chacun, **d'autres emplacements possibles** (1a, 1b, 1c) d'apport proche, si le site proposé n'est pas utilisable ;
-- la couverture finale (bleu : déjà couvert, turquoise : apporté, rouge : non couvert).
+## Hand-drawn area
+In *Coverage › Plan*, **🖊 Draw an area** studies a sector rather than the whole county: intervention area, valley, massif, race route…
+1. Click on the map to place the area's corners (3 at least). “↶ Point” removes the last one. A point that would make the outline cross itself is refused.
+2. **➕ Another area** closes the area and starts another one (10 at most): all are studied together.
+3. Give a name if you want, then **Finish and study**. A double-click or a click on the first point does the same.
 
-**Antenne (m au-dessus du sol)** : hauteur des antennes des sites proposés pour la zone dessinée (6 m par défaut, de 1 à 60 m) ; elle est rappelée dans le résultat. Le plan du département utilise la hauteur fixée par le classement des points hauts (6 m), indiquée dans son résultat.
+For the area alone, the map gives:
+- the share covered today by the network;
+- the high points to equip, in order, with each one's area gain;
+- for each one, **other possible locations** (1a, 1b, 1c) with a similar contribution, if the suggested site cannot be used;
+- the final coverage (blue: already covered, turquoise: added, red: not covered).
 
-Les critères sont ceux du plan du département : objectif, nombre de sites, accès (modifiable dans le résultat : voiture, 4×4, à pied, tous), réseau actuel, sites réalistes. Les points hauts candidats sont ceux de la zone et des 10 km autour. La zone doit rester dans le relief chargé (le département et ses abords). Les zones sont gardées dans ce navigateur (*Zones enregistrées…*), et le GPX des sites se télécharge.
+**Antenna (m above ground)**: antenna height of the suggested sites for the drawn area (6 m by default, from 1 to 60 m); it is recalled in the result. The county plan uses the height set by the high point ranking (6 m), shown in its result.
 
-## Toute la France : relief des autres départements
-Par défaut, les calculs de couverture portent sur le département de la carte, dont le relief est téléchargé à l'installation. Pour calculer ailleurs :
+The criteria are those of the county plan: goal, number of sites, access (changeable in the result: car, 4×4, on foot, all), current network, realistic sites. Candidate high points are those of the area and within 10 km around it. The area must stay inside the loaded terrain (the department and its surroundings). Areas are kept in this browser (*Saved areas…*), and the sites' GPX can be downloaded.
 
-- **Comptes connectés** : *Couverture › Département étudié* ; le relief du département choisi est téléchargé au premier calcul (quelques minutes), puis gardé sur le serveur.
-- **Carte publique** : l'administrateur choisit dans *Gestion › Réglages › Carte publique et relief* entre « département de la carte seulement » (léger, par défaut) et « tous les départements de France ».
+## Other counties and the whole state
+By default, coverage computations cover the map's county, whose terrain is downloaded at installation. To compute elsewhere:
 
-### Télécharger et installer toute la France
-*Outils › 🗺️ Toute la France › ⬇ Télécharger et installer toute la France* (aussi dans *Gestion › Réglages › Carte publique et relief*) met sur le serveur le relief de tous les départements, pour que chaque calcul soit immédiat. **Rien à télécharger à la main** :
+- **Logged-in accounts**: *Coverage › County studied*; the chosen county's terrain is downloaded at the first computation (a few minutes; large western counties take longer), then kept on the server.
+- **Public map**: the administrator chooses in *Manage › Settings › Public map and terrain* between “county of the map only” (light, default) and “any US county”.
 
-1. la carte télécharge d'abord le **paquet « relief France »** publié sur GitHub (version `relief-france`, ≈ 110 Mo) et l'installe : quelques minutes ;
-2. elle complète ensuite, département par département, ce qui manquerait (IGN, OpenStreetMap) ;
-3. l'avancement s'affiche (département en cours, durée restante) ; la préparation continue page fermée, reprend toute seule après un redémarrage, et s'arrête d'un clic. Les départements déjà prêts sont sautés.
+### Prepare the whole state
+*Tools › 🗺️ Whole state › ⬇ Prepare all of <state>* (also in *Manage › Settings › Public map and terrain*) downloads, county by county, the terrain of every county of the map's state (USGS 3DEP) with its high points, access tracks and sites (OpenStreetMap), so every computation there is immediate. Progress is shown (current county, time left); preparation continues with the page closed, resumes by itself after a restart, and stops in one click. Counties already ready are skipped. Once done, the public map switches **by itself** to “any county”.
 
-Une fois tout installé, la carte publique passe **d'elle-même** en « tous les départements » : n'importe quel visiteur peut alors calculer la couverture partout en France.
-
-Comptez ≈ 250 Mo sur le disque. Sans le paquet (réseau qui bloque GitHub…), la préparation complète prend plusieurs heures.
-
-Autre adresse du paquet (miroir, réseau local) : `RELIEF_FRANCE_URL=https://…/relief-france.tar.gz` dans le `.env`.
-
-Installation sans Internet : copiez `relief-france.tar.gz` dans le volume de données, puis
+### Terrain package (optional)
+**📦 Build a terrain package** (same screen) puts every county ready on a server in one `tar.gz`. Another map can install it first by setting `RELIEF_PAQUET_URL=https://…/terrain-package.tar.gz` in its `.env`, or offline:
 ```bash
-docker compose exec carte-live tar -xzf /data/relief-france.tar.gz -C /data --skip-old-files
+docker compose exec carte-live tar -xzf /data/terrain-package.tar.gz -C /data --skip-old-files
 ```
 
-### Mettre à jour le paquet (mainteneur)
-Une fois par an environ (nouvelles routes, sommets, pylônes dans OpenStreetMap) :
-1. sur une carte qui a tout préparé : **📦 Fabriquer le paquet « relief France »** (même écran) ;
-2. sur GitHub, *Releases › relief-france › Edit* : supprimer l'ancien `relief-france.tar.gz`, joindre le nouveau dans le cadre **« Attach binaries »** (la zone de texte refuse plus de 25 Mo), laisser la case *pre-release* cochée.
-
-Sources : relief IGN RGE ALTI (Licence Ouverte Etalab 2.0) ; points hauts, voies d'accès et sites © contributeurs OpenStreetMap (ODbL).
+Sources: USGS 3D Elevation Program (public domain); Copernicus DEM © DLR e.V. / Airbus, provided under COPERNICUS by the EU and ESA; county outlines: US Census Bureau cartographic boundaries; high points, towns, access roads and towers © OpenStreetMap contributors (ODbL); addresses: US Census geocoder.

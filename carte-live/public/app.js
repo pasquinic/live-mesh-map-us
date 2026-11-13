@@ -57,7 +57,7 @@ const etat = {
 // ---- Utilitaires -----------------------------------------------------------
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const fmt = (v, d = 1, u = '') => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d).replace('.', ',') + u);
+const fmt = (v, d = 1, u = '') => (v == null || Number.isNaN(v) ? '–' : Number(v).toFixed(d) + u);
 const idHex = (num) => '!' + (num >>> 0).toString(16).padStart(8, '0');
 const nomNoeud = (num) => {
   const n = etat.noeuds.get(num);
@@ -75,7 +75,7 @@ function ilYa(t) {
   if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
   return `il y a ${Math.round(s / 86400)} j`;
 }
-const heure = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const heure = (t) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 function duree(sec) {
   if (sec == null) return '–';
   const j = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
@@ -91,17 +91,17 @@ async function api(url, opts) {
 // ---- Coordonnées GPS -----------------------------------------------------------
 function dms(v, pos, neg) {
   const a = Math.abs(v), d = Math.floor(a), mf = (a - d) * 60, m = Math.floor(mf), sec = (mf - m) * 60;
-  return `${d}°${String(m).padStart(2, '0')}′${sec.toFixed(1).padStart(4, '0').replace('.', ',')}″${v >= 0 ? pos : neg}`;
+  return `${d}°${String(m).padStart(2, '0')}′${sec.toFixed(1).padStart(4, '0')}″${v >= 0 ? pos : neg}`;
 }
 function blocCoords(lat, lon, opts = {}) {
   if (lat == null || lon == null) return '';
   const dec = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  const sexa = `${dms(lat, 'N', 'S')} ${dms(lon, 'E', 'O')}`;
+  const sexa = `${dms(lat, 'N', 'S')} ${dms(lon, 'E', 'W')}`;
   return `<div class="coords">
     <div class="coords-l"><span>GPS</span><b class="mono">${dec}</b><button class="mini" data-copier="${dec}" title="Copier les coordonnées décimales">Copier</button></div>
     <div class="coords-l"><span>DMS</span><b class="mono">${sexa}</b><button class="mini" data-copier="${sexa}" title="Copier en degrés, minutes, secondes">Copier</button></div>
     <div class="coords-l liens-carto">${opts.alt != null ? `<span>Alt.</span><b>${Math.round(opts.alt)} m</b>` : ''}
-      <a href="https://cartes.gouv.fr/explorer-les-cartes/?c=${lon.toFixed(5)},${lat.toFixed(5)}&z=16&l=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2$GEOPORTAIL:OGC:WMTS(1;1;0)&permalink=yes" target="_blank" rel="noopener" title="Carte IGN sur cartes.gouv.fr (remplace le Géoportail)">cartes.gouv.fr</a>
+      <a href="https://caltopo.com/map.html#ll=${lat.toFixed(5)},${lon.toFixed(5)}&z=15&b=t" target="_blank" rel="noopener" title="USGS-style topographic map on CalTopo">CalTopo</a>
       <a href="https://www.google.com/maps/search/?api=1&query=${lat.toFixed(6)},${lon.toFixed(6)}" target="_blank" rel="noopener">Google Maps</a>
       <a href="geo:${lat.toFixed(6)},${lon.toFixed(6)}">GPS du téléphone</a></div>
     ${opts.approx ? '<div class="note">Position publique arrondie (≈ 100 m) : connectez-vous pour la position exacte.</div>' : ''}
@@ -161,24 +161,25 @@ function initCarte() {
   L.control.zoom({ position: 'bottomleft' }).addTo(carte);
   installerMaPosition();
   const t = etat.config.tuiles;
-  const wmts = (couche, format = 'image/png', style = 'normal') => `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${couche}&STYLE=${style}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${format}`;
-  const ign = '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> Géoplateforme';
+  // USGS The National Map base maps (public domain, no key; cached tiles up to zoom 16)
+  const tnm = (service) => `https://basemap.nationalmap.gov/arcgis/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`;
+  const usgs = 'Map courtesy of the <a href="https://www.usgs.gov/programs/national-geospatial-program/national-map" target="_blank" rel="noopener">U.S. Geological Survey</a>';
   const fonds = {
     'Sombre': L.layerGroup([
       L.tileLayer(t.url, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: t.sombre ? 'tuiles-sombres' : '', attribution: t.attribution }),
       ...(t.etiquettes ? [L.tileLayer(t.etiquettes, { maxZoom: 19, maxNativeZoom: t.zoomMaxNatif || 19, className: 'etiquettes-claires' })] : []),
     ]),
-    'Plan IGN': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
-    'Plan IGN sombre': L.tileLayer(wmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'), { maxZoom: 19, maxNativeZoom: 19, className: 'tuiles-sombres', attribution: ign }),
-    'Photos aériennes IGN': L.tileLayer(wmts('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'), { maxZoom: 19, maxNativeZoom: 19, attribution: ign }),
+    'USGS Topo': L.tileLayer(tnm('USGSTopo'), { maxZoom: 19, maxNativeZoom: 16, attribution: usgs }),
+    'USGS Topo sombre': L.tileLayer(tnm('USGSTopo'), { maxZoom: 19, maxNativeZoom: 16, className: 'tuiles-sombres', attribution: usgs }),
+    'USGS Imagery': L.tileLayer(tnm('USGSImageryTopo'), { maxZoom: 19, maxNativeZoom: 16, attribution: usgs }),
     'Topographique': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, maxNativeZoom: 17, subdomains: 'abc', attribution: 'Carte &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), données &copy; contributeurs OpenStreetMap' }),
   };
   const surcouches = {
-    'Relief ombré': L.tileLayer(wmts('ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'image/png', 'estompage_grayscale'), { maxZoom: 19, maxNativeZoom: 15, opacity: 0.4, attribution: ign }),
-    'Noms des lieux': L.tileLayer(wmts('GEOGRAPHICALNAMES.NAMES'), { maxZoom: 19, maxNativeZoom: 18, className: 'noms-ign', attribution: ign }),
+    'Relief ombré': L.tileLayer(tnm('USGSShadedReliefOnly'), { maxZoom: 19, maxNativeZoom: 16, opacity: 0.4, attribution: usgs }),
+    'Noms des lieux': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, maxNativeZoom: 16, className: 'noms-ign', attribution: 'Labels &copy; Esri' }),
     'Points de repère': L.layerGroup(),
   };
-  // Repères remarquables (Vierge du Puy, Mézenc…) avec leur nom toujours affiché
+  // Local landmarks (optional donnees-ref/reperes-<county>.json) with their name always shown
   api('/api/reperes').then((liste) => {
     for (const r of liste) {
       L.marker([r.lat, r.lon], { icon: L.divIcon({ className: 'repere', html: `<i></i><span>${esc(r.nom)}</span>`, iconSize: [10, 10], iconAnchor: [5, 5] }), pane: 'sommets' })
@@ -229,13 +230,13 @@ function initCarte() {
   document.body.classList.toggle('zoom-proche', carte.getZoom() >= 11);
 }
 
-// Vue « Haute-Loire » : rectangle de la zone, ou nom commençant par 43 pour les nœuds sans position
+// Area view: box of the area; nodes without a position are only kept for the map's own radio node
 function dansZone(n) {
   if (!etat.zone || !n) return true;
   const z = etat.config.zone;
   if (n.lat != null && n.lon != null) return n.lat >= z[0] && n.lat <= z[2] && n.lon >= z[1] && n.lon <= z[3];
   if (etat.radio && n.num === etat.radio.noeudLocal) return true;
-  return /^43/.test(n.nomLong || n.nomCourt || '');
+  return false;
 }
 const dansZoneNum = (num) => { const n = etat.noeuds.get(num); return n ? dansZone(n) : !etat.zone; };
 
@@ -755,7 +756,7 @@ function rendrePortee() {
   const diag = [];
   if (!portee.recs.length && ecoule >= 5) {
     if (portee.relaye.length) diag.push(`Il a relayé ${portee.relaye.length} paquet(s) d’autres nœuds : il fonctionne en radio, mais ses propres paquets ne remontent pas. Cochez « OK to MQTT » (Autoriser l’envoi vers MQTT) dans sa configuration LoRa.`);
-    else diag.push('Rien reçu depuis 5 minutes. Vérifiez sur le nœud : région EU_868, preset et slot identiques au réseau (fréquence), canal principal identique (nom et clé), « OK to MQTT » coché. Redémarrez-le : il envoie alors sa fiche et sa position tout de suite.');
+    else diag.push('Rien reçu depuis 5 minutes. Vérifiez sur le nœud : région US, preset et slot identiques au réseau (fréquence), canal principal identique (nom et clé), « OK to MQTT » coché. Redémarrez-le : il envoie alors sa fiche et sa position tout de suite.');
   }
   if (portee.recs.length && lignes.every((g) => g.sautsMin > 0)) diag.push('Aucune passerelle ne l’entend en direct : il passe par des relais.');
   $('#fiche').hidden = false;
@@ -1576,7 +1577,7 @@ async function ouvrirOutilProgrammer(id) { ouvrirOnglet('gestion'); const b = aw
 const CATALOGUE_REGLAGES = [
   // Réglages de la carte (administrateur)
   ['Nom de la carte', 'Compte › Réglages', 'titre', 'admin', () => ouvrirDlg('reglages', '[name=titre]')],
-  ['Département de la carte', 'Compte › Réglages', 'zone contour centrage relief', 'admin', () => ouvrirDlg('reglages', '[name=departement]')],
+  ['County of the map', 'Compte › Réglages', 'county area outline centre terrain zone', 'admin', () => ouvrirDlg('reglages', '[name=departement]')],
   ['Serveur MQTT (broker)', 'Compte › Réglages', 'mqtt url broker adresse serveur connexion', 'admin', () => ouvrirDlg('reglages', '[name=mqttUrl]')],
   ['Sujet racine MQTT', 'Compte › Réglages', 'mqtt topic racine msh', 'admin', () => ouvrirDlg('reglages', '[name=mqttRacine]')],
   ['Utilisateur et mot de passe MQTT', 'Compte › Réglages', 'mqtt identifiant login', 'admin', () => ouvrirDlg('reglages', '[name=mqttUtilisateur]')],
@@ -1585,7 +1586,7 @@ const CATALOGUE_REGLAGES = [
   ['Précision des positions publiques', 'Compte › Réglages', 'arrondi confidentialité carte publique', 'admin', () => ouvrirDlg('reglages', '[name=precisionPublique]')],
   ['Durée de conservation des données', 'Compte › Réglages', 'retention jours historique purge', 'admin', () => ouvrirDlg('reglages', '[name=retentionJours]')],
   ['Canaux Meshtastic à déchiffrer (clés)', 'Compte › Réglages', 'canaux cle psk aq== messages chiffrement longfast', 'admin', () => ouvrirDlg('reglages', '[name=canaux]')],
-  ['Télécharger toute la France (relief)', 'Outils', 'relief france paquet mnt télécharger préparer installer carte', 'admin', () => ficheFrance()],
+  ['Prepare the whole state (terrain)', 'Outils', 'terrain relief state county package download prepare install map', 'admin', () => ficheFrance()],
   ['Comptes des utilisateurs', 'Compte › Comptes', 'utilisateur ajouter rôle gestionnaire secteur blocage', 'admin', () => ouvrirDlg('comptes')],
   ['Sauvegardes', 'Compte › Sauvegardes', 'sauvegarde restaurer export', 'admin', () => ouvrirDlg('sauvegardes')],
   ['Archive PostgreSQL', 'Compte › Archive', 'postgres base archive', 'admin', () => ouvrirDlg('archive')],
@@ -1701,7 +1702,7 @@ async function envoyerSigEnAttente() {
   const reste = [];
   let partis = 0;
   for (const s of l) {
-    try { await postJson('/api/signalements', { ...s, details: `${s.details ? s.details + ' ' : ''}(signalé hors réseau à ${new Date(s.heureLocale).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})`.trim() }); partis++; }
+    try { await postJson('/api/signalements', { ...s, details: `${s.details ? s.details + ' ' : ''}(signalé hors réseau à ${new Date(s.heureLocale).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })})`.trim() }); partis++; }
     catch (e) { if (/fetch|réseau|network|Failed/i.test(e.message)) reste.push(s); else annonce(`⚠ Signalement « ${s.titre} » refusé : ${e.message}`, 'erreur'); }
   }
   ecrireLs(CLE_SIG_ATTENTE, reste);
@@ -1735,7 +1736,7 @@ function popupSignalement(s) {
   const d = document.createElement('div');
   d.className = 'popup-sig';
   d.innerHTML = `<b>${s.icone} ${esc(s.titre)}</b>${s.details ? `<div>${esc(s.details)}</div>` : ''}
-    <div class="note">par ${esc(s.auteur)} ${ilYa(s.cree)} · jusqu’au ${new Date(s.expire).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}<br><span class="mono">${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</span></div>
+    <div class="note">par ${esc(s.auteur)} ${ilYa(s.cree)} · jusqu’au ${new Date(s.expire).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}<br><span class="mono">${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</span></div>
     ${s.source === 'radio' ? `<div class="note">📻 reçu par radio${s.canal ? ' sur ' + esc(s.canal) : ''} (point de passage)</div>` : ''}
     ${(s.envois.mt || []).map((e) => etatEnvoiSig(e, 'Meshtastic')).join('')}${etatEnvoiSig(s.envois.mc, 'MeshCore')}
     ${s.actif ? `<div class="actions-prop"><button class="mini principal" data-fin title="${s.source === 'radio' ? 'Le retirer de la carte' : 'Annoncer la fin en LoRa et retirer le point des applis'}">✅ Terminé</button>${s.source === 'radio' ? '' : '<button class="mini" data-renvoi title="Renvoyer en LoRa">↻ Renvoyer</button>'}</div>` : `<div class="note">${s.fin ? 'Terminé par ' + esc(s.finPar || '?') + ' ' + ilYa(s.fin) : 'Expiré'}</div>`}`;
@@ -1755,8 +1756,8 @@ async function formSignalement(lat, lon) {
   const mem = lireLs('gaulix_sig', {}) || {};
   $('#fiche').hidden = false; etat.selection = null;
   const z = $('#fiche-contenu');
-  // Canaux Meshtastic cochés : ceux du dernier envoi, sinon Fr_Balise et Alerte (comme GerMaCrise / Bipper)
-  const parDefaut = (c) => Array.isArray(mem.mt) ? mem.mt.includes(c.index) : /^(fr_balise|alerte)$/i.test(c.nom);
+  // Meshtastic channels ticked: those of the last send, otherwise channels named Alert / Emergency (or the French Fr_Balise / Alerte)
+  const parDefaut = (c) => Array.isArray(mem.mt) ? mem.mt.includes(c.index) : /^(alerts?|emergency|fr_balise|alerte)$/i.test(c.nom);
   const optMc = r.mc.pret && r.mc.canaux.length ? r.mc.canaux.map((c) => `<option value="${c.index}" ${String(mem.mc) === String(c.index) ? 'selected' : ''}>${c.index} · ${esc(c.nom)}</option>`).join('') : '';
   let cat = mem.cat && r.categories[mem.cat] ? mem.cat : 'routes';
   let type = Object.keys(r.types).find((k) => r.types[k].cat.includes(cat));
@@ -2062,7 +2063,7 @@ function rendreMessages() {
     : filtreMessages === 'direct' ? tous.filter((m) => estMonDirect(m))
       : tous.filter((m) => m.vers === 0xffffffff && memeCanal(m.canal, filtreMessages.slice(2)));
   $('#messages').innerHTML = msgs.length
-    ? msgs.map((m) => `<div class="message${etat.radio && m.de === etat.radio.noeudLocal ? ' moi' : ''}${msgNouveaux.has('mt' + m.rowid) ? ' nouveau' : ''}${etat.admin ? ' cliquable' : ''}" data-rowid="${m.rowid}" data-de="${m.de}" data-vers="${m.vers}" data-canal="${esc(m.canal || '')}" title="${etat.admin ? 'Cliquer pour répondre dans ce canal' : ''}"><div class="entete">${heure(m.heure)} · ${new Date(m.heure).toLocaleDateString('fr-FR')} · ${m.vers !== 0xffffffff ? '<b class="canal-msg direct">✉️ Direct</b>' : `<b class="canal-msg" style="--coul:${couleurCanal(m.canal)}">📢 ${esc(m.canal || '?')}</b>`}${msgNouveaux.has('mt' + m.rowid) ? ' <span class="etiquette-nouveau">nouveau</span>' : ''}${estRelaye(m.texte) ? ' <span class="badge-passerelle" title="Relayé par une passerelle inter-réseaux">⇄ passerelle</span>' : ''} · ${esc(nomNoeud(m.de))}${m.vers !== 0xffffffff ? ' → ' + esc(nomNoeud(m.vers)) : ''}</div><div class="texte" translate="no">${m.texte ? texteMessageHtml(m.texte, nomNoeud(m.de), m.heure) : '(non conservé)'}</div>${origineMessage(m)}${suiviMessage(m)}</div>`).join('')
+    ? msgs.map((m) => `<div class="message${etat.radio && m.de === etat.radio.noeudLocal ? ' moi' : ''}${msgNouveaux.has('mt' + m.rowid) ? ' nouveau' : ''}${etat.admin ? ' cliquable' : ''}" data-rowid="${m.rowid}" data-de="${m.de}" data-vers="${m.vers}" data-canal="${esc(m.canal || '')}" title="${etat.admin ? 'Cliquer pour répondre dans ce canal' : ''}"><div class="entete">${heure(m.heure)} · ${new Date(m.heure).toLocaleDateString('en-US')} · ${m.vers !== 0xffffffff ? '<b class="canal-msg direct">✉️ Direct</b>' : `<b class="canal-msg" style="--coul:${couleurCanal(m.canal)}">📢 ${esc(m.canal || '?')}</b>`}${msgNouveaux.has('mt' + m.rowid) ? ' <span class="etiquette-nouveau">nouveau</span>' : ''}${estRelaye(m.texte) ? ' <span class="badge-passerelle" title="Relayé par une passerelle inter-réseaux">⇄ passerelle</span>' : ''} · ${esc(nomNoeud(m.de))}${m.vers !== 0xffffffff ? ' → ' + esc(nomNoeud(m.vers)) : ''}</div><div class="texte" translate="no">${m.texte ? texteMessageHtml(m.texte, nomNoeud(m.de), m.heure) : '(non conservé)'}</div>${origineMessage(m)}${suiviMessage(m)}</div>`).join('')
     : `<div class="vide">${filtreMessages === 'direct' && !mesNums().size ? 'Aucun module relié à la carte : vos messages directs sont ceux envoyés ou reçus par votre module.' : filtreMessages === 'direct' ? 'Aucun message direct envoyé ou reçu par votre module sur la période.' : filtreMessages ? 'Aucun message dans ce choix sur la période.' : 'Aucun message texte sur la période.'}</div>`;
   epinglerMessages(msgs.map((m) => ({ texte: m.texte, heure: m.heure, qui: nomNoeud(m.de) })));
   if (etat.admin) $('#messages').querySelectorAll('.message[data-de]').forEach((el) => (el.onclick = () => repondreA(el)));
@@ -2120,7 +2121,7 @@ function courbe(points, cle, lib, unite, dec, seuil) {
   const etiqY = graduations.map((v, k) => `<span style="top:${((y(v) / 70) * 100).toFixed(1)}%">${fmt(v, decAxe)}${k === graduations.length - 1 ? u : ''}</span>`).join('');
   // Axe du temps : heures sur moins de 36 h, sinon dates
   const long = t1 - t0 > 36 * 3600000;
-  const fmtT = (t) => new Date(t).toLocaleString('fr-FR', long ? { day: '2-digit', month: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  const fmtT = (t) => new Date(t).toLocaleString('en-US', long ? { day: '2-digit', month: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   const etiqX = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">${fmtT(t0 + f * (t1 - t0))}</span>`).join('');
   const verticales = [0.25, 0.5, 0.75].map((f) => `<line x1="${f * 300}" x2="${f * 300}" y1="0" y2="70" stroke="currentColor" stroke-width="1" opacity=".08" vector-effect="non-scaling-stroke"/>`).join('');
   return `<div class="courbe"><div class="lib"><span>${lib}</span><span>dernier ${fmt(vals[vals.length - 1], dec, unite)} · min ${fmt(Math.min(...vals), dec)} · max ${fmt(Math.max(...vals), dec)}</span></div>
@@ -2142,7 +2143,7 @@ function htmlInstallation(n, f) {
   return `<form id="f-install" class="form-edit">
     <h4>Antenne et radio</h4><div class="grille-edit">
       <label>Hauteur au-dessus du sol (m) <input name="hauteur" type="number" step="0.5" min="0.5" max="120" value="${v('hauteur')}" placeholder="ex. 8"></label>
-      <label>Antenne (modèle, type) <input name="antenne" maxlength="80" value="${v('antenne')}" placeholder="ex. colinéaire 868 MHz 5,8 dBi"></label>
+      <label>Antenne (modèle, type) <input name="antenne" maxlength="80" value="${v('antenne')}" placeholder="ex. colinéaire 915 MHz 5,8 dBi"></label>
       <label>Gain (dBi) <input name="gain" type="number" step="0.1" min="-5" max="15" value="${v('gain')}" placeholder="2,15 par défaut"></label>
       <label>Pertes câble + connecteurs (dB) <input name="pertesCable" type="number" step="0.1" min="0" max="20" value="${v('pertesCable')}" placeholder="ex. 1,5"></label>
       <label>Puissance d’émission (dBm) <input name="puissance" type="number" step="1" min="0" max="30" value="${v('puissance')}" placeholder="27 par défaut"></label></div>
@@ -2265,7 +2266,7 @@ async function ouvrirFiche(num) {
         ['Canaux utilisés', [...new Set(d.paquets.map((p) => p.canal).filter(Boolean))].join(', ')],
         ['Passerelle MQTT', n.passerelle ? (n.etatPasserelle === 'offline' ? 'oui, hors ligne' : 'oui, en ligne') : 'non'],
         ['Messages chiffrés PKI', d.paquets.some((p) => p.pki) ? 'oui (firmware ≥ 2.5)' : '–'],
-        ['Vu la première fois', n.premierVu ? new Date(n.premierVu).toLocaleString('fr-FR') : null],
+        ['Vu la première fois', n.premierVu ? new Date(n.premierVu).toLocaleString('en-US') : null],
         ['Dernière position', n.heurePosition ? ilYa(n.heurePosition) : null]].map(([l, v]) => `<div class="mesure"><span>${l}</span><b>${esc(v ?? '–')}</b></div>`).join('')}
     </div>
     <p class="note">Valeurs déduites des trames entendues. Pour la configuration complète lue dans le nœud lui-même : onglet Programmer › Lire sa configuration (admin).</p>
@@ -2359,7 +2360,7 @@ function rendreSante(sa, n) {
     ? sa.traceroutes.slice(0, 8).map((t) => {
         const [ic, col, lib] = statuts[t.statut] || statuts.envoye;
         const chemin = t.chemin ? t.chemin.map((c, i) => `${i ? `<span class="snr" style="color:${couleurSnr(c.snr)}">${c.snr != null ? fmt(c.snr, 1) : '?'} dB →</span> ` : ''}${esc(c.nom)}`).join(' ') : esc(t.detail || lib);
-        return `<div class="tr"><span style="color:${col}">${ic}</span> <small>${new Date(t.heure).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${t.declencheur === 'auto' ? 'auto' : 'manuel'}${t.duree ? ' · ' + Math.round(t.duree / 1000) + ' s' : ''}</small><div>${chemin}</div></div>`;
+        return `<div class="tr"><span style="color:${col}">${ic}</span> <small>${new Date(t.heure).toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${t.declencheur === 'auto' ? 'auto' : 'manuel'}${t.duree ? ' · ' + Math.round(t.duree / 1000) + ' s' : ''}</small><div>${chemin}</div></div>`;
       }).join('')
     : '<div class="vide">Aucun traceroute pour l’instant.</div>';
   return `
@@ -2514,7 +2515,7 @@ function brancherCurseurProfil(r) {
     g.querySelector('line').setAttribute('x1', px); g.querySelector('line').setAttribute('x2', px);
     g.querySelector('circle').setAttribute('cx', px); g.querySelector('circle').setAttribute('cy', py);
     const deg = p.visee - p.solCourbe;
-    const l1 = `${(p.d / 1000).toFixed(2).replace('.', ',')} km · sol ${Math.round(p.sol)} m`;
+    const l1 = `${(p.d / 1000).toFixed(2)} km · sol ${Math.round(p.sol)} m`;
     const l2 = deg >= 0 ? `visée ${Math.round(deg)} m au-dessus` : `relief ${Math.round(-deg)} m au-dessus de la visée`;
     const larg = Math.max(l1.length, l2.length) * 5.6 + 12;
     const bx = px + larg + 8 > W ? px - larg - 6 : px + 6;
@@ -2537,7 +2538,7 @@ function brancherCurseurProfil(r) {
     const deg = p.visee - p.solCourbe;
     const div = document.createElement('div');
     div.className = 'popup-lieu';
-    div.innerHTML = `<b>${(p.d / 1000).toFixed(2).replace('.', ',')} km depuis A</b>
+    div.innerHTML = `<b>${(p.d / 1000).toFixed(2)} km depuis A</b>
       <div class="meta-longue">Sol ${Math.round(p.sol)} m · ${deg >= 0 ? `visée ${Math.round(deg)} m au-dessus du relief` : `<span style="color:var(--critique)">relief ${Math.round(-deg)} m au-dessus de la visée</span>`}</div>
       ${blocCoords(p.lat, p.lon, { alt: p.sol })}
       <div class="menu-contexte"><button data-a="retour">↩ Revenir au profil</button><button data-a="effacer">Effacer le tracé</button></div>`;
@@ -2584,7 +2585,7 @@ async function chargerMaintenance(quoi) {
     const ret = r.noeuds.filter((x) => x.etat === 'ancien' || x.etat === 'retard').length;
     r$.textContent = ref ? `référence ${ref.v.join('.')}${ret ? ` · ${ret} en retard` : ''}` : `${r.noeuds.length} nœuds`;
     const lib = { 'a-jour': ['✔', 'à jour'], retard: ['↻', 'en retard'], ancien: ['⚠', 'ancien'], connu: ['?', 'référence indisponible'], inconnu: ['–', 'version inconnue'] };
-    z.innerHTML = `${ref ? `<p class="note">Dernière version stable : <a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.tag)}</a> (${new Date(ref.date).toLocaleDateString('fr-FR')})${r.reference.test && r.reference.test.tag !== ref.tag ? ` · en test : ${esc(r.reference.test.tag)}` : ''}.</p>` : '<p class="note">Version de référence indisponible (GitHub injoignable).</p>'}
+    z.innerHTML = `${ref ? `<p class="note">Dernière version stable : <a href="${esc(ref.url)}" target="_blank" rel="noopener">${esc(ref.tag)}</a> (${new Date(ref.date).toLocaleDateString('en-US')})${r.reference.test && r.reference.test.tag !== ref.tag ? ` · en test : ${esc(r.reference.test.tag)}` : ''}.</p>` : '<p class="note">Version de référence indisponible (GitHub injoignable).</p>'}
       <div class="rang">${Object.entries(r.parVersion).sort((a, b) => b[1] - a[1]).map(([v, n]) => `<span class="pastille">${esc(v)} : ${n}</span>`).join(' ')}</div>
       ${r.noeuds.map((x) => `<div class="ligne" data-fiche="${x.num}"><span class="etat-fw ${x.etat}">${lib[x.etat][0]}</span><span class="titre">${esc(x.nom)}<small>${esc(x.materiel || '')}${x.version ? ' · ' + esc(x.version) : ''}${x.retard ? ' · ' + esc(x.retard) + ' de retard' : ''}</small></span><span class="meta">${lib[x.etat][1]}</span></div>`).join('')}
       <p class="note">La version vient des annonces des nœuds (rapport de carte) ou d’une lecture de configuration. Un firmware Meshtastic ne se met pas à jour par LoRa : il faut passer sur place (USB, ou Wi-Fi/Bluetooth selon le modèle) avec le flasheur (menu Outils). Les fiches Installation donnent l’accès et le contact de chaque site.</p>`;
@@ -2701,7 +2702,7 @@ async function demarrerRejeu() {
 function majRejeu() {
   const r = etat.rejeu;
   if (!r) return;
-  $('#rejeu-heure').textContent = new Date(r.t).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  $('#rejeu-heure').textContent = new Date(r.t).toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   $('#rejeu-curseur').value = r.t;
   $('#rejeu-lecture').textContent = r.actif ? '❚❚' : '▶';
 }
@@ -2908,7 +2909,7 @@ async function couvertureIci(latlng, hauteur) {
   let r;
   // Point dans un autre département : son relief IGN se charge à la demande (quelques minutes la première fois)
   for (let essai = 0; essai < 20; essai++) {
-    r = await voirCouvertureSite(p, 'Point choisi', h, { cadrer: true, erreurs: true, preset: etat.vueReseau === 'meshcore' ? 'MESHCORE_FR' : undefined });
+    r = await voirCouvertureSite(p, 'Point choisi', h, { cadrer: true, erreurs: true, preset: etat.vueReseau === 'meshcore' ? 'MESHCORE_US' : undefined });
     if (!r || !r.erreur || !/chargement/.test(r.erreur)) break;
     $('#fiche-contenu').innerHTML = `<div class="vide">${esc(r.erreur)}<br><small>Nouvel essai automatique dans 20 s (${essai + 1}/20)…</small></div>`;
     await new Promise((ok) => setTimeout(ok, 20000));
@@ -3078,7 +3079,7 @@ async function simulation() {
   L.imageOverlay(r.image, [[e.sud, e.ouest], [e.nord, e.est]], { opacity: 0.8, pane: 'couverture', className: 'pixelise' }).addTo(g);
   for (const n of r.retires) L.marker([n.lat, n.lon], { icon: L.divIcon({ className: 'simu-retire', html: '✖', iconSize: [22, 22], iconAnchor: [11, 11] }), pane: 'traces', zIndexOffset: 900 }).bindTooltip(`Retiré : ${esc(n.nom)}`, { className: 'info' }).addTo(g);
   r.ajoutes.forEach((a, i) => L.marker([a.lat, a.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>+${i + 1}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 950 }).bindTooltip(`Ajouté : ${esc(a.nom)} · antenne ${a.h} m`, { className: 'info' }).addTo(g));
-  for (const v of r.villes) L.circleMarker([v.lat, v.lon], { radius: 5, color: v.couverteApres ? '#e8eef5' : '#ff5c6c', weight: 2, fillColor: v.couverteApres ? '#3ee6c4' : '#ff5c6c', fillOpacity: 0.9, pane: 'traces' }).bindTooltip(`${esc(v.nom)} · ${v.population.toLocaleString('fr-FR')} hab.${v.couverteApres ? '' : ' · <b>non couverte</b>'}`, { className: 'info' }).addTo(g);
+  for (const v of r.villes) L.circleMarker([v.lat, v.lon], { radius: 5, color: v.couverteApres ? '#e8eef5' : '#ff5c6c', weight: 2, fillColor: v.couverteApres ? '#3ee6c4' : '#ff5c6c', fillOpacity: 0.9, pane: 'traces' }).bindTooltip(`${esc(v.nom)} · ${v.population.toLocaleString('en-US')} hab.${v.couverteApres ? '' : ' · <b>non couverte</b>'}`, { className: 'info' }).addTo(g);
   g.addTo(carte);
   etat.coucheCouverture = g;
   $('#btn-effacer').hidden = false;
@@ -3163,7 +3164,7 @@ function dessinerReleves() {
   const tous = [...terrain.liste, ...lireAttente().map((r) => ({ ...r, attente: true }))];
   for (const r of tous) {
     const m = L.marker([r.lat, r.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-releve${r.attente ? ' attente' : ''}">${ICONE_RELEVE[r.type] || '📝'}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 400 });
-    m.bindPopup(() => `<div class="popup-releve"><b>${esc(terrain.types[r.type] || r.type)}</b>${r.attente ? ' <span class="pastille attention">pas encore envoyé</span>' : ''}<br><small>${new Date(r.heure).toLocaleString('fr-FR')}${r.auteur ? ' · ' + esc(r.auteur) : ''}${r.precision ? ' · GPS ±' + Math.round(r.precision) + ' m' : ''}${r.alt != null ? ' · ' + Math.round(r.alt) + ' m' : ''}</small>
+    m.bindPopup(() => `<div class="popup-releve"><b>${esc(terrain.types[r.type] || r.type)}</b>${r.attente ? ' <span class="pastille attention">pas encore envoyé</span>' : ''}<br><small>${new Date(r.heure).toLocaleString('en-US')}${r.auteur ? ' · ' + esc(r.auteur) : ''}${r.precision ? ' · GPS ±' + Math.round(r.precision) + ' m' : ''}${r.alt != null ? ' · ' + Math.round(r.alt) + ' m' : ''}</small>
       ${r.noeud || r.snr != null || r.rssi != null ? `<div>📶 ${esc(r.noeud || '')}${r.snr != null ? ' · SNR ' + r.snr + ' dB' : ''}${r.rssi != null ? ' · RSSI ' + r.rssi + ' dBm' : ''}</div>` : ''}
       ${r.note ? `<p>${esc(r.note).replace(/\n/g, '<br>')}</p>` : ''}
       ${r.photo === true ? `<a href="/api/releves/${r.id}/photo" target="_blank"><img src="/api/releves/${r.id}/photo" alt="photo du relevé" loading="lazy"></a>` : typeof r.photo === 'string' ? `<img src="${r.photo}" alt="photo du relevé">` : ''}
@@ -3468,7 +3469,7 @@ function terminerZone() {
   const d = etat.dessinZone;
   if (!d || !fermerZoneEnCours() || !d.faites.length) return;
   const polys = d.faites;
-  const nom = (d.nom || '').trim() || `Zone${polys.length > 1 ? 's' : ''} du ${new Date().toLocaleDateString('fr-FR')}`;
+  const nom = (d.nom || '').trim() || `Zone${polys.length > 1 ? 's' : ''} du ${new Date().toLocaleDateString('en-US')}`;
   arreterZone();
   // Enregistrée dans ce navigateur pour la retrouver (10 au plus, la plus récente en tête)
   const l = lireLs('gaulix_zones', []).filter((z) => z.nom !== nom);
@@ -3565,15 +3566,15 @@ async function planDepartement() {
   const pc = $('#plan-couv'); if (pc) pc.onclick = () => couvertureMulti(r.sites.map((x) => ({ lat: x.lat, lon: x.lon, h: (r.parametres && r.parametres.hs) || 6, nom: nomSommet(x) })));
 }
 
-// ---- Sites routiers (webcams du Département et de la DIR Massif Central) ---------------------------------
+// ---- Tall structures (OpenStreetMap communication towers, masts and water towers) -----------------------
 async function dessinerRoutiers() {
   if (etat.coucheRoutiers) { etat.coucheRoutiers.remove(); etat.coucheRoutiers = null; }
   if (!etat.couches.routiers) return;
   if (!etat.routiers) { try { etat.routiers = (await api('/api/sites-routiers')).sites || []; } catch { etat.routiers = []; } }
   const g = L.layerGroup();
   for (const x of etat.routiers) {
-    L.marker([x.lat, x.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-routier ${x.gestionnaire.startsWith('DIR') ? 'dir' : ''}">📷</div>`, iconSize: [20, 20], iconAnchor: [10, 10] }), zIndexOffset: 350 })
-      .bindTooltip(`<b>${esc(x.nom)}</b><br>${esc(x.gestionnaire)} · ${esc(x.type)}${x.altitude ? ' · ' + x.altitude + ' m' : ''}<br><small>Cliquez : couverture d’un relais posé ici</small>`, { className: 'info' })
+    L.marker([x.lat, x.lon], { icon: L.divIcon({ className: '', html: `<div class="mk-routier ${x.gestionnaire.startsWith('DIR') ? 'dir' : ''}">${x.type === 'château d’eau' ? '💧' : '📡'}</div>`, iconSize: [20, 20], iconAnchor: [10, 10] }), zIndexOffset: 350 })
+      .bindTooltip(`<b>${esc(x.nom)}</b><br>${esc(x.gestionnaire.replace(/^DIR /, ''))} · ${esc(x.type)}${x.hauteur ? ' · ' + x.hauteur + ' m tall' : ''}<br><small>Cliquez : couverture d’un relais posé ici</small>`, { className: 'info' })
       .on('click', () => voirCouvertureSite({ lat: x.lat, lon: x.lon }, x.nom, 6, { cadrer: true }))
       .addTo(g);
   }
@@ -3586,13 +3587,13 @@ async function evaluerRoutiers() {
   const z = $('#fiche-contenu');
   let r;
   for (let k = 0; k < 120; k++) {
-    try { r = await api('/api/relief/sites-routiers?h=6'); } catch (e) { z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="vide">${esc(e.message)}</div>`; return; }
+    try { r = await api('/api/relief/sites-routiers?h=6'); } catch (e) { z.innerHTML = `<h2>📡 Tower sites</h2><div class="vide">${esc(e.message)}</div>`; return; }
     if (r.etat !== 'calcul') break;
-    z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="alerte info-lecture"><span class="sablier"></span> Couverture de chaque site… ${r.progression || 0} %</div>`;
+    z.innerHTML = `<h2>📡 Tower sites</h2><div class="alerte info-lecture"><span class="sablier"></span> Couverture de chaque site… ${r.progression || 0} %</div>`;
     await new Promise((ok) => setTimeout(ok, 3000));
     if ($('#fiche').hidden) return;
   }
-  if (r.etat === 'erreur') { z.innerHTML = `<h2>🛣️ Sites routiers</h2><div class="vide">${esc(r.erreur)}</div>`; return; }
+  if (r.etat === 'erreur') { z.innerHTML = `<h2>📡 Tower sites</h2><div class="vide">${esc(r.erreur)}</div>`; return; }
   if (etat.coucheCouverture) etat.coucheCouverture.remove();
   const g = L.layerGroup().addTo(carte);
   etat.coucheCouverture = g;
@@ -3601,16 +3602,16 @@ async function evaluerRoutiers() {
   utiles.slice(0, 15).forEach((x, k) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${k + 1}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
     .bindTooltip(`<b>${k + 1} · ${esc(x.nom)}</b><br>${esc(x.gestionnaire)}<br>+${x.nouveauKm2} km² nouveaux · ${x.couvertureKm2} km² au total`, { className: 'info' }).addTo(g));
   if (utiles.length) carte.fitBounds(L.latLngBounds(utiles.slice(0, 15).map((x) => [x.lat, x.lon])).pad(0.2), { maxZoom: 11 });
-  z.innerHTML = `<h2>🛣️ Sites routiers pour des relais</h2>
-    <div class="ident">${r.sites.length} sites dans le département ou ses abords · couverture actuelle ${fmt(r.actuelPct, 1, ' %')} · antenne supposée à ${r.h} m</div>
+  z.innerHTML = `<h2>📡 Towers and water towers for relays</h2>
+    <div class="ident">${r.sites.length} sites in the county or nearby · couverture actuelle ${fmt(r.actuelPct, 1, ' %')} · antenne supposée à ${r.h} m</div>
     ${r.sites.map((x, k) => `<div class="proposition etape-relier ${x.nouveauKm2 > 0 ? 'nouveau' : ''}">
       <div class="entete-prop">${x.nouveauKm2 > 0 && k < 15 ? `<span class="lettre">${k + 1}</span>` : ''}<b>${esc(x.nom)}</b><span class="marge">${x.nouveauKm2 > 0 ? '+' + x.nouveauKm2 + ' km² nouveaux' : 'déjà couvert'}</span></div>
-      <div class="meta-longue">${esc(x.gestionnaire)} · ${esc(x.type)} · ${x.altitude || x.altMnt} m${x.dansDepartement ? '' : ' · hors du département'}</div>
+      <div class="meta-longue">${esc(x.gestionnaire.replace(/^DIR /, ''))} · ${esc(x.type)} · ${x.altitude || x.altMnt} m${x.hauteur ? ` · ${x.hauteur} m tall` : ''}${x.dansDepartement ? '' : ' · outside the county'} · <a href="${esc(x.lien || '#')}" target="_blank" rel="noopener">OSM</a></div>
       <div class="meta-longue">Un relais ici couvrirait ${x.couvertureKm2} km² ${x.nouveauKm2 > 0 ? `→ couverture totale <b>${fmt(x.apresPct, 1, ' %')}</b>` : ''} · relié par radio à ${x.liaisons}${x.liaisons >= 3 ? ' ou plus' : ''} relais${x.liaisons ? '' : ' (isolé)'}</div>
       ${blocCoords(x.lat, x.lon, { alt: x.altitude || x.altMnt, couv: { nom: x.nom, h: r.h || 6 } })}
       <div class="actions-prop"><button class="mini" data-couv-routier="${k}">Couverture de ce site</button></div>
     </div>`).join('')}
-    <p class="note">Source : carte publique ${esc(r.source || 'inforoute43.fr')} (webcams du Département de la Haute-Loire et de la DIR Massif Central). Une installation sur ces sites demande l’accord du gestionnaire : ce classement peut appuyer la demande.</p>`;
+    <p class="note">Source: ${esc(r.source || 'OpenStreetMap')} (man_made = mast, communication tower, water tower). Installing on these structures needs the owner’s agreement (tower company, utility, city): this ranking can support the request.</p>`;
   z.querySelectorAll('[data-couv-routier]').forEach((b) => (b.onclick = () => { const x = r.sites[Number(b.dataset.couvRoutier)]; voirCouvertureSite({ lat: x.lat, lon: x.lon }, x.nom, r.h, { cadrer: true }); }));
 }
 
@@ -3683,7 +3684,7 @@ async function planBudget(o) {
   if (etat.coucheCouverture) etat.coucheCouverture.remove();
   const g = L.layerGroup();
   r.sites.forEach((x) => L.marker([x.lat, x.lon], { icon: L.divIcon({ className: 'relais-a-installer', html: `<div class="epingle"><b>${x.rang}</b></div>`, iconSize: [34, 44], iconAnchor: [17, 42] }), pane: 'traces', zIndexOffset: 900 })
-    .bindTooltip(`<b>${x.rang} · ${esc(nomSommet(x))}</b><br>+${x.gainKm2} km² · +${x.habitantsGagnes.toLocaleString('fr-FR')} hab.<br>${x.alimentation} · ≈ ${x.cout} €`, { className: 'info' }).addTo(g));
+    .bindTooltip(`<b>${x.rang} · ${esc(nomSommet(x))}</b><br>+${x.gainKm2} km² · +${x.habitantsGagnes.toLocaleString('en-US')} hab.<br>${x.alimentation} · ≈ ${x.cout} €`, { className: 'info' }).addTo(g));
   g.addTo(carte);
   etat.coucheCouverture = g;
   $('#btn-effacer').hidden = false;
@@ -3693,19 +3694,19 @@ async function planBudget(o) {
     <div class="grille">
       <div class="mesure"><span>Surface couverte</span><b>${fmt(r.departPct, 1, ' %')} → ${fmt(r.finalPct, 1, ' %')}</b></div>
       <div class="mesure"><span>Habitants (bourg couvert)</span><b>${pct(pop.depart)} → ${pct(pop.finale)}</b></div>
-      <div class="mesure"><span>Coût estimé</span><b>≈ ${r.coutTotal.toLocaleString('fr-FR')} €</b></div>
+      <div class="mesure"><span>Coût estimé</span><b>≈ ${r.coutTotal.toLocaleString('en-US')} €</b></div>
     </div>
     ${r.sites.length < Number(r.n) ? `<div class="alerte attention">Seulement ${r.sites.length} site(s) utile(s) avec ces critères : les suivants n’apporteraient presque rien${r.filtreAcces !== 'tous' ? ' (ou élargissez l’accès exigé)' : ''}.</div>` : ''}
     ${r.sites.map((x) => `<div class="proposition etape-relier nouveau">
       <div class="entete-prop"><span class="lettre">${x.rang}</span><b>${esc(nomSommet(x))}</b><span class="marge">≈ ${x.cout} € · cumul ${x.coutCumule} €</span></div>
-      <div class="meta-longue">+${x.gainKm2} km² (cumul ${fmt(x.totalPct, 1, ' %')}) · <b>+${x.habitantsGagnes.toLocaleString('fr-FR')} habitants</b>${x.nbCommunesGagnees ? ` dans ${x.nbCommunesGagnees} commune(s) : ${esc(x.communesGagnees.join(', '))}${x.nbCommunesGagnees > x.communesGagnees.length ? '…' : ''}` : ''}</div>
+      <div class="meta-longue">+${x.gainKm2} km² (cumul ${fmt(x.totalPct, 1, ' %')}) · <b>+${x.habitantsGagnes.toLocaleString('en-US')} habitants</b>${x.nbCommunesGagnees ? ` dans ${x.nbCommunesGagnees} commune(s) : ${esc(x.communesGagnees.join(', '))}${x.nbCommunesGagnees > x.communesGagnees.length ? '…' : ''}` : ''}</div>
       <div class="meta-longue">${x.alt} m${x.commune ? ' · ' + esc(x.commune) : ''} · alimentation ${x.alimentation}</div>
       <div class="meta-longue">Accès : ${texteAcces(x.acces)}</div>
       <div class="meta-longue">Site : ${texteRealisme(x.realisme)}</div>
       ${blocCoords(x.lat, x.lon, { alt: x.alt, couv: { nom: `${x.rang} · ${nomSommet(x)}`, h: 6 } })}
     </div>`).join('') || '<div class="vide">Aucun site ne répond à ces critères.</div>'}
     <div class="actions-prop"><button id="budget-gpx">Télécharger les sites (GPX)</button>${r.sites.length >= 2 ? '<button id="budget-couv">Couverture détaillée</button>' : ''}</div>
-    <p class="note">Ordre de pose conseillé : chaque relais est celui qui apporte le plus de surface nouvelle${r.realiste ? ' (sites en zone protégée écartés, préférence aux châteaux d’eau, pylônes et au secteur proche)' : ''}. Habitants : population des communes dont le bourg passe en zone couverte (${pop.communes} communes, ${pop.totale.toLocaleString('fr-FR')} habitants). Coût : relais ${r.couts.secteur} € (secteur) ou ${r.couts.solaire} € (solaire), + ${r.couts.mat} € de mât s’il n’y a pas de support existant ; hors main-d’œuvre et convention avec le propriétaire.</p>`;
+    <p class="note">Ordre de pose conseillé : chaque relais est celui qui apporte le plus de surface nouvelle${r.realiste ? ' (sites en zone protégée écartés, préférence aux châteaux d’eau, pylônes et au secteur proche)' : ''}. Habitants : population des communes dont le bourg passe en zone couverte (${pop.communes} communes, ${pop.totale.toLocaleString('en-US')} habitants). Coût : relais ${r.couts.secteur} € (secteur) ou ${r.couts.solaire} € (solaire), + ${r.couts.mat} € de mât s’il n’y a pas de support existant ; hors main-d’œuvre et convention avec le propriétaire.</p>`;
   $('#budget-gpx').onclick = () => telechargerGpx('plan-budget.gpx', r.sites.map((x) => ({ lat: x.lat, lon: x.lon, alt: x.alt, nom: `${x.rang} - ${nomSommet(x)}`, desc: `+${x.gainKm2} km², +${x.habitantsGagnes} hab., ${x.alimentation}, ~${x.cout} €` })));
   const bc = $('#budget-couv'); if (bc) bc.onclick = () => couvertureMulti(r.sites.map((x) => ({ lat: x.lat, lon: x.lon, h: (r.parametres && r.parametres.hs) || 6, nom: nomSommet(x) })));
 }
@@ -3715,7 +3716,12 @@ async function htmlChoixDepartement() {
   if (!etat.listeDeps) { try { etat.listeDeps = await api('/api/departements'); } catch { etat.listeDeps = []; } }
   const carteDep = etat.config.departement && etat.config.departement.code;
   const actuel = etat.depEtude || carteDep;
-  return `<div class="choix-dep"><label>Département étudié <select id="dep-etude">${etat.listeDeps.map((d) => `<option value="${d.code}" ${d.code === actuel ? 'selected' : ''}>${d.code} · ${esc(d.nom)}${d.code === carteDep ? ' (carte)' : ''}</option>`).join('')}</select></label>${etat.depEtude ? '<button class="mini" id="dep-retour" title="Revenir au département de la carte">↩ département de la carte</button>' : ''}</div>`;
+  // Counties grouped by state, the map's state first
+  const etatCarte = String(carteDep || '').slice(0, 2), parEtat = new Map();
+  for (const d of etat.listeDeps) { const k = d.etat || d.code.slice(0, 2); if (!parEtat.has(k)) parEtat.set(k, { nom: d.etatNom || k, l: [] }); parEtat.get(k).l.push(d); }
+  const groupes = [...parEtat.entries()].sort(([a, x], [b, y]) => (b === etatCarte) - (a === etatCarte) || x.nom.localeCompare(y.nom));
+  const opts = groupes.map(([, g]) => `<optgroup label="${esc(g.nom)}" translate="no">${g.l.sort((x, y) => x.nom.localeCompare(y.nom)).map((d) => `<option value="${d.code}" ${d.code === actuel ? 'selected' : ''}>${esc(d.nom)}${d.code === carteDep ? ' (map)' : ''}</option>`).join('')}</optgroup>`).join('');
+  return `<div class="choix-dep"><label>County studied <select id="dep-etude">${opts}</select></label>${etat.depEtude ? '<button class="mini" id="dep-retour" title="Back to the county of the map">↩ county of the map</button>' : ''}</div>`;
 }
 function brancherChoixDepartement() {
   const sel = $('#dep-etude');
@@ -3727,7 +3733,7 @@ function brancherChoixDepartement() {
     etat.sommets = []; etat.classement = null; etat.relief = null;
     if (etat.coucheCouverture) { etat.coucheCouverture.remove(); etat.coucheCouverture = null; }
     dessinerSommets();
-    $('#sites').innerHTML = '<div class="vide">Chargement du département…</div>';
+    $('#sites').innerHTML = '<div class="vide">Loading the county…</div>';
     chargerRelief(true);
   };
   sel.onchange = () => changer(sel.value);
@@ -3784,8 +3790,8 @@ async function rendreSites() {
       <div class="actions-prop"><button id="budget-calculer" class="principal">Où poser mes relais ?</button></div>
     </div>
     <div class="bloc-plan" id="bloc-routiers">
-      <h3>🛣️ Sites routiers (Département, DIR)</h3>
-      <p class="note">Webcams et stations routières : souvent un mât, l’électricité, parfois une liaison réseau. Classement selon la surface qu’un relais y couvrirait en plus du réseau actuel, de quoi préparer une demande au Département ou à la DIR Massif Central.</p>
+      <h3>📡 Towers and water towers (OpenStreetMap)</h3>
+      <p class="note">Communication towers, masts and water towers: height, often power, sometimes a network link. Ranked by the new area a relay there would add to the current network, to prepare a request to the owner.</p>
       <div class="actions-prop"><button id="routiers-evaluer" class="principal">Évaluer ces sites pour des relais</button></div>
     </div>
     <div class="bloc-plan" id="bloc-deplacer">
@@ -3915,7 +3921,7 @@ async function relierPoints(a, b, opts = {}) {
   $('#fiche').hidden = false;
   etat.selection = null;
   $('#fiche-contenu').innerHTML = `<h2>Relier deux lieux</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche du chemin radio entre <b>${esc(a.nom)}</b> et <b>${esc(b.nom)}</b> (relais existants et points hauts)…</div>`;
-  const q = new URLSearchParams({ aLat: a.lat.toFixed(5), aLon: a.lon.toFixed(5), bLat: b.lat.toFixed(5), bLon: b.lon.toFixed(5), aNom: a.nom, bNom: b.nom, hs, hA, hB, acces, ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_FR' } : {}) });
+  const q = new URLSearchParams({ aLat: a.lat.toFixed(5), aLon: a.lon.toFixed(5), bLat: b.lat.toFixed(5), bLon: b.lon.toFixed(5), aNom: a.nom, bNom: b.nom, hs, hA, hB, acces, ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_US' } : {}) });
   let r;
   try { r = await api('/api/relief/relier?' + q); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Relier deux lieux</h2><div class="vide">${esc(e.message)}</div>`; return; }
   if (etat.coucheCouvrir) etat.coucheCouvrir.remove();
@@ -4068,7 +4074,7 @@ async function couvrirPoints(cibles) {
   $('#fiche').hidden = false;
   etat.selection = null;
   $('#fiche-contenu').innerHTML = `<h2>Couvrir ${cibles.length} points</h2><div class="alerte info-lecture"><span class="sablier"></span> Recherche d’un site relais qui couvre les ${cibles.length} points…</div>`;
-  const q = new URLSearchParams({ pts: cibles.map((c) => `${c.lat.toFixed(5)},${c.lon.toFixed(5)}`).join(';'), hs, ht, acces: etat.filtreAcces || 'tous', ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_FR' } : {}) });
+  const q = new URLSearchParams({ pts: cibles.map((c) => `${c.lat.toFixed(5)},${c.lon.toFixed(5)}`).join(';'), hs, ht, acces: etat.filtreAcces || 'tous', ...(etat.vueReseau === 'meshcore' ? { reseau: 'meshcore', preset: 'MESHCORE_US' } : {}) });
   let r;
   try { r = await api('/api/relief/couvrir-points?' + q); } catch (e) { $('#fiche-contenu').innerHTML = `<h2>Couvrir ${cibles.length} points</h2><div class="vide">${esc(e.message)}</div>`; return; }
   const pts = cibles.map((c) => [c.lat, c.lon]);
@@ -4160,7 +4166,7 @@ function basculerMode(mode) {
 }
 
 // ---- Modules Meshtastic Wi-Fi (admin) ---------------------------------------------------------
-const heureCourte = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const heureCourte = (t) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 let signatureModules = '';
 const REDIFFUSION_FR = {
   ALL: 'ALL · relaie tout (conseillé pour un relais)', ALL_SKIP_DECODING: 'ALL_SKIP_DECODING · relaie tout sans déchiffrer', LOCAL_ONLY: 'LOCAL_ONLY · seulement ses canaux',
@@ -4408,7 +4414,7 @@ async function ouvrirTrames(num, filtre) {
         <td>${lienNoeud(t.de)}</td>
         <td>${lienNoeud(t.vers)}</td>
         <td>${t.receptions.map((x) => `<div class="rx">${lienNoeud(x.passerelle)}</div>`).join('') || '–'}</td>
-        <td class="nowrap">${new Date(t.heure).toLocaleDateString('fr-FR')}<br>${heure(t.heure)}</td>
+        <td class="nowrap">${new Date(t.heure).toLocaleDateString('en-US')}<br>${heure(t.heure)}</td>
         <td class="nowrap">${lignesRx(t)}</td>
         <td>${t.receptions.map((x) => `<div class="rx mono petit">${esc(x.sujet || '')}</div>`).join('') || esc(t.canal || '')}</td>
         <td><b><i class="pt" style="background:${portInfo(t.port).couleur}"></i>${esc(t.nomPort || t.port)}</b>${t.pki ? ' <span class="badge">PKI</span>' : ''}${t.signe ? ' <span class="badge" title="Signature de l’expéditeur vérifiée (firmware 2.8)">✍ signé</span>' : ''}
@@ -4444,7 +4450,7 @@ async function ouvrirTrame(rowid) {
   z.innerHTML = `
     <h2>Trame ${t.idPaquet} <small>${esc(t.nomPort || t.port)}</small></h2>
     <div class="grille">
-      ${lig('Expéditeur', lienNoeud(t.de))}${lig('Destinataire', lienNoeud(t.vers))}${lig('Date', new Date(t.heure).toLocaleString('fr-FR'))}
+      ${lig('Expéditeur', lienNoeud(t.de))}${lig('Destinataire', lienNoeud(t.vers))}${lig('Date', new Date(t.heure).toLocaleString('en-US'))}
       ${lig('Canal', esc(t.canal || '–'))}${lig('Sauts au départ', t.hopDepart || '–')}${t.signe ? lig('Signature', '✍ vérifiée par la passerelle (firmware 2.8)') : ''}${lig('Chiffrement', t.pki ? 'PKI (message direct)' : t.dechiffre ? 'clé de canal, déchiffrée' : 'non déchiffrée')}
       ${lig('Taille', t.taille != null ? t.taille + ' octets' : '–')}${lig('Réceptions', t.receptions.length)}${lig('Via MQTT', t.viaMqtt ? 'oui' : 'non')}
     </div>
@@ -4499,13 +4505,13 @@ function graphiqueSignal(pts) {
   const gradS = []; for (let v = Math.ceil(sMin / 5) * 5; v <= sMax; v += 5) gradS.push(`<line x1="${m.g}" x2="${W - m.d}" y1="${yS(v)}" y2="${yS(v)}" class="grille-svg"/><text x="${m.g - 4}" y="${yS(v) + 3}" text-anchor="end" class="t-snr">${v}</text>`);
   const gradR = []; for (let v = Math.ceil(rMin / 10) * 10; v <= rMax; v += 10) gradR.push(`<text x="${W - m.d + 4}" y="${yR(v) + 3}" class="t-rssi">${v}</text>`);
   const jours = []; const d0 = new Date(t0); d0.setHours(0, 0, 0, 0);
-  for (let d = d0.getTime() + 86400000; d < t1; d += 86400000) jours.push(`<line x1="${x(d)}" x2="${x(d)}" y1="${m.h}" y2="${H - m.b}" class="grille-svg"/><text x="${x(d)}" y="${H - 8}" text-anchor="middle">${new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</text>`);
+  for (let d = d0.getTime() + 86400000; d < t1; d += 86400000) jours.push(`<line x1="${x(d)}" x2="${x(d)}" y1="${m.h}" y2="${H - m.b}" class="grille-svg"/><text x="${x(d)}" y="${H - 8}" text-anchor="middle">${new Date(d).toLocaleDateString('en-US', { day: '2-digit', month: '2-digit' })}</text>`);
   return `<svg class="profil signal" viewBox="0 0 ${W} ${H}">
     ${gradS.join('')}${gradR.join('')}${jours.join('')}
     <line x1="${m.g}" x2="${W - m.d}" y1="${yS(-17.5)}" y2="${yS(-17.5)}" stroke="#ff5c6c" stroke-dasharray="4 4" stroke-width="1"/>
     <path d="${chemin(lignesR, yR, 'rssi')}" class="c-rssi"/>
     <path d="${chemin(lignesS, yS, 'snr')}" class="c-snr"/>
-    ${lignesS.map((p) => `<circle cx="${x(p.heure).toFixed(1)}" cy="${yS(p.snr).toFixed(1)}" r="2.6" class="${p.sauts === 0 ? 'p-direct' : 'p-relais'}"><title>${new Date(p.heure).toLocaleString('fr-FR')} · SNR ${p.snr} dB · RSSI ${p.rssi ?? '?'} dBm · ${p.sauts === 0 ? 'direct' : (p.sauts ?? '?') + ' saut(s)'}</title></circle>`).join('')}
+    ${lignesS.map((p) => `<circle cx="${x(p.heure).toFixed(1)}" cy="${yS(p.snr).toFixed(1)}" r="2.6" class="${p.sauts === 0 ? 'p-direct' : 'p-relais'}"><title>${new Date(p.heure).toLocaleString('en-US')} · SNR ${p.snr} dB · RSSI ${p.rssi ?? '?'} dBm · ${p.sauts === 0 ? 'direct' : (p.sauts ?? '?') + ' saut(s)'}</title></circle>`).join('')}
     <text x="${m.g}" y="${m.h - 2}" class="t-snr">SNR (dB)</text><text x="${W - m.d}" y="${m.h - 2}" class="t-rssi" text-anchor="end">RSSI (dBm)</text>
   </svg>`;
 }
@@ -4593,8 +4599,8 @@ async function ficheCles() {
   const seulement = etat.clesFiltre !== false;
   const aTraiter = (n) => n.aFaire.length || n.aFaireNote;
   const liste = r.noeuds.filter((n) => !seulement || aTraiter(n)).sort((a, b) => (aTraiter(b) ? 1 : 0) - (aTraiter(a) ? 1 : 0) || a.nom.localeCompare(b.nom));
-  const puce = (m) => m.autorise === true ? `<span class="badge actif" title="${m.dansCles ? 'clé présente dans ses clés d’administration' : 'a accepté une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('fr-FR') : ''}">✔ ${esc(m.nom)}</span>`
-    : m.autorise === false ? `<span class="badge refus" title="${m.dansCles === false ? 'clé absente de ses clés d’administration' : 'a refusé une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('fr-FR') : ''}">⛔ ${esc(m.nom)}</span>`
+  const puce = (m) => m.autorise === true ? `<span class="badge actif" title="${m.dansCles ? 'clé présente dans ses clés d’administration' : 'a accepté une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('en-US') : ''}">✔ ${esc(m.nom)}</span>`
+    : m.autorise === false ? `<span class="badge refus" title="${m.dansCles === false ? 'clé absente de ses clés d’administration' : 'a refusé une commande'}${m.essai ? ' · ' + new Date(m.essai.heure).toLocaleString('en-US') : ''}">⛔ ${esc(m.nom)}</span>`
     : `<span class="badge attente" title="jamais essayé depuis ce module">? ${esc(m.nom)}</span>`;
   const texteVisite = r.noeuds.filter(aTraiter).map((n) => `• ${n.nom}${n.site ? ' (' + n.site + ')' : ''} : ${[...n.aFaire, n.aFaireNote].filter(Boolean).join(' ; ')}`).join('\n');
   z.innerHTML = `<h2>🔑 Clés d’administration</h2>
@@ -4606,7 +4612,7 @@ async function ficheCles() {
       <div class="puces-cle">${n.modules.map(puce).join(' ')}</div>
       <div class="note">${n.securite ? `${n.securite.nbCles} clé(s) enregistrée(s), ${n.securite.libres} emplacement(s) libre(s)${n.securite.inconnues ? `, dont ${n.securite.inconnues} d’un autre appareil (téléphone, autre carte…)` : ''}${n.securite.gere ? ' · <b>mode géré</b> (réglages verrouillés hors administration)' : ''} · lu ${ilYa(n.securite.lu)}` : 'clés jamais lues'} <button class="mini" data-lire-cles="${n.num}">Lire les clés</button></div>
       ${n.aFaire.length ? `<ul class="a-faire">${n.aFaire.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
-      <label class="note-site">À faire sur place <textarea rows="2" data-note="${n.num}" placeholder="ex. changer le connecteur N, poser un filtre 868…">${esc(n.aFaireNote)}</textarea></label>
+      <label class="note-site">À faire sur place <textarea rows="2" data-note="${n.num}" placeholder="ex. changer le connecteur N, poser un filtre 915…">${esc(n.aFaireNote)}</textarea></label>
     </div>`).join('') || '<div class="vide">Rien à signaler : tous les relais connus acceptent au moins un module de la carte.</div>'}
     <p class="erreur" id="cles-retour"></p>`;
   $('#cles-filtre').onchange = (e) => { etat.clesFiltre = e.target.checked; ficheCles(); };
@@ -4948,7 +4954,7 @@ async function ficheV28() {
       ${etat.admin ? `<div class="actions-prop"><button class="mini principal" data-fusion="${x.ancien.num}:${x.nouveau.num}">Fusionner l’historique</button></div>` : ''}</div>`).join('') : '<div class="vide">Aucun : la carte repère un nœud renuméroté grâce à sa clé publique (fiche NodeInfo) dès qu’elle a reçu la fiche de l’ancien et du nouveau numéro.</div>'}
     <p class="note">La fusion rattache au nouveau numéro l’historique de l’ancien (positions, télémétrie, paquets, liaisons, traceroutes), sa fiche d’installation, son état d’administration, ses favoris et les secteurs des gestionnaires. L’ancien numéro disparaît de la carte.</p>
     ${r.doublons.length ? `<h3>Clés publiques en double</h3>${r.doublons.map((x) => `<div class="proposition"><div>${ligneN(x.ancien)} et ${ligneN(x.nouveau)}</div><div class="meta-longue" style="color:var(--attention)">Les deux sont actifs avec la même clé (configuration clonée, ${x.chevauchementH} h en même temps) : les messages directs et l’administration à distance peuvent partir vers le mauvais. Régénérez la clé de l’un des deux (appli › Sécurité › Régénérer la clé privée), puis remettez la clé d’administration.</div></div>`).join('')}` : ''}
-    ${r.historique.length ? `<h3>Fusions faites</h3>${r.historique.map((h) => `<div class="note">${new Date(h.heure).toLocaleString('fr-FR')} · ${esc(h.nom || '')} ${esc(h.idAncien)} → ${esc(h.idNouveau)} par ${esc(h.par || '?')}</div>`).join('')}` : ''}
+    ${r.historique.length ? `<h3>Fusions faites</h3>${r.historique.map((h) => `<div class="note">${new Date(h.heure).toLocaleString('en-US')} · ${esc(h.nom || '')} ${esc(h.idAncien)} → ${esc(h.idNouveau)} par ${esc(h.par || '?')}</div>`).join('')}` : ''}
     <p class="erreur" id="v28-retour"></p>`;
   z.querySelectorAll('[data-editer]').forEach((b) => (b.onclick = () => editeurReglages(Number(b.dataset.editer))));
   z.querySelectorAll('[data-fusion]').forEach((b) => (b.onclick = async () => {
@@ -5153,7 +5159,7 @@ async function formulaireAction(act) {
     try { r = await api('/api/admin-noeuds/firmware'); } catch (e) { f.innerHTML = `<div class="vide">${esc(e.message)}</div>${pied}`; return; }
     const m = r.module || {};
     const v = (x) => (x ? x.tag.replace(/^v/, '') : null);
-    const options = [r.stable ? [v(r.stable), `${v(r.stable)} · stable (${new Date(r.stable.date).toLocaleDateString('fr-FR')})`] : null, r.test && r.test.tag !== (r.stable || {}).tag ? [v(r.test), `${v(r.test)} · test / bêta (${new Date(r.test.date).toLocaleDateString('fr-FR')})`] : null].filter(Boolean);
+    const options = [r.stable ? [v(r.stable), `${v(r.stable)} · stable (${new Date(r.stable.date).toLocaleDateString('en-US')})`] : null, r.test && r.test.tag !== (r.stable || {}).tag ? [v(r.test), `${v(r.test)} · test / bêta (${new Date(r.test.date).toLocaleDateString('en-US')})`] : null].filter(Boolean);
     const aJour = m.firmware && r.stable && String(m.firmware).startsWith(v(r.stable));
     f.innerHTML = `<form id="f-act" class="form-gestion">
       <p><b>${esc(m.nom || '')}</b> · ${esc(m.materiel || '?')} · firmware actuel <b>${esc(m.firmware || 'inconnu')}</b>${aJour ? ' <span class="badge actif">à jour (stable)</span>' : r.stable ? ` <span class="badge attente">${esc(v(r.stable))} disponible</span>` : ''}</p>
@@ -5298,7 +5304,7 @@ async function rendreConfAuto() {
   try { c = await api('/api/admin-noeuds/conformite-auto'); } catch { z.innerHTML = ''; return; }
   const d = c.dernier;
   z.innerHTML = c.actif ? `<div class="note conf-auto">🌙 Vérification automatique chaque nuit vers ${c.heure} h · référence ${esc(nomNoeud(c.reference))} · ${c.ciblesEffectives.length} nœud(s) · ${esc(c.elements.length + ' élément(s)')}
-      ${d ? `<br>Dernière : ${new Date(d.date).toLocaleString('fr-FR')} — <b style="color:${d.ecarts.length ? 'var(--attention)' : 'var(--ok)'}">${d.conformes.length} conforme(s), ${d.ecarts.length} avec écarts</b>${d.nonLus.length ? `, ${d.nonLus.length} non lu(s)` : ''}${d.ecarts.length ? '<br>' + d.ecarts.map((e) => `⚠️ ${esc(nomNoeud(e.num))} : ${esc(e.ecarts.map((x) => (NOMS_ECARTS[x.element] || x.element) + ' ' + x.trouve + ' au lieu de ' + x.attendu).join(' ; '))}`).join('<br>') : ''}${d.nonLus.length ? '<br><small>Non lus : ' + esc(d.nonLus.map((x) => nomNoeud(x.num)).join(', ')) + '</small>' : ''}` : '<br>Pas encore faite.'}
+      ${d ? `<br>Dernière : ${new Date(d.date).toLocaleString('en-US')} — <b style="color:${d.ecarts.length ? 'var(--attention)' : 'var(--ok)'}">${d.conformes.length} conforme(s), ${d.ecarts.length} avec écarts</b>${d.nonLus.length ? `, ${d.nonLus.length} non lu(s)` : ''}${d.ecarts.length ? '<br>' + d.ecarts.map((e) => `⚠️ ${esc(nomNoeud(e.num))} : ${esc(e.ecarts.map((x) => (NOMS_ECARTS[x.element] || x.element) + ' ' + x.trouve + ' au lieu de ' + x.attendu).join(' ; '))}`).join('<br>') : ''}${d.nonLus.length ? '<br><small>Non lus : ' + esc(d.nonLus.map((x) => nomNoeud(x.num)).join(', ')) + '</small>' : ''}` : '<br>Pas encore faite.'}
       <div class="actions-prop">${etat.admin ? '<button class="mini" id="conf-maintenant">Lancer maintenant</button><button class="mini" id="conf-off">Désactiver</button>' : ''}${d ? `<button class="mini" data-voir-tache="${d.tache}">Voir le rapport</button>` : ''}</div></div>`
     : (etat.admin ? '<p class="note">🌙 Astuce : cochez « Refaire chaque nuit » dans le formulaire de vérification pour un contrôle automatique.</p>' : '');
   const bm = $('#conf-maintenant'); if (bm) bm.onclick = async () => { try { const r = await postJson('/api/admin-noeuds/conformite-auto', { maintenant: true }); gestion.lectureSuivie = r.tache; voirTache(r.tache); suivreTaches(); } catch (e) { alert(e.message); } };
@@ -5683,9 +5689,9 @@ function appliquerZone(recadrer) {
   etat.config.zone = etat.zoneMode === 'voisins' ? v.bbox : reg ? reg.bbox : etat.config.zoneDep;
   try { localStorage.setItem('gaulix_zone', etat.zoneMode); } catch { /* stockage indisponible */ }
   const b = $('#sel-zone');
-  // Régions de France, une seule fois
+  // States, once
   if (!b.querySelector('optgroup') && (etat.config.regions || []).length) {
-    b.insertAdjacentHTML('beforeend', `<optgroup label="Régions">${etat.config.regions.map((r) => `<option value="r${r.code}">${esc(r.nom)}</option>`).join('')}</optgroup>`);
+    b.insertAdjacentHTML('beforeend', `<optgroup label="States">${etat.config.regions.map((r) => `<option value="r${r.code}">${esc(r.nom)}</option>`).join('')}</optgroup>`);
   }
   const nom = etat.config.zoneNom;
   b.options[0].textContent = nom;
@@ -5693,12 +5699,12 @@ function appliquerZone(recadrer) {
   b.options[1].title = v ? v.departements.map((d) => `${d.code} ${d.nom}`).join(', ') : '';
   b.options[1].hidden = !v;
   b.value = etat.zoneMode;
-  b.title = etat.zoneMode === 'voisins' && v ? `${nom} et départements voisins : ${v.departements.map((d) => d.nom).join(', ')}` : reg ? `Région ${reg.nom}` : 'Secteur affiché : votre département, avec ses voisins, une région ou toute la France';
+  b.title = etat.zoneMode === 'voisins' && v ? `${nom} and neighbouring counties: ${v.departements.map((d) => d.nom).join(', ')}` : reg ? `State: ${reg.nom}` : 'Area shown: your county, with its neighbours, a state or the whole map';
   b.classList.toggle('actif', etat.zone);
   if (recadrer) {
     const z = etat.config.zone;
     if (etat.zone) carte.fitBounds([[z[0], z[1]], [z[2], z[3]]], { padding: [20, 20] });
-    else carte.setView([46.6, 2.5], 6);
+    else carte.setView([39.5, -98.35], 4);
   }
   dessinerNoeuds();
   dessinerLiens();
@@ -5846,7 +5852,7 @@ function majEtat(e) {
   $('#sources').innerHTML =
     `<div class="ligne${etat.admin ? ' cliquable' : ''}" id="ligne-broker" title="${etat.admin ? 'État, réglages et test du broker' : ''}"><span class="point ${ok ? 'actif' : 'alerte'}"></span><span class="titre">Broker MQTT</span><span class="meta">${ok ? 'connecté' : 'déconnecté'}${etat.admin ? ' ›' : ''}</span></div>` +
     (e.radio
-      ? `<div class="ligne"><span class="point ${e.radio.connecte ? 'actif' : e.radio.evince ? 'recent' : 'alerte'}"></span><span class="titre">Module radio${e.radio.nomLocal ? `<small>${esc(e.radio.nomLocal)}</small>` : ''}</span><span class="meta"></span><span class="sous-ligne meta-longue">${e.radio.connecte ? `connecté · ${e.radio.paquets} paquets${e.radio.prochainCycle ? ` · traceroutes ${e.radio.cycleEnCours ? 'en cours' : 'à ' + new Date(e.radio.prochainCycle).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} (${e.radio.ciblesAuto} relais)` : ''}` : e.radio.arret ? esc(e.radio.repriseAuto ? 'libéré pour un autre client · reprise ' + new Date(e.radio.repriseAuto).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : e.radio.hote ? 'déconnecté à la demande' : 'aucun module choisi') : e.radio.evince ? esc('laissé à un autre client · reprise ' + new Date(e.radio.reprise).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })) : esc('déconnecté' + (e.radio.erreur ? ' (' + e.radio.erreur + ')' : ''))}</span></div>` + (e.ecoutes || []).map((x) => `<div class="ligne"><span class="point ${x.connecte ? 'actif' : 'alerte'}"></span><span class="titre">Module en écoute<small>${esc(x.nom || '')}</small></span><span class="meta">${x.connecte ? x.paquets + ' paquets' : 'connexion…'}</span></div>`).join('')
+      ? `<div class="ligne"><span class="point ${e.radio.connecte ? 'actif' : e.radio.evince ? 'recent' : 'alerte'}"></span><span class="titre">Module radio${e.radio.nomLocal ? `<small>${esc(e.radio.nomLocal)}</small>` : ''}</span><span class="meta"></span><span class="sous-ligne meta-longue">${e.radio.connecte ? `connecté · ${e.radio.paquets} paquets${e.radio.prochainCycle ? ` · traceroutes ${e.radio.cycleEnCours ? 'en cours' : 'à ' + new Date(e.radio.prochainCycle).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} (${e.radio.ciblesAuto} relais)` : ''}` : e.radio.arret ? esc(e.radio.repriseAuto ? 'libéré pour un autre client · reprise ' + new Date(e.radio.repriseAuto).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : e.radio.hote ? 'déconnecté à la demande' : 'aucun module choisi') : e.radio.evince ? esc('laissé à un autre client · reprise ' + new Date(e.radio.reprise).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })) : esc('déconnecté' + (e.radio.erreur ? ' (' + e.radio.erreur + ')' : ''))}</span></div>` + (e.ecoutes || []).map((x) => `<div class="ligne"><span class="point ${x.connecte ? 'actif' : 'alerte'}"></span><span class="titre">Module en écoute<small>${esc(x.nom || '')}</small></span><span class="meta">${x.connecte ? x.paquets + ' paquets' : 'connexion…'}</span></div>`).join('')
       : '') +
     (mm
       ? `<div class="ligne"><span class="point ${mm.ok ? 'actif' : 'alerte'}"></span><span class="titre">MeshMonitor${mm.sources && mm.sources[0] ? `<small>${esc(mm.sources.map((x) => x.nom).join(', '))}</small>` : ''}</span><span class="meta">${mm.ok ? `${mm.noeuds} nœuds · ${ilYa(mm.derniere)}` : esc(mm.erreur || 'en attente')}</span></div>`
@@ -5889,7 +5895,7 @@ async function ouvrirBroker() {
     <form id="f-broker" class="form-edit">
       <div class="grille-edit">
         <label>Adresse <input name="url" value="${esc(m.url.includes('***') ? '' : m.url)}" placeholder="mqtt://serveur:1883 ou mqtts://serveur:8883"></label>
-        <label>Racine des sujets <input name="racine" value="${esc(m.racine)}" placeholder="msh/EU_868"></label>
+        <label>Racine des sujets <input name="racine" value="${esc(m.racine)}" placeholder="msh/US"></label>
         <label>Utilisateur <input name="utilisateur" value="${esc(m.utilisateur || '')}" autocomplete="off"></label>
         <label>Mot de passe <input name="motDePasse" type="password" placeholder="${m.motDePasseDefini ? '(inchangé)' : ''}" autocomplete="new-password"></label>
         <label style="grid-column: 1 / -1">Sujets supplémentaires (séparés par des virgules) <input name="sujetsSupplementaires" value="${esc(m.sujetsSupplementaires || '')}"></label>
@@ -6173,7 +6179,7 @@ async function rendreSauvegardes() {
   z.innerHTML = `<p class="note">Chaque nuit vers 3 h 30, la carte sauvegarde ses réglages : comptes, réglages généraux, fiches d’installation des relais, modules radio, configurations lues des nœuds, mots de passe d’administration MeshCore, traceroutes. Les 14 dernières sont gardées sur le NAS. Les données radio (paquets, liens) ne sont pas sauvegardées : elles se reconstituent toutes seules.</p>
     <p class="note"><b>Fichier sensible</b> (clés des canaux, mots de passe d’administration MeshCore) : gardez la copie téléchargée en lieu sûr.</p>
     <div class="actions-prop"><button id="sv-maintenant" class="principal">Sauvegarder maintenant</button></div>
-    <div class="liste">${l.map((x) => `<div class="ligne"><span class="titre">${esc(x.nom.replace('sauvegarde-', '').replace('.json', ''))}<small>${Math.round(x.taille / 1024)} ko · ${new Date(x.date).toLocaleString('fr-FR')}</small></span><span class="meta"><a class="bouton-lien" href="/api/sauvegardes/${encodeURIComponent(x.nom)}">Télécharger</a></span></div>`).join('') || '<div class="vide">Aucune sauvegarde pour l’instant.</div>'}</div>
+    <div class="liste">${l.map((x) => `<div class="ligne"><span class="titre">${esc(x.nom.replace('sauvegarde-', '').replace('.json', ''))}<small>${Math.round(x.taille / 1024)} ko · ${new Date(x.date).toLocaleString('en-US')}</small></span><span class="meta"><a class="bouton-lien" href="/api/sauvegardes/${encodeURIComponent(x.nom)}">Télécharger</a></span></div>`).join('') || '<div class="vide">Aucune sauvegarde pour l’instant.</div>'}</div>
     <h4>Restaurer</h4>
     <p class="note">Choisissez un fichier de sauvegarde téléchargé : les réglages et les comptes sont remplacés (l’état actuel est d’abord mis de côté), puis la carte redémarre.</p>
     <input type="file" id="sv-fichier" accept=".json,application/json"><button id="sv-restaurer" disabled>Restaurer ce fichier</button>
@@ -6187,7 +6193,7 @@ async function rendreSauvegardes() {
     let s;
     try { s = JSON.parse(await f.text()); } catch { $('#sv-retour').textContent = 'Fichier illisible'; return; }
     if (s.format !== 'carte-live-sauvegarde') { $('#sv-retour').textContent = 'Ce fichier n’est pas une sauvegarde de la carte'; return; }
-    if (!(await confirmer(`Restaurer la sauvegarde du ${new Date(s.date).toLocaleString('fr-FR')} ? Les réglages et les comptes actuels seront remplacés et la carte redémarrera.`))) return;
+    if (!(await confirmer(`Restaurer la sauvegarde du ${new Date(s.date).toLocaleString('en-US')} ? Les réglages et les comptes actuels seront remplacés et la carte redémarrera.`))) return;
     try { await postJson('/api/sauvegardes/restaurer', s); attendreRedemarrage('Sauvegarde restaurée'); } catch (e) { $('#sv-retour').textContent = e.message; }
   };
 }
@@ -6350,14 +6356,14 @@ async function rendreJournal(filtre) {
   try { bl = await api('/api/securite/blocages'); } catch { /* ignoré */ }
   const blocs = bl.length ? `<h3>🔒 Blocages et échecs récents</h3>
     <table class="voisins"><thead><tr><th>Adresse ou compte</th><th>État</th><th></th></tr></thead><tbody>
-    ${bl.map((x) => `<tr class="${x.bloqueJusqua ? 'refus' : ''}"><td>${x.type === 'ip' ? '🌐 ' : '👤 '}<span class="mono">${esc(x.valeur)}</span></td><td>${x.bloqueJusqua ? `bloqué jusqu’à ${new Date(x.bloqueJusqua).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}${x.niveau > 1 ? ` (${x.niveau}ᵉ blocage)` : ''}` : `${x.echecs} échec${x.echecs > 1 ? 's' : ''} récent${x.echecs > 1 ? 's' : ''}`}</td><td><button class="mini" data-debloquer="${esc(x.cle)}">Débloquer</button></td></tr>`).join('')}
+    ${bl.map((x) => `<tr class="${x.bloqueJusqua ? 'refus' : ''}"><td>${x.type === 'ip' ? '🌐 ' : '👤 '}<span class="mono">${esc(x.valeur)}</span></td><td>${x.bloqueJusqua ? `bloqué jusqu’à ${new Date(x.bloqueJusqua).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${x.niveau > 1 ? ` (${x.niveau}ᵉ blocage)` : ''}` : `${x.echecs} échec${x.echecs > 1 ? 's' : ''} récent${x.echecs > 1 ? 's' : ''}`}</td><td><button class="mini" data-debloquer="${esc(x.cle)}">Débloquer</button></td></tr>`).join('')}
     </tbody></table>` : '<p class="note">🔒 Aucun blocage en cours.</p>';
   z.innerHTML = `<p class="note">Qui a fait quoi : connexions (et refus), programmation des nœuds, réglages, comptes, sauvegardes… Les mots de passe, clés et codes n’y figurent jamais. Gardé 180 jours.</p>
     <p class="note">Sécurité : après ${3} échecs de connexion en 15 min, l’adresse est bloquée 15 min (durée doublée à chaque récidive, jusqu’à 24 h) et le compte visé est suspendu 15 min.</p>
     ${blocs}
     <div class="recherche"><input id="filtre-journal" type="search" placeholder="Filtrer (ex. connexion, admin-noeuds, comptes)…" value="${esc(filtre || '')}"></div>
     <table class="voisins journal-audit"><thead><tr><th>Quand</th><th>Qui</th><th>Action</th><th>Détail</th></tr></thead><tbody>
-    ${l.map((x) => `<tr class="${x.ok ? '' : 'refus'}"><td title="${new Date(x.heure).toLocaleString('fr-FR')}">${new Date(x.heure).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td>${esc(x.compte || '?')}<br><small>${esc(x.ip || '')}</small></td><td>${x.ok ? '' : '⛔ '}${libelleAudit(x.action)}</td><td><small>${esc(x.detail || '')}</small></td></tr>`).join('') || '<tr><td colspan="4" class="vide">Rien pour l’instant.</td></tr>'}
+    ${l.map((x) => `<tr class="${x.ok ? '' : 'refus'}"><td title="${new Date(x.heure).toLocaleString('en-US')}">${new Date(x.heure).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td>${esc(x.compte || '?')}<br><small>${esc(x.ip || '')}</small></td><td>${x.ok ? '' : '⛔ '}${libelleAudit(x.action)}</td><td><small>${esc(x.detail || '')}</small></td></tr>`).join('') || '<tr><td colspan="4" class="vide">Rien pour l’instant.</td></tr>'}
     </tbody></table>`;
   const fi = $('#filtre-journal');
   fi.onchange = () => rendreJournal(fi.value.trim());
@@ -6410,7 +6416,7 @@ async function rendreComptes() {
   };
 }
 
-// Zone hors de France : carré de 1° × 1° nommé d'après son coin sud-ouest (ex. MN40W075), relief Copernicus
+// Area outside the US: 1° × 1° square named after its south-west corner (e.g. MN40W075), Copernicus terrain
 const RE_MONDE = /^M([NS])(\d{2})([EW])(\d{3})$/;
 function codeMonde(lat, lon) {
   const la = Math.floor(lat), lo = Math.floor(lon), p = (n, l) => String(Math.abs(n)).padStart(l, '0');
@@ -6425,8 +6431,12 @@ function nomMonde(code) {
 async function optionsDepartements(select, code) {
   const liste = await api('/api/departements').catch(() => []);
   const monde = RE_MONDE.test(code || '');
-  select.innerHTML = `<optgroup label="🌍 Monde (relief Copernicus)">${monde ? `<option value="${esc(code)}" selected>🌍 ${esc(nomMonde(code))}</option>` : ''}<option value="choisir-monde">🌍 Hors de France : choisir la position…</option></optgroup>`
-    + `<optgroup label="France (relief IGN)">${liste.map((d) => `<option value="${d.code}" ${d.code === code ? 'selected' : ''}>${d.code} · ${esc(d.nom)}</option>`).join('')}</optgroup>`;
+  // US counties grouped by state (USGS 3DEP terrain); anywhere else: a 1° square (Copernicus terrain)
+  const parEtat = new Map();
+  for (const d of liste) { const k = d.etatNom || d.code.slice(0, 2); if (!parEtat.has(k)) parEtat.set(k, []); parEtat.get(k).push(d); }
+  const etats = [...parEtat.keys()].sort((a, b) => a.localeCompare(b));
+  select.innerHTML = etats.map((k) => `<optgroup label="${esc(k)}" translate="no">${parEtat.get(k).sort((a, b) => a.nom.localeCompare(b.nom)).map((d) => `<option value="${d.code}" ${d.code === code ? 'selected' : ''}>${esc(d.nom)} · ${d.code}</option>`).join('')}</optgroup>`).join('')
+    + `<optgroup label="🌍 Outside the US (Copernicus terrain)">${monde ? `<option value="${esc(code)}" selected>🌍 ${esc(nomMonde(code))}</option>` : ''}<option value="choisir-monde">🌍 Outside the US: choose the position…</option></optgroup>`;
   let avant = select.value;
   select.addEventListener('change', async () => {
     if (select.value !== 'choisir-monde') { avant = select.value; return; }
@@ -6451,7 +6461,7 @@ async function rendreReglages() {
     <form id="form-reglages">
       <div class="grille-form">
         <label>Nom de la carte <input name="titre" value="${esc(r.titre)}" maxlength="80"></label>
-        <label>Département <select name="departement"></select><small>Fixe la zone, le contour et le centrage de la carte</small></label>
+        <label>County <select name="departement"></select><small>Sets the area, outline and centre of the map</small></label>
         <div class="large-col note-source">${r.depuisPage && r.depuisPage.mqtt ? `⚠️ Le serveur MQTT est réglé ici : ces valeurs <b>remplacent celles du .env</b>${r.env && r.env.mqtt.url ? ` (MQTT_URL=${esc(r.env.mqtt.url)})` : ''}. <button type="button" class="mini" data-revenir-env="mqtt">Revenir au .env</button>` : 'ℹ️ Serveur MQTT lu dans le fichier .env. Une valeur changée ici le remplacera (le .env ne sera plus lu pour elle).'}</div>
         <label>Serveur MQTT <input name="mqttUrl" value="${esc(r.mqtt.url)}"></label>
         <label>Sujet racine <input name="mqttRacine" value="${esc(r.mqtt.racine)}"></label>
@@ -6465,7 +6475,7 @@ async function rendreReglages() {
       </div>
       <p class="erreur" id="retour-reglages"></p>
       <div class="actions"><button type="submit" class="principal">Enregistrer et redémarrer</button></div>
-      <p class="note">L’enregistrement redémarre le service (une dizaine de secondes). Un changement de département retélécharge le relief IGN (quelques minutes).</p>
+      <p class="note">Saving restarts the service (about ten seconds). Changing the county downloads its USGS terrain again (a few minutes).</p>
     </form>
     <div class="bloc-france" id="bloc-france"></div>`;
   rendreFrance();
@@ -6501,15 +6511,16 @@ async function rendreFrance() {
   try { r = await api('/api/relief/france'); } catch (e) { z.innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
   const p = r.precharge;
   const duree = p.debut ? Math.round(((p.fin || Date.now()) - p.debut) / 60000) : 0;
-  z.innerHTML = `<h3>🗺️ Carte publique et relief</h3>
-    <label>Calculs de couverture de la carte publique <select id="fr-couv">
-      <option value="departement" ${r.couverture === 'departement' ? 'selected' : ''}>Département de la carte seulement (léger)</option>
-      <option value="france" ${r.couverture === 'france' ? 'selected' : ''}>Tous les départements de France (relief chargé à la demande)</option></select></label>
-    <p class="note">Avec « tous les départements », chaque visiteur peut calculer la couverture, les emplacements de relais et la couverture d’un point dans n’importe quel département. Le premier calcul d’un département télécharge son relief IGN et ses points hauts (quelques minutes), sauf s’il a été préparé ci-dessous.</p>
-    <div class="actions-prop">${p.enCours ? '<button class="mini" id="fr-stop">⏹ Arrêter la préparation</button>' : '<button class="mini principal" id="fr-go" title="Installe le paquet « relief France » puis complète département par département ; la carte publique passe ensuite d’elle-même en « tous les départements »">⬇ Télécharger et installer toute la France</button>'}<span class="note">Relief prêt sur le serveur : <b>${r.surDisque}</b> / ${r.total} départements</span></div>
-    ${p.enCours ? `<div class="alerte info-lecture"><span class="sablier"></span> Préparation en cours : ${p.faits}/${p.total} départements${p.courant ? ` · département ${esc(p.courant === 'paquet' ? 'paquet GitHub' : p.courant)}${p.etape ? ' : ' + esc(p.etape) : ''}` : p.etape ? ' · ' + esc(p.etape) : ''} · ${duree} min${p.faits > p.deja + 1 && p.total > p.faits ? `, encore ≈ ${Math.round(((Date.now() - p.debut) / 60000 / Math.max(1, p.faits - p.deja)) * (p.total - p.faits) / 60)} h` : ''}. Elle continue même si vous fermez cette page.</div>` : p.fin ? `<p class="note">Dernière préparation : ${p.faits}/${p.total} départements en ${duree} min${p.erreurs.length ? `, ${p.erreurs.length} erreur(s) : ${p.erreurs.slice(0, 5).map((x) => esc(x.code + ' ' + x.erreur)).join(' ; ')}` : ''}.${p.aCompleter && p.aCompleter.length ? ` Points hauts OpenStreetMap manquants pour ${p.aCompleter.length} département(s) (${esc(p.aCompleter.slice(0, 12).join(', '))}${p.aCompleter.length > 12 ? '…' : ''}) : relancez la préparation plus tard, seuls ceux-là seront repris.` : ''}</p>` : ''}
-    <p class="note">La préparation installe d’abord le paquet « relief France » publié sur GitHub (≈ 110 Mo, quelques minutes), puis télécharge département par département ce qui manque encore : relief IGN, points hauts, voies d’accès et sites (OpenStreetMap). Sans paquet, comptez plusieurs heures. Environ 250 Mo sur le disque. Les départements déjà prêts sont sautés.</p>
-    <div class="actions-prop"><a class="mini bouton-lien" href="/api/relief/france/paquet" download>📦 Fabriquer le paquet « relief France »</a><span class="note">tous les départements prêts sur ce serveur, en un fichier tar.gz, à publier sur GitHub (version « relief-france »)</span></div>`;
+  const etatN = esc(r.etatNom || 'the state');
+  z.innerHTML = `<h3>🗺️ Public map and terrain</h3>
+    <label>Coverage computations on the public map <select id="fr-couv">
+      <option value="departement" ${r.couverture === 'departement' ? 'selected' : ''}>County of the map only (light)</option>
+      <option value="france" ${r.couverture === 'france' ? 'selected' : ''}>Any US county (terrain loaded on demand)</option></select></label>
+    <p class="note">With “any county”, every visitor can compute coverage, relay sites and the coverage of a point in any county. The first computation in a county downloads its USGS 3DEP terrain and high points (a few minutes), unless it was prepared below.</p>
+    <div class="actions-prop">${p.enCours ? '<button class="mini" id="fr-stop">⏹ Stop preparing</button>' : `<button class="mini principal" id="fr-go" title="Downloads county by county; the public map then switches to “any county” by itself">⬇ Prepare all of ${etatN}</button>`}<span class="note">Terrain ready on the server: <b>${r.surDisque}</b> / ${r.total} counties of ${etatN}</span></div>
+    ${p.enCours ? `<div class="alerte info-lecture"><span class="sablier"></span> Preparing: ${p.faits}/${p.total} counties${p.courant ? ` · ${esc(p.courant === 'paquet' ? 'terrain package' : p.courant)}${p.etape ? ': ' + esc(p.etape) : ''}` : p.etape ? ' · ' + esc(p.etape) : ''} · ${duree} min${p.faits > p.deja + 1 && p.total > p.faits ? `, about ${Math.round(((Date.now() - p.debut) / 60000 / Math.max(1, p.faits - p.deja)) * (p.total - p.faits) / 60)} h left` : ''}. It keeps going if you close this page.</div>` : p.fin ? `<p class="note">Last run: ${p.faits}/${p.total} counties in ${duree} min${p.erreurs.length ? `, ${p.erreurs.length} error(s): ${p.erreurs.slice(0, 5).map((x) => esc(x.code + ' ' + x.erreur)).join(' ; ')}` : ''}.${p.aCompleter && p.aCompleter.length ? ` OpenStreetMap high points missing for ${p.aCompleter.length} count${p.aCompleter.length > 1 ? 'ies' : 'y'} (${esc(p.aCompleter.slice(0, 12).join(', '))}${p.aCompleter.length > 12 ? '…' : ''}): run it again later, only those will be redone.` : ''}</p>` : ''}
+    <p class="note">${r.paquet ? 'A terrain package (RELIEF_PAQUET_URL) is installed first, then ' : ''}Each county of ${etatN} is downloaded in turn: USGS 3DEP terrain, high points, access tracks and sites (OpenStreetMap). Large western counties take longer. Counties already prepared are skipped.</p>
+    <div class="actions-prop"><a class="mini bouton-lien" href="/api/relief/france/paquet" download>📦 Build a terrain package</a><span class="note">every county ready on this server, in one tar.gz file, for another map to install with RELIEF_PAQUET_URL</span></div>`;
   $('#fr-couv').onchange = async (e) => { try { await postJson('/api/relief/france', { couverture: e.target.value }); } catch (x) { alert(x.message); } rendreFrance(); };
   const go = $('#fr-go'); if (go) go.onclick = async () => { try { await postJson('/api/relief/france', { precharger: true, activer: true }); } catch (x) { alert(x.message); } setTimeout(rendreFrance, 800); };
   const st = $('#fr-stop'); if (st) st.onclick = async () => { try { await postJson('/api/relief/france', { precharger: false }); } catch (x) { alert(x.message); } setTimeout(rendreFrance, 800); };
@@ -6586,7 +6597,7 @@ async function rendrePasserelle(complet) {
       <div class="actions-prop"><button class="principal" id="pp-activer">⏻ Activer la passerelle</button></div></div>` : g.pause ? '<div class="alerte attention">Passerelle en pause : aucun message n’est relayé.</div>' : ''}`;
   if (pp.onglet === 'bord') {
     const rej = Object.entries(d.stats.rejets).sort((a, b) => b[1] - a[1]);
-    const journalHtml = d.journal.slice().reverse().filter((x) => !pp.filtreJournal || x.type === pp.filtreJournal).slice(0, 150).map((x) => `<div class="${x.type}">[${new Date(x.heure).toLocaleTimeString('fr-FR')}] ${x.type === 'in' ? 'REÇU  ' : x.type === 'out' ? 'RELAYÉ' : 'IGNORÉ'} ${esc(x.texte)}${x.motif ? ` <b>(${esc(x.motif)})</b>` : ''}</div>`).join('') || '<div class="vide">Rien pour l’instant.</div>';
+    const journalHtml = d.journal.slice().reverse().filter((x) => !pp.filtreJournal || x.type === pp.filtreJournal).slice(0, 150).map((x) => `<div class="${x.type}">[${new Date(x.heure).toLocaleTimeString('en-US')}] ${x.type === 'in' ? 'REÇU  ' : x.type === 'out' ? 'RELAYÉ' : 'IGNORÉ'} ${esc(x.texte)}${x.motif ? ` <b>(${esc(x.motif)})</b>` : ''}</div>`).join('') || '<div class="vide">Rien pour l’instant.</div>';
     if (!complet && $('#pp-journal')) { $('#pp-journal').innerHTML = journalHtml; $('#pp-c1').textContent = d.stats.mt2mc; $('#pp-c2').textContent = d.stats.mc2mt; $('#pp-c3').textContent = rej.reduce((t, x) => t + x[1], 0); return; }
     z.innerHTML = `${entete}
       <div class="pp-grille"><div class="mesure"><span>Relayés MT → MC</span><b id="pp-c1">${d.stats.mt2mc}</b></div><div class="mesure"><span>Relayés MC → MT</span><b id="pp-c2">${d.stats.mc2mt}</b></div><div class="mesure"><span>Ignorés</span><b id="pp-c3">${rej.reduce((t, x) => t + x[1], 0)}</b></div></div>
@@ -6672,7 +6683,7 @@ async function rendrePasserelle(complet) {
       <div class="pp-ajout"><input list="pp-connus" id="pp-qui" placeholder="Rechercher un nœud Meshtastic ou MeshCore connu…"><datalist id="pp-connus">${connus.slice(0, 1500).map((c) => `<option value="${esc(c.lib)}"></option>`).join('')}</datalist>
         <input id="pp-motif" placeholder="Motif (facultatif)" maxlength="120"><label class="case"><input type="checkbox" id="pp-recip"> aussi dans l’autre réseau (même nom)</label><button class="principal" id="pp-bloquer">Interdire le transfert</button></div>
       <p class="erreur" id="pp-retour"></p>
-      ${d.listeNoire.length ? `<table class="voisins"><thead><tr><th>Utilisateur</th><th>Réseau</th><th>Motif</th><th>Autre réseau</th><th>Ajouté</th><th></th></tr></thead><tbody>${d.listeNoire.map((b) => `<tr data-r="${b.reseau}" data-id="${esc(b.id)}"><td><b>${esc(b.nom)}</b></td><td>${b.reseau === 'mt' ? 'Meshtastic' : 'MeshCore'}</td><td>${esc(b.motif || '—')}</td><td><input type="checkbox" data-recip ${b.reciproque ? 'checked' : ''}></td><td><small>${new Date(b.ajoute).toLocaleDateString('fr-FR')}${b.par ? ' · ' + esc(b.par) : ''}</small></td><td><button class="mini" data-retirer>✕</button></td></tr>`).join('')}</tbody></table>` : '<div class="vide">Liste noire vide.</div>'}`;
+      ${d.listeNoire.length ? `<table class="voisins"><thead><tr><th>Utilisateur</th><th>Réseau</th><th>Motif</th><th>Autre réseau</th><th>Ajouté</th><th></th></tr></thead><tbody>${d.listeNoire.map((b) => `<tr data-r="${b.reseau}" data-id="${esc(b.id)}"><td><b>${esc(b.nom)}</b></td><td>${b.reseau === 'mt' ? 'Meshtastic' : 'MeshCore'}</td><td>${esc(b.motif || '—')}</td><td><input type="checkbox" data-recip ${b.reciproque ? 'checked' : ''}></td><td><small>${new Date(b.ajoute).toLocaleDateString('en-US')}${b.par ? ' · ' + esc(b.par) : ''}</small></td><td><button class="mini" data-retirer>✕</button></td></tr>`).join('')}</tbody></table>` : '<div class="vide">Liste noire vide.</div>'}`;
     $('#pp-bloquer').onclick = async () => {
       const v = $('#pp-qui').value.trim(), c = connus.find((x) => x.lib === v);
       if (!c) { $('#pp-retour').textContent = 'Choisissez un utilisateur dans la liste des nœuds connus.'; return; }
@@ -6795,7 +6806,7 @@ async function installation() {
     await optionsDepartements(f.departement, a.departement);
     f.titre.value = a.titre || '';
     f.mqttUrl.value = a.mqtt.url || '';
-    f.mqttRacine.value = a.mqtt.racine || 'msh/EU_868';
+    f.mqttRacine.value = a.mqtt.racine || 'msh/US';
     f.mqttUtilisateur.value = a.mqtt.utilisateur || '';
     if (a.mqtt.motDePasseDefini) f.mqttMotDePasse.placeholder = '•••••• (inchangé)';
     f.canaux.placeholder = a.canaux.length ? `Laisser vide pour garder : ${a.canaux.join(', ')}` : 'LongFast=AQ==';
@@ -6906,7 +6917,7 @@ const precisionTexte = (bits) => {
   if (!bits) return 'pas de position';
   if (bits >= 32) return 'exacte';
   const m = 23300 / 2 ** (bits - 10);
-  return m >= 1000 ? `≈ ${(m / 1000).toFixed(1).replace('.', ',')} km` : `≈ ${Math.round(m)} m`;
+  return m >= 1000 ? `≈ ${(m / 1000).toFixed(1)} km` : `≈ ${Math.round(m)} m`;
 };
 async function ouvrirQr(n, choix = {}) {
   const dlg = $('#dlg-qr'), z = $('#qr-contenu');
@@ -6950,7 +6961,7 @@ async function ouvrirQr(n, choix = {}) {
         ${r.canaux.some((c) => c.montant !== c.montantNoeud || c.descendant !== c.descendantNoeud) ? '<div class="note">MQTT modifié par rapport au nœud d’origine.</div>' : ''}
         <h4>Réglage radio</h4>
         ${lora ? `<label class="qr-canal"><input type="checkbox" id="qr-lora" ${lora.inclus ? 'checked' : ''}>
-          <span><b>Inclure le réglage LoRa</b><br><small>${esc([lora.region, lora.preset, lora.frequence ? lora.frequence.toFixed(4).replace('.', ',') + ' MHz' : (lora.slot ? 'slot ' + lora.slot : null), lora.sauts ? lora.sauts + ' sauts' : null, lora.puissance ? lora.puissance + ' dBm' : 'puissance par défaut'].filter(Boolean).join(' · '))}</small></span></label>`
+          <span><b>Inclure le réglage LoRa</b><br><small>${esc([lora.region, lora.preset, lora.frequence ? lora.frequence.toFixed(4) + ' MHz' : (lora.slot ? 'slot ' + lora.slot : null), lora.sauts ? lora.sauts + ' sauts' : null, lora.puissance ? lora.puissance + ' dBm' : 'puissance par défaut'].filter(Boolean).join(' · '))}</small></span></label>`
           : '<div class="vide">Réglage LoRa non connu (seuls les canaux sont dans le QR).</div>'}
         <div class="alerte attention">Ce QR code contient les clés des canaux : ne le donnez qu’à des personnes de confiance.</div>
         <p class="note">Sur le module à configurer : appli Meshtastic › Canaux › scanner, puis <b>Remplacer</b>. Le rôle, le nom, la position, le Wi-Fi/MQTT et les clés d’administration ne changent pas.</p>
@@ -7528,7 +7539,7 @@ async function rendreArchive() {
     <div class="grille">
       <div class="mesure"><span>État</span><b style="color:${!r.actif ? 'inherit' : e.connecte ? 'var(--ok)' : 'var(--attention)'}">${!r.actif ? 'désactivée' : e.connecte ? '● active' : '○ non connectée'}</b></div>
       <div class="mesure"><span>Taille de la base</span><b>${go(e.tailleOctets)}${r.maxGo ? ` / ${r.maxGo} Go` : ''}</b></div>
-      <div class="mesure"><span>Lignes copiées (depuis le démarrage)</span><b>${(e.total || 0).toLocaleString('fr-FR')}</b></div>
+      <div class="mesure"><span>Lignes copiées (depuis le démarrage)</span><b>${(e.total || 0).toLocaleString('en-US')}</b></div>
       <div class="mesure"><span>Dernière copie</span><b>${e.dernierTour ? ilYa(e.dernierTour) : '–'}</b></div>
     </div>
     ${e.erreur ? `<p class="erreur">${esc(e.erreur)}</p>` : ''}${e.moduleAbsent ? '<p class="erreur">Module PostgreSQL absent de cette image : mettez la carte à jour.</p>' : ''}

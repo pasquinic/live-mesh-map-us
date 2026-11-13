@@ -13,7 +13,7 @@ function texte(nom, defaut = '') {
   return v === undefined || v === '' ? defaut : v;
 }
 
-// CANAUX="Fr_Balise=AQ==;D_HauteLoir=AQ==;..."  (nom=clé base64, séparés par ; ou retour ligne)
+// CANAUX="LongFast=AQ==;MyChannel=base64key;..."  (nom=clé base64, séparés par ; ou retour ligne)
 function lireCanaux(valeur) {
   return valeur
     .split(/[;\n]/)
@@ -36,7 +36,7 @@ const config = {
     tlsNonVerifie: texte('MQTT_TLS_NON_VERIFIE', 'non') === 'oui',
     utilisateur: texte('MQTT_UTILISATEUR'),
     motDePasse: texte('MQTT_MOT_DE_PASSE'),
-    racine: texte('MQTT_RACINE', 'msh/EU_868').replace(/\/+$/, ''),
+    racine: texte('MQTT_RACINE', 'msh/US').replace(/\/+$/, ''),
     // Sujets supplémentaires, séparés par des virgules (ex. flux déjà déchiffré d'un autre serveur)
     sujetsSupplementaires: texte('MQTT_SUJETS_SUPPLEMENTAIRES').split(',').map((s) => s.trim()).filter(Boolean),
   },
@@ -65,12 +65,12 @@ const config = {
     emissionPourcent: nombre('SEUIL_EMISSION_POURCENT', 8),
   },
   carte: {
-    titre: texte('CARTE_TITRE', 'Carte live · Réseau Meshtastic'),
-    centreLat: nombre('CARTE_CENTRE_LAT', 45.08),
-    centreLon: nombre('CARTE_CENTRE_LON', 3.88),
+    titre: texte('CARTE_TITRE', 'Live mesh map · Meshtastic network'),
+    centreLat: nombre('CARTE_CENTRE_LAT', 33.45),
+    centreLon: nombre('CARTE_CENTRE_LON', -112.07),
     zoom: nombre('CARTE_ZOOM', 10),
     // Fond de carte par défaut : sombre, plan, plan-sombre, photos ou topo (chaque visiteur peut en changer)
-    fond: ({ sombre: 'Sombre', plan: 'Plan IGN', 'plan-sombre': 'Plan IGN sombre', photos: 'Photos aériennes IGN', topo: 'Topographique', topographique: 'Topographique' })[texte('CARTE_FOND', 'sombre').toLowerCase()] || 'Sombre',
+    fond: ({ sombre: 'Sombre', plan: 'USGS Topo', 'plan-sombre': 'USGS Topo sombre', photos: 'USGS Imagery', topo: 'Topographique', topographique: 'Topographique', usgs: 'USGS Topo' })[texte('CARTE_FOND', 'sombre').toLowerCase()] || 'Sombre',
     // Réseaux proposés : les-deux, meshtastic ou meshcore (masque les boutons de l'autre réseau)
     reseaux: ['les-deux', 'meshtastic', 'meshcore'].includes(texte('CARTE_RESEAUX', 'les-deux').toLowerCase()) ? texte('CARTE_RESEAUX', 'les-deux').toLowerCase() : 'les-deux',
     // Couches masquées par défaut (Couches ▾) : sommets, routiers, rf, voisinage, traceroute, animations, federation, releves
@@ -95,7 +95,8 @@ const config = {
     tracerouteEspacementSecondes: nombre('TRACEROUTE_ESPACEMENT_SECONDES', 90),
     // Cibles explicites (!id ou nom court, virgules). Vide = relais et nœuds surveillés entendus en radio
     tracerouteCibles: texte('TRACEROUTE_CIBLES').split(/[,;]/).map((s) => s.trim()).filter(Boolean),
-    // Pas de traceroute automatique si le module émet déjà plus que ce pourcentage du temps (limite légale 10 %)
+    // No automatic traceroute if the node already transmits more than this share of the time (US 915 MHz has no
+    // duty-cycle limit under FCC Part 15, but a busy channel is a shared resource: keep it polite)
     emissionMaxPourcent: nombre('TRACEROUTE_EMISSION_MAX_POURCENT', 6),
   },
   // Source complémentaire : API v1 de MeshMonitor (noms, rôles, sauts et liens vus par le nœud local)
@@ -108,12 +109,12 @@ const config = {
     sources: texte('MESHMONITOR_SOURCES').split(',').map((s) => s.trim()).filter(Boolean),
     intervalleSecondes: nombre('MESHMONITOR_INTERVALLE_SECONDES', 300),
   },
-  // Zone « Haute-Loire » : sud, ouest, nord, est (degrés)
+  // Map area box: south, west, north, east (degrees). Default: computed from the county outline (below)
   zone: (() => {
-    const v = texte('ZONE_BBOX', '44.74,3.08,45.43,4.49').split(',').map(Number);
-    return v.length === 4 && v.every(Number.isFinite) ? v : [44.74, 3.08, 45.43, 4.49];
+    const v = texte('ZONE_BBOX', '32.505,-113.335,34.048,-111.039').split(',').map(Number);
+    return v.length === 4 && v.every(Number.isFinite) ? v : [32.505, -113.335, 34.048, -111.039];
   })(),
-  zoneNom: texte('ZONE_NOM', 'Haute-Loire'),
+  zoneNom: texte('ZONE_NOM', 'Maricopa County, AZ'),
   // Client et flasheur officiels Meshtastic (vide = calculé : même machine, ports 8443/10000 en HTTPS ou 8096/8097 en HTTP)
   urlClient: texte('URL_CLIENT_MESHTASTIC'),
   urlFlasher: texte('URL_FLASHER'),
@@ -126,8 +127,8 @@ const config = {
   meshcore: {
     actif: texte('MESHCORE', 'oui') !== 'non',
     racine: texte('MESHCORE_RACINE', 'meshcore').replace(/\/+$/, ''),
-    // Code de zone des sujets (aéroport le plus proche, ex. LPY = Le Puy)
-    iata: texte('MESHCORE_IATA', 'LPY').toUpperCase(),
+    // Topic area code (nearest airport, e.g. PHX = Phoenix)
+    iata: texte('MESHCORE_IATA', 'PHX').toUpperCase(),
     republier: texte('MESHCORE_REPUBLIER', 'oui') !== 'non',
     // Canaux de groupe à déchiffrer : Public, #nom (canal « hashtag ») ou nom=secret (32 caractères hexadécimaux)
     canaux: texte('MESHCORE_CANAUX', 'Public').split(/[;\n]/).map((s) => s.trim()).filter(Boolean),
@@ -141,10 +142,10 @@ const config = {
     // Codes de zone acceptés pour les observateurs dont la position est inconnue (en plus de MESHCORE_IATA)
     // Réglage radio attendu du companion (fréquence,bande,SF,CR) ; « non » : aucun avertissement
     radioAttendue: (() => {
-      const v = texte('MESHCORE_RADIO_ATTENDUE', '869.618,62.5,8,8').trim();
+      const v = texte('MESHCORE_RADIO_ATTENDUE', '910.525,62.5,7,5').trim();
       if (/^(non|aucun|aucune|0)$/i.test(v)) return null;
       const m = v.split(/[,;\s]+/).map(Number);
-      return m.length === 4 && m.every((x) => Number.isFinite(x)) ? { freq: m[0], bw: m[1], sf: m[2], cr: m[3] } : { freq: 869.618, bw: 62.5, sf: 8, cr: 8 };
+      return m.length === 4 && m.every((x) => Number.isFinite(x)) ? { freq: m[0], bw: m[1], sf: m[2], cr: m[3] } : { freq: 910.525, bw: 62.5, sf: 7, cr: 5 };
     })(),
     iataVoisins: texte('MESHCORE_IATA_VOISINS').split(/[,;\s]+/).map((x) => x.trim().toUpperCase()).filter(Boolean),
     // Interrogation automatique de l'état des répéteurs surveillés (0 = jamais) et nombre max. par tour
@@ -157,7 +158,7 @@ const config = {
 // Ils sont enregistrés dans le volume de données et priment sur le fichier .env.
 const fs = require('fs');
 const path = require('path');
-config.departement = { code: texte('DEPARTEMENT', '43'), nom: texte('ZONE_NOM', 'Haute-Loire') };
+config.departement = { code: texte('DEPARTEMENT', '04013'), nom: texte('ZONE_NOM', 'Maricopa County, AZ') };
 // Zone hors de France (DEPARTEMENT=MN40W075…) sans ZONE_BBOX : le carré de 1° fixe la zone et le centrage
 {
   const { estCodeMonde, rectangleMonde, nomMonde } = require('./monde');
@@ -166,6 +167,20 @@ config.departement = { code: texte('DEPARTEMENT', '43'), nom: texte('ZONE_NOM', 
     if (!texte('ZONE_BBOX')) config.zone = rectangleMonde(config.departement.code);
     if (!texte('CARTE_CENTRE_LAT')) { config.carte.centreLat = config.zone[0] + 0.5; config.carte.centreLon = config.zone[1] + 0.5; }
     if (!texte('ZONE_NOM')) config.departement.nom = config.zoneNom = nomMonde(config.departement.code);
+  }
+  // US county (5-digit FIPS, e.g. 04013 = Maricopa County, AZ): box, centre and name from the county outline
+  if (/^\d{5}$/.test(config.departement.code)) {
+    try {
+      const { contourDepartement, nomDepartement } = require('./relief');
+      const g = contourDepartement(config.departement.code);
+      if (g) {
+        let s = 90, o = 180, n = -90, e = -180;
+        for (const a of (g.type === 'Polygon' ? g.coordinates : g.coordinates.flat())) for (const [lon, lat] of a) { s = Math.min(s, lat); n = Math.max(n, lat); o = Math.min(o, lon); e = Math.max(e, lon); }
+        if (!texte('ZONE_BBOX')) config.zone = [s, o, n, e].map((v) => Math.round(v * 1000) / 1000);
+        if (!texte('CARTE_CENTRE_LAT')) { config.carte.centreLat = (config.zone[0] + config.zone[2]) / 2; config.carte.centreLon = (config.zone[1] + config.zone[3]) / 2; }
+        if (!texte('ZONE_NOM')) config.departement.nom = config.zoneNom = nomDepartement(config.departement.code) || config.departement.code;
+      }
+    } catch { /* outline unavailable: keep the defaults */ }
   }
 }
 config.inscriptions = texte('INSCRIPTIONS', 'validation'); // fermees | validation | ouvertes

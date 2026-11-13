@@ -24,14 +24,9 @@ jobs:
             echo "::error::Wiki introuvable : créez d'abord une première page (onglet Wiki › Create the first page › Save), puis relancez ce workflow."
             exit 1
           }
-          # Édition monde : pages anglaises sous les noms d'origine (liens inchangés), pages françaises en « Français-… »
+          # US edition: the wiki/ folder is in English
           find depot-wiki -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp wiki/en/*.md depot-wiki/
-          for f in wiki/*.md; do
-            n=$(basename "$f" .md)
-            [ "$n" = "_Sidebar" ] && continue
-            sed -E 's/\[\[([^]|]+)\|([^]]+)\]\]/[[\1|Français-\2]]/g; s/\[\[([^]|]+)\]\]/[[\1|Français-\1]]/g' "$f" > "depot-wiki/Français-$n.md"
-          done
+          cp wiki/*.md depot-wiki/
           cd depot-wiki
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

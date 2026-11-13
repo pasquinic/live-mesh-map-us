@@ -1,149 +1,153 @@
 # Installation
 
-Il faut une machine allumée en permanence avec **Docker** : NAS Synology (Container Manager), Unraid, Raspberry Pi 4/5, serveur Linux, machine virtuelle Proxmox…
+You need a machine that is always on, with **Docker**: Synology NAS (Container Manager), Unraid, Raspberry Pi 4/5, Linux server, Proxmox virtual machine…
 
-## 1. Récupérer et lancer
+> **US edition.** The area of the map is a **US county** (picked by state in the wizard, or `DEPARTEMENT=` + 5-digit FIPS code in the `.env`, e.g. `04013` = Maricopa County, AZ). Coverage uses USGS 3DEP terrain, base maps come from the USGS National Map, distances are shown in miles and feet (*Settings › Display › 📏 Units* for metric). Radio defaults are US: `RADIO_FREQ_MHZ=906.875` (LongFast), `MQTT_RACINE=msh/US`, MeshCore 910.525 MHz / SF7 / BW 62.5. Set `TZ` (e.g. `America/Phoenix`, `America/New_York`) for local times.
 
-### En une commande (Linux : Debian, Ubuntu, Raspberry Pi OS, VM Proxmox…)
+## 1. Get it and start it
+
+### In one command (Linux: Debian, Ubuntu, Raspberry Pi OS, Proxmox VM…)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sauveteur71/live-mesh-map-world/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/pasquinic/live-mesh-map-us/main/install.sh | sudo sh
 ```
-Le script installe Docker s'il manque (il demande d'abord), crée `/opt/live-mesh-map-world` avec le `docker-compose.yml` (service de mise à jour en un clic compris) et un `.env` (avec une clé des équipes tirée au hasard), télécharge les images, lance la carte et affiche l'adresse à ouvrir. Tout le reste se règle ensuite dans la carte : l'assistant crée le compte administrateur et règle le serveur MQTT, avec un bouton **🔌 Tester ce serveur MQTT**. Puis *Réglages › 🩺 Diagnostic* vérifie que tout fonctionne.
+The script installs Docker if it is missing (it asks first), creates `/opt/live-mesh-map-us` with the `docker-compose.yml` (including the one-click update service) and a `.env` (with a random team key), downloads the images, starts the map and shows the address to open. Everything else is then set in the map: the wizard creates the admin account and sets the MQTT server, with a **🔌 Test this MQTT server** button. Then *Settings › 🩺 Diagnostics* checks that everything works.
 
-Options : `DOSSIER=/autre/dossier`, `CARTE_PORT=8080`, `MISE_A_JOUR=non` (sans le service de mise à jour), à placer avant `sh` : `… | sudo DOSSIER=/srv/carte sh`. Relancé sur une installation existante, le script ne fait que mettre l'image à jour.
+Options: `DOSSIER=/other/folder`, `CARTE_PORT=8080`, `MISE_A_JOUR=non` (without the update service), placed before `sh`: `… | sudo DOSSIER=/srv/map sh`. Run again on an existing installation, the script only updates the image.
 
-### À la main
+### By hand
 ```bash
-git clone https://github.com/sauveteur71/live-mesh-map-world.git
-cd live-mesh-map-world
-cp .env.exemple .env      # puis adaptez au moins MQTT_URL
+git clone https://github.com/pasquinic/live-mesh-map-us.git
+cd live-mesh-map-us
+cp .env.exemple .env      # then adapt at least MQTT_URL
 docker compose up -d
 ```
 
-**Synology** : Container Manager › Projet › Créer, dossier `/volume1/docker/live-mesh-map-world`, puis collez le contenu de `docker-compose.yml`.
+**Synology**: Container Manager › Project › Create, folder `/volume1/docker/live-mesh-map-us`, then paste the content of `docker-compose.yml`.
 
-Le `docker-compose.yml` lance aussi le **client officiel Meshtastic** (port 8096) et le **flasheur officiel** (port 8097), accessibles depuis le menu *Outils*.
+The `docker-compose.yml` also starts the **official Meshtastic client** (port 8096) and the **official flasher** (port 8097), reachable from the *Tools* menu.
 
-## 2. Le fichier `.env`
+## 2. The `.env` file
 
-Le minimum :
+The minimum:
 
-| Variable | Rôle | Exemple |
+| Variable | Role | Example |
 |---|---|---|
-| `MQTT_URL` | adresse du broker | `mqtt://mqtt.example.org:1883` |
-| `MQTT_UTILISATEUR` / `MQTT_MOT_DE_PASSE` | votre compte sur le broker | demandez-le à son administrateur |
-| `MQTT_RACINE` | début des sujets Meshtastic | `msh/EU_868` |
-| `CANAUX` | canaux à déchiffrer | `LongFast=AQ==;MonCanal=clé…` |
+| `MQTT_URL` | broker address | `mqtt://mqtt.example.org:1883` |
+| `MQTT_UTILISATEUR` / `MQTT_MOT_DE_PASSE` | your account on the broker | ask its administrator |
+| `DEPARTEMENT` | county of the map (5-digit FIPS code) | `04013` (Maricopa County, AZ) |
+| `MQTT_RACINE` | start of the Meshtastic topics | `msh/US` |
+| `TZ` | time zone for dates and night-time schedules | `America/Phoenix` |
+| `CANAUX` | channels to decrypt | `LongFast=AQ==;MyChannel=key…` |
 
-Tout le reste se règle ensuite depuis la carte (assistant, puis *Gestion › Réglages*).
+Everything else is then set from the map (wizard, then *Manage › Settings*).
 
-> **Qui l'emporte : le `.env` ou la page Réglages ?**
-> - Une valeur **changée** dans l'assistant ou dans *Gestion › Réglages* (broker, canaux, titre…) **remplace** celle du `.env`. La page l'indique (« ces valeurs remplacent celles du .env ») et propose **Revenir au .env**.
-> - Une valeur laissée telle quelle reste lue dans le `.env` : vous pouvez la modifier plus tard dans le `.env`.
-> - Après une modification du `.env`, lancez **`docker compose up -d`** : un simple `docker compose restart` ne relit **pas** le `.env`.
+> **Which wins: the `.env` or the Settings page?**
+> - A value **changed** in the wizard or in *Manage › Settings* (broker, channels, title…) **replaces** the `.env` one. The page says so (“these values replace those of the .env”) and offers **Back to .env**.
+> - A value left as-is is still read from the `.env`: you can change it later in the `.env`.
+> - After editing the `.env`, run **`docker compose up -d`**: a plain `docker compose restart` does **not** read the `.env` again.
 
-Affichage par défaut (facultatif) :
+Default display (optional):
 
-| Variable | Rôle | Valeurs |
+| Variable | Role | Values |
 |---|---|---|
-| `CARTE_FOND` | fond de carte au premier affichage | `sombre` (défaut), `plan`, `plan-sombre`, `photos`, `topo` |
-| `CARTE_RESEAUX` | réseaux proposés | `les-deux` (défaut), `meshtastic`, `meshcore` : le choix Meshtastic / MeshCore / Les deux disparaît |
-| `MESHCORE_RADIO_ATTENDUE` | réglage radio attendu du companion MeshCore (avertissement s'il diffère) | `869.618,62.5,8,8` (défaut), ou `non` pour ne jamais avertir |
-| `CARTE_COUCHES_MASQUEES` | couches masquées au départ | ex. `sommets` (points hauts et sites proposés), `routiers`, `animations`… |
+| `CARTE_FOND` | base map on first display | `sombre` (default, dark), `plan` (USGS Topo), `plan-sombre` (USGS Topo, dark), `photos` (USGS imagery), `topo` (OpenTopoMap) |
+| `CARTE_RESEAUX` | networks offered | `les-deux` (default, both), `meshtastic`, `meshcore`: the Meshtastic / MeshCore / Both choice disappears |
+| `MESHCORE_RADIO_ATTENDUE` | expected radio setting of the MeshCore companion (warning if different) | `910.525,62.5,7,5` (default, US/Canada recommended), or `non` to never warn |
+| `CARTE_COUCHES_MASQUEES` | layers hidden at start | e.g. `sommets` (high points and suggested sites), `routiers` (towers), `animations`… |
 
-Chaque visiteur peut ensuite changer de fond et de couches dans *Couches ▾*. Son choix est gardé dans son navigateur.
+Each visitor can then change the base map and layers in *Layers ▾*. Their choice is kept in their browser.
 
-> ⚠️ Vérifiez l'orthographe de l'adresse du broker : `mqttexample.org` au lieu de `mqtt.example.org` donne une erreur `getaddrinfo ENOTFOUND` en boucle dans le journal.
+> ⚠️ Check the spelling of the broker address: a typo such as `mqttexample.org` instead of `mqtt.example.org` gives a looping `getaddrinfo ENOTFOUND` error in the log.
 
-## 3. L'assistant d'installation
+## 3. The setup wizard
 
-Ouvrez `http://IP_DU_SERVEUR:8095`. L'assistant crée le **compte administrateur** et règle le département, le broker et les canaux.
+Open `http://SERVER_IP:8095`. The wizard creates the **admin account** and sets the county, the broker and the channels.
 
-- **Depuis le réseau local** de la machine : aucun code n'est demandé.
-- **Depuis ailleurs** (serveur distant, proxy inversé, Tailscale) : un **code d'installation** est demandé.
-  - Si vous avez rempli `ADMIN_MOT_DE_PASSE` dans `.env`, c'est cette valeur.
-  - Sinon, la carte tire un code au hasard et l'affiche dans son journal :
+- **From the machine's local network**: no code is asked.
+- **From elsewhere** (remote server, reverse proxy, Tailscale): a **setup code** is asked.
+  - If you filled in `ADMIN_MOT_DE_PASSE` in `.env`, it is this value.
+  - Otherwise, the map draws a random code and shows it in its log:
     ```bash
     docker compose logs carte-live | grep -i installation
     ```
-    Il ressemble à `ABCD-EFGH`. Il disparaît dès que le compte administrateur est créé.
+    It looks like `ABCD-EFGH`. It disappears as soon as the admin account is created.
 
-L'assistant reprend les valeurs du `.env` (broker, canaux) : ne les retouchez que pour les changer. Après l'installation, la carte redémarre (une dizaine de secondes), puis vous êtes connecté.
+The wizard takes the values from the `.env` (broker, channels): only touch them to change them. After setup, the map restarts (about ten seconds), then you are logged in.
 
-**Se connecter** : avec l'identifiant choisi (majuscules indifférentes) ou l'indicatif. Après 3 essais faux en 15 min, l'adresse est bloquée 15 min (voir [[Comptes et sécurité]]).
+**Logging in**: with the chosen username (case-insensitive) or the callsign. After 3 wrong attempts in 15 min, the address is blocked for 15 min (see [[Accounts and security|Comptes et sécurité]]).
 
-## 4. Mise à jour
+## 4. Updating
 
-Chaque image est essayée (démarrage du service) avant d'être publiée. Les versions GitHub (page *Releases*, image `:latest`) sont publiées à la demande : *Actions › Image Docker › Run workflow*, case « publier ».
+Each image is tested (service startup) before being published. GitHub versions (*Releases* page, `:latest` image) are published on demand: *Actions › Image Docker › Run workflow*, “publier” box.
 
-### En un clic (conseillé)
-Quand une nouvelle version est publiée, l'en-tête de la carte affiche « vX disponible ». Un **administrateur** clique dessus (ou ⚙️🔎 › « Mettre à jour la carte ») puis **⬆️ Mettre à jour maintenant** : la carte télécharge la nouvelle image, redémarre avec les mêmes réglages et données (1 à 3 minutes) et la page se recharge toute seule. Si la nouvelle version ne démarre pas, l'ancienne est remise en route. La mise à jour est refusée pendant une programmation à distance (sauf « Forcer »).
+### In one click (recommended)
+When a new version is published, the map header shows “vX available”. An **administrator** clicks it (or ⚙️🔎 › “Update the map”) then **⬆️ Update now**: the map downloads the new image, restarts with the same settings and data (1 to 3 minutes) and the page reloads by itself. If the new version doesn't start, the old one is brought back. The update is refused during remote programming (unless “Force”).
 
-Il faut pour cela le petit service **`maj`** du `docker-compose.yml` (présent dans le fichier du dépôt depuis la 2.14.0). Sur une installation plus ancienne, ajoutez ce bloc sous `services:` puis faites une dernière fois `docker compose up -d` :
+This needs the small **`maj`** service of the `docker-compose.yml` (in the repository's file since 2.14.0). On an older installation, add this block under `services:` then run `docker compose up -d` one last time:
 
 ```yaml
   maj:
-    image: ghcr.io/sauveteur71/live-mesh-map-world:latest   # même image que la carte
+    image: ghcr.io/pasquinic/live-mesh-map-us:latest   # same image as the map
     container_name: carte-live-maj
     command: ["node", "src/majeur.js"]
     restart: unless-stopped
     user: "0"
     environment:
-      MAJ_SERVICE: carte-live          # nom du service de la carte dans votre docker-compose.yml
+      MAJ_SERVICE: carte-live          # name of the map service in your docker-compose.yml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - donnees:/data                  # le même volume (ou dossier) de données que la carte
+      - donnees:/data                  # the same data volume (or folder) as the map
     healthcheck:
       disable: true
     mem_limit: 64m
 ```
 
-Sécurité : ce service a accès au moteur Docker (comme Watchtower ou Portainer) mais **ne publie aucun port** ; il ne sait faire qu'une chose, mettre à jour le conteneur de la carte, et n'obéit qu'à la carte, avec un jeton créé dans le dossier de données (`maj-jeton.txt`). Si vous ne voulez pas lui donner cet accès, supprimez le bloc et mettez à jour à la main.
+Security: this service has access to the Docker engine (like Watchtower or Portainer) but **publishes no port**; it can only do one thing, update the map's container, and only obeys the map, with a token created in the data folder (`maj-jeton.txt`). If you don't want to give it this access, delete the block and update by hand.
 
-### Automatique la nuit (option)
-Dans la fenêtre « Mise à jour de la carte » : cochez **Mettre à jour automatiquement la nuit** et choisissez l'heure. La carte ne se met à jour que si une nouvelle version est publiée et qu'aucune programmation à distance n'est en cours.
+### Automatically at night (option)
+In the “Map update” window: tick **Update automatically at night** and choose the time. The map only updates if a new version is published and no remote programming is running.
 
-### À la main
+### By hand
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-Les données (base, comptes, réglages, cache du relief) sont dans le volume `donnees` : sauvegardez-le.
+Data (database, accounts, settings, terrain cache) is in the `donnees` volume: back it up.
 
-**Sauvegarde complète** (*Réglages › 📦 Sauvegarde complète*, administrateur) : un seul fichier `carte-live-complete-DATE.tar.gz` avec la base, les réglages, les comptes, les équipes et les signalements (le relief n'y est pas : il se retélécharge). Pour changer de serveur : installez la carte sur le nouveau, arrêtez-la (`docker compose stop carte-live`), décompressez le fichier dans son dossier de données (`tar -xzf carte-live-complete-DATE.tar.gz -C /chemin/du/volume`), puis relancez (`docker compose up -d`). Le fichier contient les comptes et les clés des canaux : gardez-le en lieu sûr. La carte sauvegarde aussi ses réglages chaque nuit (*Gestion › Sauvegardes*).
+**Full backup** (*Settings › 📦 Full backup*, administrator): a single `carte-live-complete-DATE.tar.gz` file with the database, settings, accounts, teams and reports (terrain is not included: it is downloaded again). To change server: install the map on the new one, stop it (`docker compose stop carte-live`), extract the file into its data folder (`tar -xzf carte-live-complete-DATE.tar.gz -C /path/of/the/volume`), then start it again (`docker compose up -d`). The file contains accounts and channel keys: keep it somewhere safe. The map also backs up its settings every night (*Manage › Backups*).
 
-Évitez de mettre à jour pendant une programmation à distance en cours : elle reprend après le redémarrage, mais la demande en cours repart de zéro.
+Avoid updating during a running remote programming job: it resumes after the restart, but the current request starts again from scratch.
 
-## Module branché en USB sur le serveur
+## Node plugged into the server over USB
 
-Pour relier un module directement au serveur (sans navigateur ni agent), transmettez son port au conteneur dans `docker-compose.yml` :
+To link a node directly to the server (no browser or agent), pass its port to the container in `docker-compose.yml`:
 
 ```yaml
     devices: ["/dev/ttyACM0:/dev/ttyACM0"]
     group_add: ["dialout"]
 ```
 
-Ces deux lignes vont dans le service `carte-live`, au même retrait que `mem_limit`. Placées sous `volumes:`, Docker répond « invalid mount path: 'dialout' ».
+These two lines go in the `carte-live` service, at the same indentation as `mem_limit`. Placed under `volumes:`, Docker answers “invalid mount path: 'dialout'”.
 
-Puis *Outils › Connecter un module › USB du serveur*. Voir [[Connecter un module]].
+Then *Tools › Connect a node › Server USB*. See [[Connect a node|Connecter un module]].
 
-## Relief de toute la France (facultatif)
+## Terrain for the whole state (optional)
 
-Le relief du département de la carte se télécharge tout seul. Pour les calculs de couverture dans tous les départements : *Outils › 🗺️ Toute la France › ⬇ Télécharger et installer toute la France* (aussi dans *Gestion › Réglages › Carte publique et relief*) (paquet de ≈ 110 Mo récupéré automatiquement sur GitHub). Voir [[Couverture et sites]].
+The terrain of the map's county downloads by itself (USGS 3DEP). For coverage computations in every county of your state: *Tools › 🗺️ Whole state › ⬇ Prepare all of <state>* (also in *Manage › Settings › Public map and terrain*). See [[Coverage and sites|Couverture et sites]].
 
-## 5. Accès depuis l'extérieur et HTTPS
+## 5. Access from outside and HTTPS
 
-Le plus simple et le plus sûr est **Tailscale** sur le serveur et vos appareils. Le Bluetooth et l'USB dans le navigateur exigent **HTTPS** et **Chrome ou Edge** :
+The simplest and safest is **Tailscale** on the server and your devices. Bluetooth and USB in the browser require **HTTPS** and **Chrome or Edge**:
 
 ```bash
-tailscale serve --bg --https=443   http://127.0.0.1:8095   # carte
-tailscale serve --bg --https=8443  http://127.0.0.1:8096   # client Meshtastic
-tailscale serve --bg --https=10000 http://127.0.0.1:8097   # flasheur
+tailscale serve --bg --https=443   http://127.0.0.1:8095   # map
+tailscale serve --bg --https=8443  http://127.0.0.1:8096   # Meshtastic client
+tailscale serve --bg --https=10000 http://127.0.0.1:8097   # flasher
 ```
 
-Si vous publiez la carte sur Internet, placez-la derrière un proxy inversé HTTPS (Nginx, Traefik, proxy de DSM).
+If you publish the map on the internet, put it behind an HTTPS reverse proxy (Nginx, Traefik, DSM proxy).
 
-> 🔒 **Ne redirigez jamais le port 4404 (agents) sur votre box.** Il ne doit être joignable que par le réseau local ou un VPN.
+> 🔒 **Never forward port 4404 (agents) on your router.** It must only be reachable from the local network or a VPN.
 
-## Construire l'image soi-même
-Dans `docker-compose.yml`, remplacez la ligne `image:` par `build: .`, puis `docker compose up -d --build`.
+## Building the image yourself
+In `docker-compose.yml`, replace the `image:` line with `build: .`, then `docker compose up -d --build`.

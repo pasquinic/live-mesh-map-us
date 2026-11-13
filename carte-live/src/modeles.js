@@ -169,7 +169,7 @@ function creerModeles(dossier, { ROLES, REDIFFUSIONS }) {
     if (detail.telemetrie) mc.telemetry = detail.telemetrie;
     if (detail.trafic && Object.keys(detail.trafic).length) mc.trafficManagement = detail.trafic;
     if (Object.keys(mc).length) o.module_config = mc;
-    const entete = `# start of Meshtastic configure yaml\n# ${nom ? nom + ' · ' : ''}exporté ${source} le ${new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}\n# À appliquer en USB : meshtastic --configure ce-fichier.yaml${canalUrl ? '\n# ATTENTION : contient les clés des canaux (channel_url), ne le diffusez pas' : ''}\n`;
+    const entete = `# start of Meshtastic configure yaml\n# ${nom ? nom + ' · ' : ''}exporté ${source} le ${new Date().toLocaleString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix') })}\n# À appliquer en USB : meshtastic --configure ce-fichier.yaml${canalUrl ? '\n# ATTENTION : contient les clés des canaux (channel_url), ne le diffusez pas' : ''}\n`;
     return entete + yaml.dump(o, { lineWidth: 200, noRefs: true });
   }
   // YAML → réglages d'un modèle (owner, channel_url et location sont ignorés : propres à un nœud)

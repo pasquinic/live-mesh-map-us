@@ -1,61 +1,61 @@
-# Dépannage
+# Troubleshooting
 
-### `getaddrinfo ENOTFOUND` dans le journal
-L'adresse du broker est mal écrite (par exemple `mqttexample.org` au lieu de `mqtt.example.org`). Corrigez `MQTT_URL` (ou *Gestion › Réglages*), puis `docker compose up -d`.
+### `getaddrinfo ENOTFOUND` in the log
+The broker address is misspelled (for example `mqttexample.org` instead of `mqtt.example.org`). Fix `MQTT_URL` (or *Manage › Settings*), then `docker compose up -d`.
 
-### Le broker MQTT du `.env` n'est pas pris en compte
-- Après avoir modifié le `.env` : **`docker compose up -d`** (un `docker compose restart` ne relit pas le `.env`).
-- Si le broker a été réglé dans l'assistant ou dans *Gestion › Réglages*, ce réglage **remplace** le `.env` : la page le signale. Corrigez-le sur la page, ou cliquez **Revenir au .env**.
-- Depuis la 2.11.2, l'assistant n'enregistre plus les valeurs reprises telles quelles du `.env` : seules celles que vous changez remplacent le `.env`.
+### The MQTT broker from the `.env` is not used
+- After editing the `.env`: **`docker compose up -d`** (a `docker compose restart` doesn't read the `.env` again).
+- If the broker was set in the wizard or in *Manage › Settings*, that setting **replaces** the `.env`: the page says so. Fix it on the page, or click **Back to .env**.
+- Since 2.11.2, the wizard no longer saves values taken as-is from the `.env`: only the ones you change replace the `.env`.
 
-### Impossible de se connecter juste après l'installation
-- Attendez la fin du redémarrage qui suit l'assistant (une dizaine de secondes), puis rechargez la page.
-- Identifiant : celui saisi dans l'assistant (majuscules indifférentes depuis la 2.11.2) ou l'indicatif.
-- « Trop d'échecs… bloqué jusqu'à … » : 3 essais faux en 15 min bloquent l'adresse 15 min. Attendez, ou débloquez depuis un autre compte admin (*Gestion › Journal*). Depuis le réseau local, seule l'adresse est bloquée, jamais le compte.
-- Derrière un proxy inversé, vérifiez que la carte voit l'adresse des visiteurs (voir [[Comptes et sécurité]]).
+### Can't log in right after setup
+- Wait for the restart that follows the wizard (about ten seconds), then reload the page.
+- Username: the one typed in the wizard (case-insensitive since 2.11.2) or the callsign.
+- “Too many failures… blocked until …”: 3 wrong attempts in 15 min block the address for 15 min. Wait, or unblock from another admin account (*Manage › Log*). From the local network, only the address is blocked, never the account.
+- Behind a reverse proxy, check that the map sees visitors' addresses (see [[Accounts and security|Comptes et sécurité]]).
 
-### L'installation demande un code que je n'ai pas
-`docker compose logs carte-live | grep -i installation` affiche le code. Ou mettez une valeur dans `ADMIN_MOT_DE_PASSE` (`.env`) et redémarrez.
+### Setup asks for a code I don't have
+`docker compose logs carte-live | grep -i installation` shows the code. Or set a value in `ADMIN_MOT_DE_PASSE` (`.env`) and restart.
 
-### « hôte injoignable » (EHOSTUNREACH) pour un module Wi-Fi
-Le serveur n'est pas sur le même réseau que le module. Passez par *Connecter un module* avec l'**agent 1.6** lancé sur un PC de ce réseau, ou par le Bluetooth ou l'USB depuis le navigateur.
+### “host unreachable” (EHOSTUNREACH) for a Wi-Fi node
+The server is not on the same network as the node. Use *Connect a node* with **agent 1.6** running on a PC on that network, or Bluetooth or USB from the browser.
 
-### Le Bluetooth ne trouve pas le module
-Carte en **HTTPS**, **Chrome ou Edge**, appli du téléphone déconnectée. Sur un ESP32 Meshtastic, le Bluetooth est coupé quand le Wi-Fi est activé. Appairez le module dans Windows si besoin (code affiché ou `123456`).
+### Bluetooth doesn't find the node
+Map over **HTTPS**, **Chrome or Edge**, phone app disconnected. On a Meshtastic ESP32, Bluetooth is off when Wi-Fi is on. Pair the node in Windows if needed (code shown or `123456`).
 
-### La programmation à distance échoue souvent
-- Regardez le message : clé refusée ou problème radio (voir [[Programmation à distance]]).
-- Utilisez **Insister 2 h**.
-- Programmez depuis un module qui entend bien le nœud : un module de carte mal placé fait échouer beaucoup de demandes.
+### Remote programming often fails
+- Look at the message: key refused or radio problem (see [[Remote programming|Programmation à distance]]).
+- Use **Retry for 2 h**.
+- Program from a node that hears the target well: a badly placed map node makes many requests fail.
 
-### Je n'ai pas de retour à mes messages
-Regardez sous le message : « relayé », « reçu », et la liste des récepteurs. Si aucun récepteur ne l'a remonté, le module de la carte n'atteint personne : envoyez depuis un module mieux placé. Pour vérifier un correspondant précis, envoyez-lui un message direct (accusé ✓✓).
+### I get no feedback on my messages
+Look under the message: “relayed”, “received”, and the list of receivers. If no receiver reported it, the map's node reaches nobody: send from a better placed node. To check a specific contact, send them a direct message (✓✓ ack).
 
-### Un nœud solaire disparaît la nuit
-Batterie ou panneau insuffisants : il n'émet qu'au soleil. Activez sa télémétrie (30 min) pour suivre la tension, vérifiez les accus et l'orientation du panneau.
+### A solar node disappears at night
+Battery or panel too small: it only transmits in the sun. Turn on its telemetry (30 min) to follow the voltage, check the batteries and the panel's orientation.
 
-### « évincé par un autre client du module »
-Un autre appareil (souvent l'appli du téléphone en Wi-Fi) s'est connecté au module. Un module n'accepte qu'un client à la fois.
+### “kicked out by another client of the node”
+Another device (often the phone app over Wi-Fi) connected to the node. A node only accepts one client at a time.
 
-### Les liaisons de l'autre réseau restent affichées
-Mettez la carte à jour (2.0.0) : la bascule Meshtastic ↔ MeshCore efface désormais les traces de l'autre réseau.
+### The other network's links stay displayed
+Update the map (2.0.0): switching Meshtastic ↔ MeshCore now clears the other network's traces.
 
-## Diagnostic intégré
-*Réglages › 🩺 Diagnostic* (administrateur, ou ⚙️🔎 « diagnostic ») vérifie en une fois : serveur MQTT, arrivée des messages, part de paquets déchiffrés, module Meshtastic, module MeshCore, paquets MeshCore ignorés (code de zone, périmètre), liaisons de la passerelle, mise à jour, taille de la base et place sur le disque. Chaque point à regarder explique quoi faire et propose le bouton qui mène au bon réglage.
+## Built-in diagnostics
+*Settings › 🩺 Diagnostics* (administrator, or ⚙️🔎 “diagnostics”) checks at once: MQTT server, incoming messages, share of decrypted packets, Meshtastic node, MeshCore node, ignored MeshCore packets (area code, perimeter), bridge links, update, database size and disk space. Each point to look at explains what to do and offers the button leading to the right setting.
 
-## Masquer les points hauts et les sites proposés
-*Couches ▾ › Points hauts* : un clic les masque, un autre les réaffiche. Le choix est gardé pour la prochaine visite. Pour les masquer par défaut sur toute la carte : `CARTE_COUCHES_MASQUEES=sommets` dans le `.env`.
+## Hiding high points and suggested sites
+*Layers ▾ › High points*: one click hides them, another shows them again. The choice is kept for the next visit. To hide them by default for the whole map: `CARTE_COUCHES_MASQUEES=sommets` in the `.env`.
 
-## Companion MeshCore en USB « relié, mais muet »
-L'ouverture du port USB redémarre souvent le companion. Depuis la 2.1.1, la carte lui redemande ses informations plusieurs fois pendant une trentaine de secondes. S'il reste muet :
-- vérifiez qu'il a bien le firmware **companion USB** (et non companion BLE ou répéteur) ;
-- fermez toute autre appli qui utilise le port ;
-- bouton **↻ Relancer** dans *MeshCore › Companion*, ou débranchez et rebranchez.
+## MeshCore USB companion “linked, but silent”
+Opening the USB port often restarts the companion. Since 2.1.1, the map asks it for its info several times over about thirty seconds. If it stays silent:
+- check it has the **companion USB** firmware (not companion BLE or repeater);
+- close any other app using the port;
+- **↻ Retry** button in *MeshCore › Companion*, or unplug and plug it back in.
 
-## Module branché en USB : est-il bien relié en USB ?
-*MeshCore › Companion* indique la liaison : « relié · relié par cette page… (**USB** …) » ou « (**Bluetooth** …) ». Un companion MeshCore a soit le firmware **companion USB**, soit **companion BLE** : le second ne répond pas sur le câble. Depuis la 2.1.3, *Connecter un module* le dit, au lieu de prendre le module pour un module Meshtastic.
+## Node plugged in over USB: is it really linked over USB?
+*MeshCore › Companion* shows the link: “linked · linked by this page… (**USB** …)” or “(**Bluetooth** …)”. A MeshCore companion has either the **companion USB** or **companion BLE** firmware: the latter doesn't answer on the cable. Since 2.1.3, *Connect a node* says so, instead of taking the node for a Meshtastic node.
 
-L'agent n'est **pas** nécessaire pour l'USB ou le Bluetooth d'une page : c'est la page qui relaie le module, tant que l'onglet reste ouvert et que le PC ne se met pas en veille. L'agent sert pour un module qui doit rester relié sans navigateur ouvert.
+The agent is **not** needed for a page's USB or Bluetooth: the page relays the node, as long as the tab stays open and the PC doesn't go to sleep. The agent is for a node that must stay linked without an open browser.
 
-## Module relié par une page qui se déconnecte au bout de quelques minutes
-Souvent un proxy inversé (nginx, Traefik, Cloudflare) qui coupe les WebSockets silencieuses. Depuis la 2.1.3, le serveur envoie un « ping » toutes les 25 s et la page se reconnecte toute seule (USB comme Bluetooth). Avec nginx, prévoyez aussi `proxy_read_timeout 3600s;` et les en-têtes `Upgrade` / `Connection` pour `/ws`.
+## Node linked by a page disconnects after a few minutes
+Often a reverse proxy (nginx, Traefik, Cloudflare) cutting silent WebSockets. Since 2.1.3, the server sends a “ping” every 25 s and the page reconnects by itself (USB and Bluetooth). With nginx, also set `proxy_read_timeout 3600s;` and the `Upgrade` / `Connection` headers for `/ws`.

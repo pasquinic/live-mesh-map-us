@@ -1,5 +1,5 @@
 'use strict';
-// Relief et planification radio : modèle numérique de terrain (IGN RGE ALTI), points hauts (OSM + MNT),
+// Relief et planification radio : modèle numérique de terrain (USGS 3DEP, Copernicus en secours), points hauts (OSM + MNT),
 // couverture LoRa par site (balayage radial, courbure terrestre, diffraction lame de couteau),
 // classement des meilleurs sites et propositions de sites pour couvrir un point.
 
@@ -9,8 +9,8 @@ const zlib = require('zlib');
 
 const R_TERRE = 6371000;
 const K = 4 / 3;
-// Fréquence de calcul : RADIO_FREQ_MHZ (ex. 906.875 aux États-Unis), 869,525 MHz par défaut (Europe)
-const FREQ = (Number(process.env.RADIO_FREQ_MHZ) || 869.525) * 1e6;
+// Frequency used for the computations: RADIO_FREQ_MHZ, 906.875 MHz by default (US LongFast, 915 MHz ISM band)
+const FREQ = (Number(process.env.RADIO_FREQ_MHZ) || 906.875) * 1e6;
 const LAMBDA = 299792458 / FREQ;
 const M_PAR_DEG = 111320;
 const PARAMS_LORA = {
@@ -19,8 +19,10 @@ const PARAMS_LORA = {
   SHORT_FAST: { sf: 7, bw: 250 }, LONG_MODERATE: { sf: 11, bw: 125 }, SHORT_TURBO: { sf: 7, bw: 500 }, LONG_TURBO: { sf: 11, bw: 500 },
   MEDIUM_TURBO: { sf: 9, bw: 500 }, LITE_FAST: { sf: 9, bw: 125 }, LITE_SLOW: { sf: 10, bw: 125 },
   NARROW_FAST: { sf: 7, bw: 62.5 }, NARROW_SLOW: { sf: 8, bw: 62.5 }, TINY_FAST: { sf: 7, bw: 15.6 }, TINY_SLOW: { sf: 8, bw: 15.6 },
-  // MeshCore, réglage du réseau français (869,618 MHz)
+  // MeshCore, French network setting (869.618 MHz), kept for EU users
   MESHCORE_FR: { sf: 8, bw: 62.5 },
+  // MeshCore, US/Canada recommended setting (910.525 MHz, BW 62.5 kHz, SF7, CR5)
+  MESHCORE_US: { sf: 7, bw: 62.5 },
 };
 const SNR_LIMITE = { 7: -7.5, 8: -10, 9: -12.5, 10: -15, 11: -17.5, 12: -20 };
 
@@ -62,23 +64,18 @@ function png(largeur, hauteur, rgba) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), bloc('IHDR', ihdr), bloc('IDAT', zlib.deflateSync(brut, { level: 6 })), bloc('IEND', Buffer.alloc(0))]);
 }
 
-// Contour d'un département : fichier détaillé s'il existe (Haute-Loire), sinon contour simplifié national
+// Outline of a US county (5-digit FIPS code, Census cartographic boundaries) or of a 1° world square
 function contourDepartement(code) {
   if (estCodeMonde(code)) return contourMonde(code);
-  const ref = path.join(__dirname, '..', 'donnees-ref');
   try {
-    const g = JSON.parse(fs.readFileSync(path.join(ref, `departement-${code}.geojson`), 'utf8'));
-    return g.geometry || g.features[0].geometry;
-  } catch { /* pas de fichier détaillé */ }
-  try {
-    const g = JSON.parse(fs.readFileSync(path.join(ref, 'departements.geojson'), 'utf8'));
-    const f = g.features.find((x) => x.properties.code === code);
+    const f = lireComtes().features.find((x) => x.properties.code === String(code));
     return f ? f.geometry : null;
   } catch { return null; }
 }
 
 const { creerAcces, NIVEAUX: NIVEAUX_ACCES } = require('./acces');
-const { MARGE_MONDE, estCodeMonde, contourMonde, nomMonde, grilleCopernicus } = require('./monde');
+const { MARGE_MONDE, estCodeMonde, contourMonde, nomMonde, grilleCopernicus, grille3DEP } = require('./monde');
+const { lireComtes } = require('./voisins');
 const { creerRealisme } = require('./realisme');
 
 // Rectangle englobant [sud, ouest, nord, est] d'un département (contour national)
@@ -93,22 +90,20 @@ function rectangleDepartement(code) {
 function nomDepartement(code) {
   if (estCodeMonde(code)) return nomMonde(code);
   try {
-    const g = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8'));
-    const f = g.features.find((x) => x.properties.code === code);
+    const f = lireComtes().features.find((x) => x.properties.code === String(code));
     return f ? f.properties.nom : null;
   } catch { return null; }
 }
 function listeDepartements() {
   try {
-    const g = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'donnees-ref', 'departements.geojson'), 'utf8'));
-    return g.features.map((f) => ({ code: f.properties.code, nom: f.properties.nom })).sort((a, b) => a.code.localeCompare(b.code));
+    return lireComtes().features.map((f) => ({ code: f.properties.code, nom: f.properties.nom, etat: f.properties.etat, etatNom: f.properties.etatNom })).sort((a, b) => a.code.localeCompare(b.code));
   } catch { return []; }
 }
 
 // options.code : étudier un autre département que celui de la carte (relief, sites, plan), avec ses propres fichiers en cache
 function creerRelief(config, journal, fournisseurs, options = {}) {
   const dossier = path.dirname(config.fichierBase);
-  const codeDep = String(options.code || (config.departement && config.departement.code) || '43');
+  const codeDep = String(options.code || (config.departement && config.departement.code) || '04013');
   const suffixe = options.code ? '-' + codeDep : '';
   const fMnt = path.join(dossier, `mnt${suffixe}.bin`);
   const fMntInfo = path.join(dossier, `mnt${suffixe}.json`);
@@ -118,10 +113,10 @@ function creerRelief(config, journal, fournisseurs, options = {}) {
   let arrete = false; // instance arrêtée (département retiré de la mémoire) : les téléchargements en cours s'interrompent
   const niveauMin = (filtre) => NIVEAUX_ACCES[filtre] || 0; // tous = 0
   const accessible = (s, min) => !min || (s.acces && s.acces.niveau >= min);
-  const monde = estCodeMonde(codeDep); // zone hors de France : relief Copernicus
-  const marge = monde ? MARGE_MONDE : 0.2; // degrés autour de la zone
+  const monde = estCodeMonde(codeDep); // 1° world square: Copernicus terrain (US county: USGS 3DEP)
+  const marge = monde ? MARGE_MONDE : 0.25; // degrés autour de la zone
   const z0 = options.code ? rectangleDepartement(codeDep) : config.zone; // [sud, ouest, nord, est]
-  if (!z0) throw new Error(`Département ${codeDep} inconnu`);
+  if (!z0) throw new Error(`Comté ${codeDep} inconnu`);
   const emprise = { sud: z0[0] - marge, ouest: z0[1] - marge, nord: z0[2] + marge, est: z0[3] + marge };
   const pasLat = 250 / M_PAR_DEG;
   const latMoy = ((emprise.sud + emprise.nord) / 2) * (Math.PI / 180);
@@ -179,46 +174,21 @@ function creerRelief(config, journal, fournisseurs, options = {}) {
     etat.mnt = 'chargement';
     const total = nLat * nLon;
     let z = new Float32Array(total).fill(NaN);
-    const TAILLE = 4900;
+    let source = 'Copernicus DEM GLO-30';
     if (monde) {
       journal(`[Relief] téléchargement du relief Copernicus GLO-30 : ${nLat} × ${nLon} points (pas 250 m)…`);
       z = await grilleCopernicus({ sud: emprise.sud, ouest: emprise.ouest, pasLat, pasLon, nLat, nLon }, (p) => { etat.progression = p; }, () => arrete);
     } else {
-    journal(`[Relief] téléchargement du MNT IGN : ${nLat} × ${nLon} points (pas 250 m)…`);
-    // Trois blocs demandés en même temps au service altimétrique (≈ 3 fois plus rapide, sans le surcharger)
-    let faits = 0;
-    const bloc = async (debut) => {
-      if (arrete) throw new Error('chargement interrompu');
-      const lats = [], lons = [];
-      for (let k = debut; k < Math.min(total, debut + TAILLE); k++) {
-        lats.push(latDe(Math.floor(k / nLon)).toFixed(5));
-        lons.push(lonDe(k % nLon).toFixed(5));
+      journal(`[Relief] téléchargement du relief USGS 3DEP : ${nLat} × ${nLon} points (pas 250 m)…`);
+      try {
+        z = await grille3DEP({ sud: emprise.sud, ouest: emprise.ouest, pasLat, pasLon, nLat, nLon }, (p) => { etat.progression = p; }, () => arrete);
+        source = 'USGS 3DEP';
+      } catch (e) {
+        if (arrete) throw e;
+        // 3DEP down or blocked: Copernicus covers the whole US too (30 m)
+        journal(`[Relief] ${e.message} : relief Copernicus GLO-30 à la place`);
+        z = await grilleCopernicus({ sud: emprise.sud, ouest: emprise.ouest, pasLat, pasLon, nLat, nLon }, (p) => { etat.progression = p; }, () => arrete);
       }
-      let ok = false;
-      for (let essai = 0; essai < 4 && !ok; essai++) {
-        try {
-          const r = await fetch('https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lon: lons.join('|'), lat: lats.join('|'), resource: 'ign_rge_alti_wld', zonly: 'true', delimiter: '|' }),
-            signal: AbortSignal.timeout(90000),
-          });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          const j = await r.json();
-          (j.elevations || []).forEach((v, k) => { z[debut + k] = v > -1000 ? v : NaN; });
-          ok = true;
-        } catch (e) {
-          journal(`[Relief] bloc ${debut} : ${e.message}, nouvel essai`);
-          await new Promise((res) => setTimeout(res, 3000 * (essai + 1)));
-        }
-      }
-      if (!ok) throw new Error('Service altimétrique IGN indisponible');
-      faits++;
-      etat.progression = Math.round((Math.min(total, faits * TAILLE) / total) * 100);
-    };
-    const debuts = [];
-    for (let debut = 0; debut < total; debut += TAILLE) debuts.push(debut);
-    for (let k = 0; k < debuts.length; k += 3) await Promise.all(debuts.slice(k, k + 3).map(bloc));
     }
 
     // Comble les trous (mer, absence de données) par la moyenne des voisins
@@ -232,7 +202,7 @@ function creerRelief(config, journal, fournisseurs, options = {}) {
     }
     for (let k = 0; k < total; k++) if (Number.isNaN(z[k])) z[k] = 0;
     fs.writeFileSync(fMnt, Buffer.from(z.buffer));
-    fs.writeFileSync(fMntInfo, JSON.stringify({ emprise, pasLat, pasLon, nLat, nLon, source: monde ? 'Copernicus DEM GLO-30' : 'IGN RGE ALTI', date: Date.now() }));
+    fs.writeFileSync(fMntInfo, JSON.stringify({ emprise, pasLat, pasLon, nLat, nLon, source, date: Date.now() }));
     return z;
   }
 
@@ -279,7 +249,7 @@ function creerRelief(config, journal, fournisseurs, options = {}) {
         try {
           const r = await fetch(url, {
             method: 'POST',
-            headers: { 'User-Agent': 'live-mesh-map-world/1.0 (+https://github.com/sauveteur71/live-mesh-map-world)', 'Content-Type': 'application/x-www-form-urlencoded' },
+            headers: { 'User-Agent': 'live-mesh-map-us/1.0 (+https://github.com/pasquinic/live-mesh-map-us)', 'Content-Type': 'application/x-www-form-urlencoded' },
             body: 'data=' + encodeURIComponent(q),
             signal: AbortSignal.timeout(90000),
           });
@@ -299,23 +269,29 @@ function creerRelief(config, journal, fournisseurs, options = {}) {
     try { const l = JSON.parse(fs.readFileSync(fSommets, 'utf8')).liste; etat.sommetsOsm = 'cache'; return l; } catch { etat.sommetsOsm = 'absent'; return []; }
   }
 
-  // Commune de chaque point haut (API Géo de l'État), mise en cache sur disque
+  // Town (or county) of each high point: US Census geocoder, cached on disk
   const fCommunes = path.join(dossier, 'communes-sommets.json');
   async function nommerCommunes(liste) {
-    if (monde) return; // API Géo : France seulement
+    if (monde) return; // Census geocoder: US only
     let cache = {};
     try { cache = JSON.parse(fs.readFileSync(fCommunes, 'utf8')); } catch { /* vide */ }
-    let nouveaux = 0;
+    let nouveaux = 0, echecs = 0;
     for (const s of liste) {
       const cle = s.lat.toFixed(3) + ',' + s.lon.toFixed(3);
       if (cache[cle] === undefined) {
         try {
-          const r = await fetch(`https://geo.api.gouv.fr/communes?lat=${s.lat.toFixed(5)}&lon=${s.lon.toFixed(5)}&fields=nom,codeDepartement`, { signal: AbortSignal.timeout(10000) });
-          const j = r.ok ? await r.json() : [];
-          cache[cle] = j[0] ? `${j[0].nom} (${j[0].codeDepartement})` : null;
+          const q = new URLSearchParams({ x: s.lon.toFixed(5), y: s.lat.toFixed(5), benchmark: 'Public_AR_Current', vintage: 'Current_Current', layers: 'all', format: 'json' });
+          const r = await fetch(`https://geocoding.geo.census.gov/geocoder/geographies/coordinates?${q}`, { signal: AbortSignal.timeout(15000) });
+          const g = r.ok ? ((await r.json()).result || {}).geographies || {} : null;
+          if (!g) throw new Error('HTTP ' + r.status);
+          const un = (k) => (g[k] || [])[0];
+          const lieu = un('Incorporated Places') || un('Census Designated Places') || un('County Subdivisions');
+          const comte = un('Counties'), etatG = un('States');
+          const ab = etatG ? etatG.STUSAB : '';
+          cache[cle] = lieu ? `${lieu.BASENAME || lieu.NAME}${ab ? ', ' + ab : ''}` : comte ? `${comte.NAME}${ab ? ', ' + ab : ''}` : null;
           nouveaux++;
-          await new Promise((res) => setTimeout(res, 120));
-        } catch { break; }
+          await new Promise((res) => setTimeout(res, 150));
+        } catch { if (++echecs >= 3) break; }
       }
       s.commune = cache[cle] || null;
     }

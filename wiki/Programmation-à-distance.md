@@ -1,36 +1,36 @@
-# Programmation à distance (Meshtastic)
+# Remote programming (Meshtastic)
 
-La carte lit et modifie la configuration des nœuds **par LoRa**, avec l'administration chiffrée (PKI) du firmware 2.5 et plus.
+The map reads and changes node configuration **over LoRa**, with the encrypted administration (PKI) of firmware 2.5 and later.
 
-## Préparer les nœuds
-Sur chaque nœud à administrer, ajoutez la **clé publique du module de la carte** dans *Sécurité › Clé d'administration*. La clé est affichée dans l'onglet *Programmer*. **🔑 Clés d'administration** montre, relais par relais, les modules autorisés et ce qu'il reste à faire sur place.
+## Preparing the nodes
+On each node to administer, add the **public key of the map's node** in *Security › Admin key*. The key is shown in the *Program* tab. **🔑 Admin keys** shows, relay by relay, the authorised nodes and what remains to be done on site.
 
-## Lire
-- **Lecture ciblée** : cochez seulement ce que vous voulez vérifier (rôle et rediffusion, LoRa, canaux, position, nom, matériel, télémétrie, voisinage, sécurité, gestion du trafic). Chaque élément est une demande radio (10 à 60 s selon la distance).
-- **Tout lire** : une quinzaine de demandes. Une lecture interrompue **reprend** là où elle s'était arrêtée.
+## Reading
+- **Targeted read**: tick only what you want to check (role and rebroadcast, LoRa, channels, position, name, hardware, telemetry, neighbor info, security, traffic management). Each item is a radio request (10 to 60 s depending on distance).
+- **Read all**: about fifteen requests. An interrupted read **resumes** where it stopped.
 
-## Modifier
-- **Éditeur de réglages** : nom, rôle, rediffusion, LoRa, position, canaux, télémétrie, gestion du trafic (2.8), politique de signature (2.8.1). Envoi en une seule transaction, puis relecture pour contrôle.
-- **Modèles** (*📋 Modèles*) : relais point haut, relais de comblement, base sur toit, mobile, client fixe, et vos propres modèles ; export et import YAML (`meshtastic --export-config`).
-- **Favoris entre relais** (*⭐*, firmware 2.7.11 et plus) : un paquet relayé entre routeurs favoris ne consomme plus de saut.
-- **Conseiller de rôle** (*Statistiques › Maintenance*) avec le bouton « Passer en… ».
-- **Vérification de conformité** : comparer tous vos nœuds à une référence, aussi chaque nuit.
-- Garde-fous pour le **canal principal** : refus si la fréquence dépend de son nom (vous perdriez le contact).
+## Changing
+- **Settings editor**: name, role, rebroadcast, LoRa, position, channels, telemetry, traffic management (2.8), signing policy (2.8.1). Sent in a single transaction, then read back to check.
+- **Templates** (*📋 Templates*): high-point relay, gap-filler relay, rooftop base, mobile, fixed client, and your own templates; YAML export and import (`meshtastic --export-config`).
+- **Favorites between relays** (*⭐*, firmware 2.7.11 and later): a packet relayed between favorite routers no longer uses a hop.
+- **Role advisor** (*Statistics › Maintenance*) with the “Switch to…” button.
+- **Compliance check**: compare all your nodes with a reference, also every night.
+- Safeguards for the **primary channel**: refused if the frequency depends on its name (you would lose contact).
 
-## Fiabilité des envois
-- Chaque demande part **jusqu'à 3 fois**, avec un délai adapté à la distance (≈ 50 s à 1 saut, 65 s à 2 sauts). Le dernier essai part avec un saut de plus.
-- Une réponse **tardive** à un essai précédent est acceptée.
-- **Insister** : case « Insister en cas d'échec » dans les formulaires, ou bouton **🔁 Insister 2 h** sur une opération terminée. Les nœuds en échec sont repris **toutes les 10 min pendant 2 h**, utile pour un mobile ou un relais lointain. Les vrais refus (clé non autorisée) ne sont pas retentés.
-- Chaque nœud affiche l'**heure** de sa réussite ou de son échec.
+## Reliable sending
+- Each request is sent **up to 3 times**, with a delay suited to the distance (≈ 50 s at 1 hop, 65 s at 2 hops). The last attempt goes out with one more hop.
+- A **late** answer to a previous attempt is accepted.
+- **Retry**: “Retry on failure” box in the forms, or **🔁 Retry for 2 h** button on a finished operation. Failed nodes are retried **every 10 min for 2 h**, useful for a mobile or a distant relay. Real refusals (key not authorised) are not retried.
+- Each node shows the **time** of its success or failure.
 
-## Comprendre un échec
+## Understanding a failure
 | Message | Cause |
 |---|---|
-| clé du module absente des clés d'administration | le nœud a **refusé** : ajoutez la clé sur place |
-| liaison radio trop faible ou nœud occupé (il a déjà accepté ce module) | problème **radio**, pas de clé : réessayez, insistez ou rapprochez le module |
-| nœud hors de portée, ou clé absente, ou firmware < 2.5 | aucune réponse, et la carte ne sait pas pourquoi |
-| aucun accusé après réémissions | le message n'a jamais atteint le nœud |
+| node's key missing from admin keys | the node **refused**: add the key on site |
+| radio link too weak or node busy (it has already accepted this node) | a **radio** problem, not a key one: try again, retry or bring the node closer |
+| node out of range, or key missing, or firmware < 2.5 | no answer, and the map can't tell why |
+| no ack after re-transmissions | the message never reached the node |
 
 ## Firmware
-- Nouvelle version signalée ; **mise à jour par le Wi-Fi** des ESP32 (2.7.18 et plus) joignables en IP.
-- **🆕 Firmware 2.8** : nœuds renumérotés repérés par leur clé publique (fusion de l'historique), clés en double (configurations clonées), position et télémétrie coupées par défaut sur les canaux publics, 2.8.0 retirée. Meshtastic conseille de rester en 2.7 sur les relais tant que la 2.8 est en alpha.
+- New version flagged; **Wi-Fi update** of ESP32 nodes (2.7.18 and later) reachable by IP.
+- **🆕 Firmware 2.8**: renumbered nodes spotted by their public key (history merge), duplicate keys (cloned configurations), position and telemetry off by default on public channels, 2.8.0 withdrawn. Meshtastic advises staying on 2.7 on relays while 2.8 is in alpha.

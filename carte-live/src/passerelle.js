@@ -55,7 +55,7 @@ function creerPasserelle({ config, journal, audit, nomMt, envoyerMt, envoyerMc, 
   function heuresSilence(spec, d = new Date()) {
     const m = String(spec || '').match(/^\s*(\d{1,2})\s*[-–h:]+\s*(\d{1,2})/);
     if (!m) return false;
-    const a = +m[1], b = +m[2], h = Number(d.toLocaleString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', hour12: false }));
+    const a = +m[1], b = +m[2], h = Number(d.toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), hour: '2-digit', hour12: false }));
     return a <= b ? h >= a && h < b : h >= a || h < b;
   }
   function surListeNoire(reseau, de, nom) {
