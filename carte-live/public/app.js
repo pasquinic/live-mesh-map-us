@@ -3603,7 +3603,7 @@ async function evaluerRoutiers() {
     .bindTooltip(`<b>${k + 1} · ${esc(x.nom)}</b><br>${esc(x.gestionnaire)}<br>+${x.nouveauKm2} km² nouveaux · ${x.couvertureKm2} km² au total`, { className: 'info' }).addTo(g));
   if (utiles.length) carte.fitBounds(L.latLngBounds(utiles.slice(0, 15).map((x) => [x.lat, x.lon])).pad(0.2), { maxZoom: 11 });
   z.innerHTML = `<h2>📡 Towers and water towers for relays</h2>
-    <div class="ident">${r.sites.length} sites in the county or nearby · couverture actuelle ${fmt(r.actuelPct, 1, ' %')} · antenne supposée à ${r.h} m</div>
+    <div class="ident">${r.sites.length} sites in the county or nearby · current coverage ${fmt(r.actuelPct, 1, ' %')} · antenna assumed at ${r.h} m</div>
     ${r.sites.map((x, k) => `<div class="proposition etape-relier ${x.nouveauKm2 > 0 ? 'nouveau' : ''}">
       <div class="entete-prop">${x.nouveauKm2 > 0 && k < 15 ? `<span class="lettre">${k + 1}</span>` : ''}<b>${esc(x.nom)}</b><span class="marge">${x.nouveauKm2 > 0 ? '+' + x.nouveauKm2 + ' km² nouveaux' : 'déjà couvert'}</span></div>
       <div class="meta-longue">${esc(x.gestionnaire.replace(/^DIR /, ''))} · ${esc(x.type)} · ${x.altitude || x.altMnt} m${x.hauteur ? ` · ${x.hauteur} m tall` : ''}${x.dansDepartement ? '' : ' · outside the county'} · <a href="${esc(x.lien || '#')}" target="_blank" rel="noopener">OSM</a></div>
@@ -6443,7 +6443,7 @@ async function optionsDepartements(select, code) {
     const c = typeof carte !== 'undefined' ? carte.getCenter() : { lat: 40, lng: -75 };
     const v = typeof saisir === 'function'
       ? await saisir('Position du centre de votre réseau (latitude, longitude en degrés décimaux, ex. 40.7, -74.0) :', `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`)
-      : prompt('Latitude, longitude du centre de votre réseau :', `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`);
+      : prompt('Latitude, longitude of the centre of your network:', `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`);
     const m = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/.exec(v || '');
     if (!m || Math.abs(Number(m[1])) > 85 || Math.abs(Number(m[2])) > 180) { select.value = avant; return; }
     const k = codeMonde(Number(m[1]), Number(m[2]));
