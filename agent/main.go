@@ -103,9 +103,9 @@ func charger(f string) Reglages {
 func enregistrer(f string, r Reglages) {
 	b, _ := json.MarshalIndent(r, "", "  ")
 	if err := os.WriteFile(f, b, 0600); err != nil {
-		journal("réglages non enregistrés (%v)", err)
+		journal("settings not saved (%v)", err)
 	} else {
-		journal("réglages enregistrés dans %s", f)
+		journal("settings saved in %s", f)
 	}
 }
 
@@ -137,7 +137,7 @@ func present(cx Connexion) (bool, string) {
 				return true, ""
 			}
 		}
-		return false, "port " + cx.Source + " absent (module débranché ?)"
+		return false, "port " + cx.Source + " missing (node unplugged?)"
 	}
 	if cx.Toujours {
 		return true, ""
@@ -150,7 +150,7 @@ func present(cx Connexion) (bool, string) {
 	if ip == nil {
 		ips, err := net.LookupIP(hote)
 		if err != nil || len(ips) == 0 {
-			return false, "nom " + hote + " introuvable sur ce réseau"
+			return false, "nom " + hote + " not found on this network"
 		}
 		ip = ips[0]
 	}
@@ -166,7 +166,7 @@ func present(cx Connexion) (bool, string) {
 			}
 		}
 	}
-	return false, "le PC n'est pas sur le réseau de " + hote
+	return false, "this PC is not on the network of " + hote
 }
 
 func decrire(cx Connexion) string {
@@ -191,21 +191,21 @@ func normaliserNom(n string) string {
 
 func configurerServeur(r *Reglages) {
 	fmt.Println()
-	fmt.Println("=== Configuration de l'agent ===")
-	fmt.Println("Le code secret se trouve dans la carte : Réseau › Modules › « Module par agent ».")
-	for r.Serveur = demander("Adresse du serveur de la carte (Tailscale ou réseau local) et port, ex. 192.168.1.10:4404", r.Serveur); r.Serveur == ""; {
-		r.Serveur = demander("Adresse du serveur (obligatoire)", "")
+	fmt.Println("=== Agent setup ===")
+	fmt.Println("The secret code is in the map: Network › Nodes › “Node through an agent”.")
+	for r.Serveur = demander("Address of the map server (Tailscale or local network) and port, e.g. 192.168.1.10:4404", r.Serveur); r.Serveur == ""; {
+		r.Serveur = demander("Server address (required)", "")
 	}
 	if !strings.Contains(r.Serveur, ":") {
 		r.Serveur += ":4404"
 	}
-	r.Code = demander("Code secret de la carte", r.Code)
+	r.Code = demander("Map secret code", r.Code)
 }
 
 func saisirConnexion(r *Reglages, cx Connexion, exclure int) (Connexion, bool) {
 	fmt.Println()
 	for {
-		cx.Nom = demander("Nom de ce module dans la carte (ex. Le Monteil, QRA, USB)", cx.Nom)
+		cx.Nom = demander("Name of this node in the map (e.g. North Mountain, home, USB)", cx.Nom)
 		if cx.Nom == "" {
 			return cx, false
 		}
@@ -218,21 +218,21 @@ func saisirConnexion(r *Reglages, cx Connexion, exclure int) (Connexion, bool) {
 		if !doublon {
 			break
 		}
-		fmt.Println("→ ce nom est déjà utilisé par une autre connexion, choisissez-en un autre.")
+		fmt.Println("→ this name is already used by another connection, choose another one.")
 		cx.Nom = ""
 	}
 	ports, _ := serial.GetPortsList()
 	sort.Strings(ports)
 	if len(ports) > 0 {
-		fmt.Println("Ports USB/série détectés :", strings.Join(ports, ", "))
+		fmt.Println("USB/serial ports found:", strings.Join(ports, ", "))
 	} else {
-		fmt.Println("Aucun port USB/série détecté (module débranché ?).")
+		fmt.Println("No USB/serial port found (node unplugged?).")
 	}
 	def := cx.Source
 	if def == "" && len(ports) > 0 {
 		def = ports[len(ports)-1]
 	}
-	cx.Source = demander("Module : port USB (ex. COM5) ou adresse Wi-Fi du module (ex. 192.168.1.40)", def)
+	cx.Source = demander("Node: USB port (e.g. COM5) or the node's Wi-Fi address (e.g. 192.168.1.40)", def)
 	if cx.Source == "" {
 		return cx, false
 	}
@@ -241,8 +241,8 @@ func saisirConnexion(r *Reglages, cx Connexion, exclure int) (Connexion, bool) {
 	}
 	if estReseau(cx.Source) {
 		if ok, _ := present(Connexion{Source: cx.Source}); !ok {
-			fmt.Println("(Ce PC n'est pas sur le réseau de ce module en ce moment : normal si le module est ailleurs.")
-			fmt.Println(" L'agent le proposera à la carte dès que le PC sera sur ce réseau.)")
+			fmt.Println("(This PC is not on this node's network right now: normal if the node is elsewhere.")
+			fmt.Println(" The agent will offer it to the map as soon as the PC is on that network.)")
 		}
 	}
 	return cx, true
@@ -250,14 +250,14 @@ func saisirConnexion(r *Reglages, cx Connexion, exclure int) (Connexion, bool) {
 
 func afficherConnexions(r *Reglages) {
 	fmt.Println()
-	fmt.Println("Connexions enregistrées :")
+	fmt.Println("Saved connections:")
 	if len(r.Connexions) == 0 {
 		fmt.Println("  (aucune)")
 	}
 	for i, cx := range r.Connexions {
-		etat := "présent"
+		etat := "present"
 		if ok, pourquoi := present(cx); !ok {
-			etat = "absent : " + pourquoi
+			etat = "missing: " + pourquoi
 		}
 		fmt.Printf("  %d. %-18s %-26s (%s)\n", i+1, cx.Nom, decrire(cx), etat)
 	}
@@ -273,11 +273,11 @@ func gererConnexions(r *Reglages) {
 	for {
 		afficherConnexions(r)
 		fmt.Println()
-		fmt.Println("  a = ajouter une connexion   m N = modifier la n° N   r N = retirer la n° N   s = serveur et code")
-		choix := strings.ToLower(demander("Votre choix (Entrée = terminer et lancer l'agent)", ""))
+		fmt.Println("  a = add a connection   m N = modify no. N   r N = remove no. N   s = server and code")
+		choix := strings.ToLower(demander("Your choice (Enter = finish and start the agent)", ""))
 		if choix == "" {
 			if len(r.Connexions) == 0 {
-				fmt.Println("→ il faut au moins une connexion.")
+				fmt.Println("→ at least one connection is needed.")
 				continue
 			}
 			return
@@ -296,7 +296,7 @@ func gererConnexions(r *Reglages) {
 			}
 		case "m":
 			if n < 1 || n > len(r.Connexions) {
-				fmt.Println("→ numéro inconnu (ex. « m 2 »)")
+				fmt.Println("→ unknown number (e.g. “m 2”)")
 				continue
 			}
 			if cx, ok := saisirConnexion(r, r.Connexions[n-1], n-1); ok {
@@ -304,10 +304,10 @@ func gererConnexions(r *Reglages) {
 			}
 		case "r":
 			if n < 1 || n > len(r.Connexions) {
-				fmt.Println("→ numéro inconnu (ex. « r 2 »)")
+				fmt.Println("→ unknown number (e.g. “r 2”)")
 				continue
 			}
-			fmt.Printf("→ « %s » retirée\n", r.Connexions[n-1].Nom)
+			fmt.Printf("→ “%s” removed\n", r.Connexions[n-1].Nom)
 			r.Connexions = append(r.Connexions[:n-1], r.Connexions[n:]...)
 		case "s":
 			configurerServeur(r)
@@ -318,11 +318,11 @@ func gererConnexions(r *Reglages) {
 }
 
 func main() {
-	chemin := flag.String("config", "", "fichier de réglages (par défaut live-mesh-agent.json à côté du programme)")
-	refaire := flag.Bool("configurer", false, "gérer les connexions (ajouter, modifier, retirer) et le serveur")
-	ajouter := flag.Bool("ajouter", false, "ajouter une connexion")
-	liste := flag.Bool("liste", false, "afficher les connexions enregistrées")
-	auto := flag.Bool("demarrage-auto", false, "lancer l'agent automatiquement à l'ouverture de session (Windows)")
+	chemin := flag.String("config", "", "settings file (default live-mesh-agent.json next to the program)")
+	refaire := flag.Bool("configurer", false, "manage connections (add, modify, remove) and the server")
+	ajouter := flag.Bool("ajouter", false, "add a connection")
+	liste := flag.Bool("liste", false, "show saved connections")
+	auto := flag.Bool("demarrage-auto", false, "start the agent automatically at login (Windows)")
 	sansAuto := flag.Bool("sans-demarrage-auto", false, "ne plus lancer l'agent automatiquement")
 	flag.Parse()
 	if *sansAuto {
@@ -330,7 +330,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("Live mesh agent %s — relais de modules Meshtastic et MeshCore vers la carte live\n", version)
+	fmt.Printf("Live mesh agent %s — relays Meshtastic and MeshCore nodes to the live map\n", version)
 	f := fichierReglages(*chemin)
 	r := charger(f)
 	if *liste {
@@ -357,7 +357,7 @@ func main() {
 	}
 	// Une seule fois : proposer le lancement automatique (plus besoin de relancer l'agent à la main)
 	if runtime.GOOS == "windows" && !r.AutoDemande && !demarrageAutoActif() {
-		if rep := strings.ToLower(demander("Lancer l'agent automatiquement à chaque démarrage de Windows ? (o/n)", "o")); strings.HasPrefix(rep, "o") || rep == "y" {
+		if rep := strings.ToLower(demander("Start the agent automatically every time Windows starts? (y/n)", "y")); strings.HasPrefix(rep, "y") || strings.HasPrefix(rep, "o") {
 			installerDemarrageAuto()
 		}
 		r.AutoDemande = true
@@ -367,7 +367,7 @@ func main() {
 	if *auto {
 		installerDemarrageAuto()
 	}
-	journal("carte %s — %d connexion(s) : pour en ajouter ou en retirer, relancez avec -configurer", r.Serveur, len(r.Connexions))
+	journal("map %s — %d connection(s): to add or remove some, run again with -configurer", r.Serveur, len(r.Connexions))
 	var g sync.WaitGroup
 	// Relais du réseau local : la carte peut joindre n'importe quel module Wi-Fi (Meshtastic ou MeshCore)
 	// du réseau de ce PC à partir de sa seule adresse IP, sans rien configurer ici
@@ -401,7 +401,7 @@ func surveiller(serveur, code string, cx Connexion) {
 			continue
 		}
 		if dernier != "" {
-			journal("[%s] module de nouveau présent (%s)", cx.Nom, decrire(cx))
+			journal("[%s] node present again (%s)", cx.Nom, decrire(cx))
 		}
 		dernier = ""
 		time.Sleep(boucle(serveur, code, cx))
@@ -416,7 +416,7 @@ var echecsServeur int
 func boucle(serveur, code string, cx Connexion) time.Duration {
 	c, err := net.DialTimeout("tcp", serveur, 10*time.Second)
 	if err != nil {
-		journal("[%s] serveur injoignable (%v) — Tailscale est-il actif ? Nouvel essai dans 20 s", cx.Nom, err)
+		journal("[%s] server unreachable (%v) — is Tailscale running? Retrying in 20 s", cx.Nom, err)
 		return 20 * time.Second
 	}
 	defer c.Close()
@@ -435,7 +435,7 @@ func boucle(serveur, code string, cx Connexion) time.Duration {
 	b, _ := json.Marshal(bonjour{1, code, cx.Nom, decrire(cx), version})
 	c.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := c.Write(append(b, '\n')); err != nil {
-		journal("[%s] envoi au serveur impossible (%v)", cx.Nom, err)
+		journal("[%s] cannot send to the server (%v)", cx.Nom, err)
 		return 20 * time.Second
 	}
 	lecteur := bufio.NewReader(c)
@@ -443,26 +443,26 @@ func boucle(serveur, code string, cx Connexion) time.Duration {
 	if err != nil {
 		echecsServeur++
 		if echecsServeur >= 4 {
-			journal("[%s] la carte ne répond toujours pas (%v) — est-elle démarrée ? le port 4404 est-il ouvert dans docker-compose (jamais sur la box) ?", cx.Nom, err)
+			journal("[%s] the map still does not answer (%v) — is it running? is port 4404 open in docker-compose (never on your internet router)?", cx.Nom, err)
 		} else {
-			journal("[%s] la carte ne répond pas encore (elle redémarre sans doute, par exemple après une mise à jour) : nouvel essai dans 30 s", cx.Nom)
+			journal("[%s] the map does not answer yet (probably restarting, e.g. after an update): retrying in 30 s", cx.Nom)
 		}
 		return 30 * time.Second
 	}
 	l = strings.TrimSpace(l)
 	if strings.HasPrefix(l, "ERREUR") {
-		journal("[%s] refusé par la carte : %s", cx.Nom, strings.TrimSpace(strings.TrimPrefix(l, "ERREUR")))
+		journal("[%s] refused by the map: %s", cx.Nom, strings.TrimSpace(strings.TrimPrefix(l, "ERREUR")))
 		return 60 * time.Second
 	}
 	echecsServeur = 0
-	journal("[%s] relié à la carte, prêt (%s)", cx.Nom, decrire(cx))
+	journal("[%s] connected to the map, ready (%s)", cx.Nom, decrire(cx))
 	c.SetDeadline(time.Time{})
 	// Attente de l'ordre d'ouverture (le serveur envoie PING régulièrement)
 	for {
 		c.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		l, err = lecteur.ReadString('\n')
 		if err != nil {
-			journal("[%s] liaison avec la carte interrompue (redémarrage de la carte ?), reconnexion dans 5 s", cx.Nom)
+			journal("[%s] link with the map lost (map restarting?), reconnecting in 5 s", cx.Nom)
 			return 5 * time.Second
 		}
 		if strings.TrimSpace(l) == "OUVRIR" {
@@ -475,7 +475,7 @@ func boucle(serveur, code string, cx Connexion) time.Duration {
 		}
 		// À chaque PING : si le module a disparu (USB débranché, PC changé de réseau), on se retire de la carte
 		if ok, pourquoi := present(cx); !ok {
-			journal("[%s] retiré de la carte : %s", cx.Nom, pourquoi)
+			journal("[%s] removed from the map: %s", cx.Nom, pourquoi)
 			return time.Second
 		}
 	}
@@ -513,9 +513,9 @@ func ouvrirModule(cx Connexion) (moduleConn, time.Duration, error) {
 func relayer(cx Connexion, c net.Conn, lecteur *bufio.Reader) time.Duration {
 	m, delai, err := ouvrirModule(cx)
 	if err != nil {
-		journal("[%s] ouverture du module %s impossible : %v", cx.Nom, cx.Source, err)
+		journal("[%s] cannot open node %s: %v", cx.Nom, cx.Source, err)
 		if !estReseau(cx.Source) {
-			journal("[%s] → port utilisé par l'appli Meshtastic, la page de la carte (« Brancher en USB ») ou un autre programme ?", cx.Nom)
+			journal("[%s] → port used by the Meshtastic app, the map page (“Plug in over USB”) or another program?", cx.Nom)
 		}
 		return 15 * time.Second
 	}
@@ -537,7 +537,7 @@ func relayer(cx Connexion, c net.Conn, lecteur *bufio.Reader) time.Duration {
 	go func() { // module → carte
 		n, _ := io.Copy(c, m)
 		versCarte = n
-		marquer("le module a coupé la liaison (autre client sur le module ? appli du téléphone en Wi-Fi ?)")
+		marquer("the node closed the link (another client on the node? phone app over Wi-Fi?)")
 		fermer()
 	}()
 	go func() { // carte → module (après le délai de démarrage éventuel)
@@ -546,18 +546,18 @@ func relayer(cx Connexion, c net.Conn, lecteur *bufio.Reader) time.Duration {
 		}
 		n, _ := io.Copy(m, lecteur)
 		versModule = n
-		marquer("la carte a fermé la liaison (autre module choisi ou déconnexion)")
+		marquer("the map closed the link (another node chosen, or disconnection)")
 		fermer()
 	}()
 	<-fin
-	journal("[%s] relais terminé après %s : %s (%d octets reçus du module, %d envoyés)", cx.Nom, time.Since(debut).Round(time.Second), cote, versCarte, versModule)
+	journal("[%s] relay ended after %s: %s (%d bytes received from the node, %d sent)", cx.Nom, time.Since(debut).Round(time.Second), cote, versCarte, versModule)
 	return 5 * time.Second
 }
 
 // Relais vers un autre port TCP du module Wi-Fi (seulement 3232 : chargeur de mise à jour du firmware)
 func relayerPort(cx Connexion, c net.Conn, lecteur *bufio.Reader, port string) time.Duration {
 	if port != "3232" || !estReseau(cx.Source) {
-		journal("[%s] demande refusée : port %s (seule la mise à jour par Wi-Fi d'un module en réseau est relayée)", cx.Nom, port)
+		journal("[%s] request refused: port %s (only the Wi-Fi update of a networked node is relayed)", cx.Nom, port)
 		return 5 * time.Second
 	}
 	hote := strings.TrimSpace(cx.Source)
@@ -573,17 +573,17 @@ func relayerPort(cx Connexion, c net.Conn, lecteur *bufio.Reader, port string) t
 		time.Sleep(2 * time.Second)
 	}
 	if err != nil {
-		journal("[%s] mise à jour : chargeur du module injoignable sur %s:%s (%v)", cx.Nom, hote, port, err)
+		journal("[%s] update: node loader unreachable on %s:%s (%v)", cx.Nom, hote, port, err)
 		return 5 * time.Second
 	}
-	journal("[%s] mise à jour du firmware : relais vers %s:%s", cx.Nom, hote, port)
+	journal("[%s] firmware update: relaying to %s:%s", cx.Nom, hote, port)
 	var once sync.Once
 	fin := make(chan struct{})
 	fermer := func() { once.Do(func() { c.Close(); m.Close(); close(fin) }) }
 	go func() { io.Copy(c, m); fermer() }()
 	go func() { io.Copy(m, lecteur); fermer() }()
 	<-fin
-	journal("[%s] relais de mise à jour terminé", cx.Nom)
+	journal("[%s] update relay finished", cx.Nom)
 	return 3 * time.Second
 }
 
@@ -607,30 +607,30 @@ func demarrageAutoActif() bool {
 
 func installerDemarrageAuto() {
 	if runtime.GOOS != "windows" {
-		journal("démarrage automatique : sous Linux / Raspberry Pi, créez un service systemd (voir le README du dépôt)")
+		journal("automatic start: on Linux / Raspberry Pi, create a systemd service (see the repository README)")
 		return
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		journal("démarrage automatique impossible (%v)", err)
+		journal("automatic start impossible (%v)", err)
 		return
 	}
-	contenu := "@echo off\r\nrem Live mesh agent : relie les modules Meshtastic à la carte live\r\nstart \"Live mesh agent\" /min \"" + exe + "\"\r\n"
+	contenu := "@echo off\r\nrem Live mesh agent: links Meshtastic nodes to the live map\r\nstart \"Live mesh agent\" /min \"" + exe + "\"\r\n"
 	if err := os.WriteFile(fichierDemarrage(), []byte(contenu), 0644); err != nil {
-		journal("démarrage automatique impossible (%v)", err)
+		journal("automatic start impossible (%v)", err)
 		return
 	}
-	journal("l'agent se lancera tout seul (fenêtre réduite) à chaque ouverture de session Windows. Pour l'arrêter : -sans-demarrage-auto")
+	journal("the agent will start by itself (minimized) at every Windows login. To stop that: -sans-demarrage-auto")
 }
 
 func retirerDemarrageAuto() {
 	if f := fichierDemarrage(); f != "" {
 		if err := os.Remove(f); err == nil {
-			journal("démarrage automatique retiré")
+			journal("automatic start removed")
 			return
 		}
 	}
-	journal("le démarrage automatique n'était pas activé")
+	journal("automatic start was not enabled")
 }
 
 // ---- Relais du réseau local (agent 1.6) -------------------------------------------------------------
@@ -685,7 +685,7 @@ func sonderPort(ip, port string) bool {
 }
 
 func boucleRelais(serveur, code string) time.Duration {
-	nom := nomPC() + " · réseau local"
+	nom := nomPC() + " · local network"
 	c, err := net.DialTimeout("tcp", serveur, 10*time.Second)
 	if err != nil {
 		return 30 * time.Second
@@ -709,7 +709,7 @@ func boucleRelais(serveur, code string) time.Duration {
 		Relais  bool     `json:"relais"`
 		Reseaux []string `json:"reseaux"`
 	}
-	b, _ := json.Marshal(bonjour{1, code, nom, "relais du réseau local " + strings.Join(reseaux, ", "), version, true, reseaux})
+	b, _ := json.Marshal(bonjour{1, code, nom, "local network relay " + strings.Join(reseaux, ", "), version, true, reseaux})
 	c.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		return 30 * time.Second
@@ -737,9 +737,9 @@ func boucleRelais(serveur, code string) time.Duration {
 						ports = append(ports, p)
 					}
 				}
-				journal("[réseau local] %s : %s", ip, map[bool]string{true: "ports " + strings.Join(ports, ", "), false: "aucun module joignable"}[len(ports) > 0])
+				journal("[local network] %s: %s", ip, map[bool]string{true: "ports " + strings.Join(ports, ", "), false: "no reachable node"}[len(ports) > 0])
 			} else {
-				journal("[réseau local] %s refusée (adresse hors des réseaux locaux de ce PC)", ip)
+				journal("[local network] %s refused (address outside this PC's local networks)", ip)
 				c.Write([]byte("HORS\n"))
 				continue
 			}
@@ -747,16 +747,16 @@ func boucleRelais(serveur, code string) time.Duration {
 		case strings.HasPrefix(l, "RELAIS "):
 			hote, port, err := net.SplitHostPort(strings.TrimSpace(strings.TrimPrefix(l, "RELAIS ")))
 			if err != nil || !adresseAutorisee(hote) || (port != portMeshtastic && port != portMeshCore) {
-				journal("[réseau local] relais refusé : %s", l)
+				journal("[local network] relay refused: %s", l)
 				return 5 * time.Second
 			}
 			c.SetReadDeadline(time.Time{})
 			m, err := net.DialTimeout("tcp", net.JoinHostPort(hote, port), 10*time.Second)
 			if err != nil {
-				journal("[réseau local] %s:%s injoignable : %v", hote, port, err)
+				journal("[local network] %s:%s unreachable: %v", hote, port, err)
 				return 5 * time.Second
 			}
-			journal("[réseau local] relais actif vers %s:%s", hote, port)
+			journal("[local network] relay active to %s:%s", hote, port)
 			debut := time.Now()
 			var once sync.Once
 			fin := make(chan struct{})
@@ -764,7 +764,7 @@ func boucleRelais(serveur, code string) time.Duration {
 			go func() { io.Copy(c, m); fermer() }()
 			go func() { io.Copy(m, lecteur); fermer() }()
 			<-fin
-			journal("[réseau local] relais vers %s:%s terminé après %s", hote, port, time.Since(debut).Round(time.Second))
+			journal("[local network] relay to %s:%s ended after %s", hote, port, time.Since(debut).Round(time.Second))
 			return 3 * time.Second
 		}
 	}

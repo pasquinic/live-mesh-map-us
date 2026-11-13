@@ -47,7 +47,7 @@ function creerRapport(dep) {
     const tableau = (entetes, lignes) => lignes.length ? `<table><thead><tr>${entetes.map((e) => `<th>${e}</th>`).join('')}</tr></thead><tbody>${lignes.map((l) => `<tr>${l.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '<p class="vide">Rien à signaler.</p>';
     const pastille = (ok, txt) => `<span class="p ${ok}">${txt}</span>`;
 
-    const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rapport hebdomadaire · ${esc(titre)}</title>
 <style>
   :root { --t: #1f2933; --d: #52606d; --b: #d9e2ec; --ok: #0f8a5f; --at: #b7791f; --cr: #c53030; }
@@ -99,6 +99,7 @@ ${section('Firmwares', fw ? `<p>Dernière version stable : <b>${esc(fw.reference
 ${mc ? section('MeshCore', `<p>${mc.repeteurs} répéteur(s) dans la zone, dont ${mc.actifs} actif(s) cette semaine · ${mc.noeuds} nœud(s) MeshCore entendus.</p>`) : ''}
 
 <p class="sous" style="margin-top:28px">Couverture et liaisons calculées d’après le relief USGS 3DEP, les fiches d’installation et les mesures réelles du réseau. Rapport généré automatiquement par la carte live.</p>
+<script src="/langue.js"></script>
 </body></html>`;
     return html;
   }

@@ -1,7 +1,7 @@
 'use strict';
 // Simulateur de companion MeshCore « Wi-Fi » (TCP, port 5000 par défaut) pour essayer la carte sans matériel.
 // Il répond aux commandes de base (APP_START, DEVICE_QUERY, GET_CONTACTS, batterie) et envoie des paquets
-// bruts (LOG_RX_DATA) : annonces de répéteurs en Haute-Loire, messages du canal Public, traces, requêtes…
+// bruts (LOG_RX_DATA) : annonces de répéteurs autour de Phoenix (AZ), messages du canal Public, traces, requêtes…
 //
 //   node outils/simulateur-meshcore.js [port]
 // puis, dans la carte : MeshCore › Companion › Wi-Fi : 127.0.0.1, port 5000.
@@ -14,17 +14,17 @@ const PUBLIC = Buffer.from('8b3387e9c5cdea6ac9e5edbaa115cd72', 'hex');
 const cle = (graine) => crypto.createHash('sha256').update(graine).digest();
 
 const NOEUDS = [
-  { nom: '43ALAMBRepeater', role: 2, lat: 45.0318, lon: 3.9412 },
-  { nom: '43-Mezenc-RPT', role: 2, lat: 44.9128, lon: 4.1873 },
-  { nom: '43-Puy-Corneille', role: 2, lat: 45.0472, lon: 3.8851 },
-  { nom: '43-Yssingeaux-RPT', role: 2, lat: 45.1427, lon: 4.1238 },
-  { nom: '43-Brioude-RPT', role: 2, lat: 45.2941, lon: 3.3842 },
-  { nom: 'Salon Velay', role: 3, lat: 45.0441, lon: 3.8853 },
-  { nom: 'Station test 📟', role: 1, lat: 45.0820, lon: 3.9650 },
-  { nom: 'Marc 43', role: 1, lat: 45.0612, lon: 3.8302 },
-  { nom: 'Capteur Loire', role: 4, lat: 45.0963, lon: 3.9558 },
+  { nom: 'PHX-SouthMtn-RPT', role: 2, lat: 33.3350, lon: -112.0600 },
+  { nom: 'PHX-Usery-RPT', role: 2, lat: 33.4730, lon: -111.6100 },
+  { nom: 'PHX-Downtown-RPT', role: 2, lat: 33.4484, lon: -112.0740 },
+  { nom: 'PHX-Scottsdale-RPT', role: 2, lat: 33.4942, lon: -111.9261 },
+  { nom: 'PHX-Goodyear-RPT', role: 2, lat: 33.4353, lon: -112.3577 },
+  { nom: 'Valley Room', role: 3, lat: 33.4490, lon: -112.0700 },
+  { nom: 'Test station 📟', role: 1, lat: 33.4800, lon: -111.9800 },
+  { nom: 'Mike AZ', role: 1, lat: 33.5100, lon: -112.1200 },
+  { nom: 'Salt River sensor', role: 4, lat: 33.4400, lon: -111.9000 },
 ].map((n) => ({ ...n, cle: cle('simu-mc-' + n.nom) }));
-const MOI = { nom: 'Companion simulé', cle: cle('simu-mc-companion'), lat: 45.1099, lon: 3.9197 };
+const MOI = { nom: 'Simulated companion', cle: cle('simu-mc-companion'), lat: 33.4600, lon: -112.0300 };
 
 const relais = NOEUDS.filter((n) => n.role === 2);
 const hasard = (t) => t[Math.floor(Math.random() * t.length)];
@@ -65,7 +65,7 @@ function chemin(max = 3) {
   return l.map((r) => r.cle[0]);
 }
 
-const MESSAGES = ['Bonjour la Haute-Loire !', 'Test depuis le Mézenc', 'Quelqu’un m’entend à Yssingeaux ?', 'Reçu 5/5', 'Relais Alambre OK', 'Bonne soirée à tous'];
+const MESSAGES = ['Hello Phoenix!', 'Test from Usery Peak', 'Anyone hearing me in Scottsdale?', 'Copy 5/5', 'South Mountain repeater OK', 'Good evening all'];
 
 function trame(octets) {
   const t = Buffer.alloc(3 + octets.length);
@@ -81,7 +81,7 @@ function selfInfo() {
   const b = Buffer.alloc(58);
   b[0] = 5; b[1] = 1; b[2] = 22; b[3] = 22; MOI.cle.copy(b, 4);
   b.writeInt32LE(Math.round(MOI.lat * 1e6), 36); b.writeInt32LE(Math.round(MOI.lon * 1e6), 40);
-  b.writeUInt32LE(869618, 48); b.writeUInt32LE(62500, 52); b[56] = 8; b[57] = 8;
+  b.writeUInt32LE(910525, 48); b.writeUInt32LE(62500, 52); b[56] = 7; b[57] = 5;
   return trame(Buffer.concat([b, Buffer.from(MOI.nom)]));
 }
 function deviceInfo() {
@@ -104,8 +104,8 @@ const reglages = new Map();
 const etatRep = (cle) => {
   if (!reglages.has(cle)) {
     const n = NOEUDS.find((x) => x.cle.toString('hex') === cle);
-    reglages.set(cle, { name: n ? n.nom : '?', radio: '869.618,62.5,8,8', tx: '22', repeat: 'on', 'flood.max': '64', 'flood.max.advert': '8', 'advert.interval': cle.startsWith(relais[1].cle.toString('hex').slice(0, 4)) ? '0' : '120',
-      'flood.advert.interval': '12', 'path.hash.mode': '0', txdelay: '0.5', 'direct.txdelay': '0.3', dutycycle: '50.0%', 'multi.acks': '0', 'loop.detect': 'off', lat: String(n ? n.lat : 0), lon: String(n ? n.lon : 0), 'owner.info': 'F4XXX' });
+    reglages.set(cle, { name: n ? n.nom : '?', radio: '910.525,62.5,7,5', tx: '22', repeat: 'on', 'flood.max': '64', 'flood.max.advert': '8', 'advert.interval': cle.startsWith(relais[1].cle.toString('hex').slice(0, 4)) ? '0' : '120',
+      'flood.advert.interval': '12', 'path.hash.mode': '0', txdelay: '0.5', 'direct.txdelay': '0.3', dutycycle: '50.0%', 'multi.acks': '0', 'loop.detect': 'off', lat: String(n ? n.lat : 0), lon: String(n ? n.lon : 0), 'owner.info': 'KK7ABC' });
   }
   return reglages.get(cle);
 };
@@ -133,7 +133,7 @@ net.createServer((s) => {
     const b = Buffer.alloc(4 + 6 + 2 + 4); b[0] = 16; b[1] = 24; prefixe6.copy(b, 4); b[10] = 1; b[11] = type; b.writeUInt32LE(Math.floor(Date.now() / 1000), 12);
     return trame(Buffer.concat([b, Buffer.from(texteMsg, 'utf8')]));
   };
-  const minuterieDm = setInterval(() => { if (!s.destroyed && Math.random() < 0.3) pousser(msgContact(NOEUDS[7].cle.subarray(0, 6), 0, 'Salut, tu me reçois ? ' + new Date().toLocaleTimeString('fr-FR'))); }, 45000);
+  const minuterieDm = setInterval(() => { if (!s.destroyed && Math.random() < 0.3) pousser(msgContact(NOEUDS[7].cle.subarray(0, 6), 0, 'Hi, do you copy? ' + new Date().toLocaleTimeString('en-US'))); }, 45000);
   s.on('data', (d) => {
     tampon = Buffer.concat([tampon, d]);
     while (tampon.length >= 3 && tampon[0] === 0x3c) {
@@ -228,7 +228,7 @@ net.createServer((s) => {
     else if (r < 0.85) brut = paquet(3, 2, [], crypto.randomBytes(4));
     else if (r < 0.93) brut = paquet(7, 1, chemin(1), Buffer.concat([Buffer.from([relais[1].cle[0]]), MOI.cle, crypto.randomBytes(18)]));
     else {
-      // Trace : SNR mesurés à chaque saut, route Alambre → Puy → Mézenc
+      // Trace : SNR mesurés à chaque saut, route South Mountain → Downtown → Usery
       const route = [relais[0], relais[2], relais[1]];
       const charge = Buffer.concat([crypto.randomBytes(4), Buffer.alloc(4), Buffer.from([0]), Buffer.from(route.map((x) => x.cle[0]))]);
       const snrs = route.map(() => Math.round((Math.random() * 16 - 6) * 4) & 0xff);

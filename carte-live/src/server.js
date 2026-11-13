@@ -1046,7 +1046,7 @@ app.post('/api/connexion/ip', async (req, res) => {
       const hote = agents.ajouterParIp(r.hote, ip, protocole === 'meshcore' ? 5000 : 4403, protocole);
       brancher(protocole, { agent: hote });
       journal(`connexion par IP : ${ip} (${protocole}) par le relais « ${r.nom} »`);
-      return res.json({ ok: true, protocole, via: r.nom, ecoute: enEcoute, texte: `${protocole === 'meshcore' ? 'Companion MeshCore' : 'Module Meshtastic'} ${ip} trouvé par le PC « ${r.nom.replace(/ · réseau local$/, '')} » : connexion en cours${enEcoute ? ', en écoute (en plus du module principal)' : ''}.` });
+      return res.json({ ok: true, protocole, via: r.nom, ecoute: enEcoute, texte: `${protocole === 'meshcore' ? 'Companion MeshCore' : 'Module Meshtastic'} ${ip} trouvé par le PC « ${r.nom.replace(/ · (réseau local|local network)$/, '')} » : connexion en cours${enEcoute ? ', en écoute (en plus du module principal)' : ''}.` });
     }
     const anciens = agents.liste().filter((a) => !/^1\.([6-9]|\d\d)|^[2-9]\./.test(a.version || '') && a.version !== 'navigateur');
     res.status(404).json({
@@ -3036,17 +3036,17 @@ app.get('/api/signalements/publics', (req, res) => {
 app.get('/main-courante', (req, res) => {
   if (!estMembre(req)) return res.status(401).send('Connexion requise');
   const e = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const h = (t) => new Date(t).toLocaleString('fr-FR', { timeZone: (process.env.TZ || 'America/Phoenix'), day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const h = (t) => new Date(t).toLocaleString('en-US', { timeZone: (process.env.TZ || 'America/Phoenix'), day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   const lignes = [];
   for (const x of signalements.lister()) {
     lignes.push([x.cree, `${x.icone} ${e(x.titre)}`, e(x.details), `${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}`, e(x.auteur) + (x.source === 'radio' ? ' (reçu par radio)' : ''), [...(x.envois.mt || []).map((v) => `Meshtastic canal ${v.canal} : ${v.statut === 'envoye' ? 'envoyé' : 'échec'}`), x.envois.mc ? `MeshCore : ${x.envois.mc.statut === 'envoye' ? 'envoyé' : 'échec'}` : ''].filter(Boolean).join(' · ')]);
-    if (x.fin) lignes.push([x.fin, `✅ Fin : ${e(x.titre)}`, '', `${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}`, e(x.finPar || ''), '']);
+    if (x.fin) lignes.push([x.fin, `✅ Ended: ${e(x.titre)}`, '', `${x.lat.toFixed(5)}, ${x.lon.toFixed(5)}`, e(x.finPar || ''), '']);
   }
   lignes.sort((a, b) => a[0] - b[0]);
-  res.set('Cache-Control', 'no-store').send(`<!doctype html><html lang="fr"><meta charset="utf-8"><title>Main courante · ${e(config.carte.titre)}</title>
+  res.set('Cache-Control', 'no-store').send(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Main courante · ${e(config.carte.titre)}</title>
 <style>body{font:14px system-ui,sans-serif;margin:24px;color:#111}h1{font-size:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:6px 8px;text-align:left;vertical-align:top}th{background:#eee}@media print{button{display:none}}</style>
 <h1>Main courante · ${e(config.carte.titre)}</h1><p>Signalements des 7 derniers jours, édité le ${h(Date.now())}. <button onclick="print()">Imprimer / PDF</button></p>
-<table><tr><th>Heure</th><th>Événement</th><th>Précisions</th><th>Position</th><th>Par</th><th>Diffusion</th></tr>${lignes.map((l) => `<tr><td>${h(l[0])}</td><td>${l[1]}</td><td>${l[2]}</td><td>${l[3]}</td><td>${l[4]}</td><td>${l[5]}</td></tr>`).join('') || '<tr><td colspan="6">Aucun signalement.</td></tr>'}</table></html>`);
+<table><tr><th>Time</th><th>Event</th><th>Details</th><th>Position</th><th>By</th><th>Broadcast</th></tr>${lignes.map((l) => `<tr><td>${h(l[0])}</td><td>${l[1]}</td><td>${l[2]}</td><td>${l[3]}</td><td>${l[4]}</td><td>${l[5]}</td></tr>`).join('') || '<tr><td colspan="6">Aucun signalement.</td></tr>'}</table></html><script src="/langue.js"></script>`);
 });
 app.post('/api/signalements', async (req, res) => {
   const u = utilisateur(req);
